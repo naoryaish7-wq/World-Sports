@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, KeyboardAvoidingView, Platform, Modal, FlatList, Dimensions } from 'react-native';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
+import { sendEmailVerification, signOut } from 'firebase/auth';
 import { db, auth } from '../firebase';
 import { router } from 'expo-router';
 import { Ionicons, FontAwesome } from '@expo/vector-icons';
@@ -9,7 +10,6 @@ import { useAuth } from '../context/AuthContext';
 const { width } = Dimensions.get('window');
 const SPORTS_LIST = ['Football ⚽', 'Basketball 🏀', 'Tennis 🎾', 'Running 🏃‍♂️', 'Fitness 💪', 'Cycling 🚴‍♂️', 'Swimming 🏊‍♂️'];
 
-// פונקציית עזר מדויקת לחישוב גיל מתוך תאריך לידה (YYYY-MM-DD)
 const calculateAge = (birthDateString: string) => {
   if (!birthDateString) return null;
   
@@ -93,6 +93,32 @@ export default function LoginScreen() {
       // Login Mode
       try {
         await login(cleanEmail, password);
+        const currentUser = auth.currentUser;
+
+        // בדיקה קריטית: האם האימייל אומת?
+        if (currentUser && !currentUser.emailVerified) {
+          await signOut(auth);
+          
+          Alert.alert(
+            'Email Not Verified ⚠️',
+            'Please check your inbox and click the verification link before logging in.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { 
+                text: 'Resend Email', 
+                onPress: async () => {
+                  try {
+                    await sendEmailVerification(currentUser);
+                    Alert.alert('Sent', 'Verification link has been resent to your email.');
+                  } catch (e: any) {
+                    Alert.alert('Error', 'You can only request a new verification email after a short wait.');
+                  }
+                } 
+              }
+            ]
+          );
+          return; // עצירה מוחלטת של המעבר לדף הבית
+        }
 
         if (selectedSports.length > 0) {
           await setDoc(doc(db, 'users', userId), {
@@ -132,6 +158,7 @@ export default function LoginScreen() {
       }
 
       try {
+        // מתבצעת הרשמה + שליחת מייל + ניתוק אוטומטי מתוך ה-AuthContext
         await register(cleanEmail, password, trimmedName);
 
         await setDoc(doc(db, 'users', userId), {
@@ -141,8 +168,13 @@ export default function LoginScreen() {
           age: userAge,
           sports: selectedSports,
         }, { merge: true });
-        
-        router.replace('/(tabs)/home');
+
+        Alert.alert(
+          'Verification Email Sent ✉️',
+          'We have sent a verification link to your email. Please check your inbox and verify your account before logging in.',
+          [{ text: 'OK', onPress: () => setIsLoginMode(true) }]
+        );
+
       } catch (error: any) {
         console.error(error);
         Alert.alert('Registration Error', error?.message || 'Could not create account.');
@@ -158,7 +190,6 @@ export default function LoginScreen() {
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         
-        {/* Header Branding */}
         <View style={styles.heroSection}>
           <View style={styles.badgeIconBox}>
             <Ionicons name="trophy" size={32} color="#EAB308" />
@@ -169,7 +200,6 @@ export default function LoginScreen() {
           </Text>
         </View>
 
-        {/* Mode Switcher Tabs */}
         <View style={styles.modeSwitchRow}>
           <TouchableOpacity 
             style={[styles.modeTab, !isLoginMode && styles.modeTabActive]} 
@@ -190,7 +220,6 @@ export default function LoginScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Main Form Card */}
         <View style={styles.formBox}>
           {!isLoginMode && (
             <View style={styles.inputGroup}>
@@ -271,7 +300,7 @@ export default function LoginScreen() {
 
           <TouchableOpacity style={[styles.btn, { marginTop: 10 }]} onPress={handleAuth} activeOpacity={0.85}>
             <Text style={styles.btnText}>
-              {isLoginMode ? 'LOG IN & UPDATE 🚀' : 'CREATE ACCOUNT & ENTER 🌍'}
+              {isLoginMode ? 'LOG IN & UPDATE 🚀' : 'CREATE ACCOUNT & VERIFY 🌍'}
             </Text>
           </TouchableOpacity>
 
@@ -289,7 +318,6 @@ export default function LoginScreen() {
 
       </ScrollView>
 
-      {/* Modern Sports Selection Modal */}
       <Modal visible={isSportModalVisible} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>

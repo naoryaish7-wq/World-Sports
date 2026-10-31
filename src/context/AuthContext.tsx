@@ -5,6 +5,7 @@ import {
   signOut, 
   onAuthStateChanged,
   deleteUser,
+  sendEmailVerification,
   User as FirebaseUser
 } from 'firebase/auth';
 import { auth, db } from '../../src/firebase';
@@ -30,8 +31,17 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (fbUser) => {
-      setFirebaseUser(fbUser);
       if (fbUser) {
+        // בדיקה קריטית: אם האימייל לא אומת, אנחנו מנתקים אותו מיד!
+        if (!fbUser.emailVerified) {
+          await signOut(auth);
+          setFirebaseUser(null);
+          setUser(null);
+          setLoading(false);
+          return;
+        }
+
+        setFirebaseUser(fbUser);
         try {
           const userId = fbUser.email ? fbUser.email.toLowerCase().replace(/[^a-z0-9]/g, '_') : fbUser.uid;
           const userRef = doc(db, 'users', userId);
@@ -46,6 +56,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           console.error("Error loading user doc:", e);
         }
       } else {
+        setFirebaseUser(null);
         setUser(null);
       }
       setLoading(false);
@@ -56,17 +67,30 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const login = async (email: string, pass: string, rememberMe: boolean = true) => {
     const userCred = await signInWithEmailAndPassword(auth, email, pass);
-    
+    const fbUser = userCred.user;
+
+    // בדיקה נוספת מיד לאחר ההתחברות
+    if (fbUser && !fbUser.emailVerified) {
+      await signOut(auth);
+      throw new Error("Email Not Verified. Please check your inbox and verify your email before logging in.");
+    }
+
     if (rememberMe) {
       await AsyncStorage.setItem('@saved_user_email', email);
     } else {
       await AsyncStorage.removeItem('@saved_user_email');
     }
-    return userCred.user;
+    return fbUser;
   };
 
   const register = async (email: string, pass: string, name: string, rememberMe: boolean = true) => {
+    // 1. יצירת המשתמש
     const userCred = await createUserWithEmailAndPassword(auth, email, pass);
+    const fbUser = userCred.user;
+
+    // 2. שליחת מייל אימות מיד
+    await sendEmailVerification(fbUser);
+
     const userId = email.toLowerCase().replace(/[^a-z0-9]/g, '_');
     
     const userData = {
@@ -81,19 +105,24 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     };
 
     await setDoc(doc(db, 'users', userId), userData, { merge: true });
-    setUser(userData);
+
+    // 3. ניתוק מיידי כדי שלא ייכנס לאפליקציה לפני אימות
+    await signOut(auth);
+    setFirebaseUser(null);
+    setUser(null);
 
     if (rememberMe) {
       await AsyncStorage.setItem('@saved_user_email', email);
     } else {
       await AsyncStorage.removeItem('@saved_user_email');
     }
-    return userCred.user;
+    return fbUser;
   };
 
   const logout = async () => {
     await signOut(auth);
     setUser(null);
+    setFirebaseUser(null);
     await AsyncStorage.removeItem('@saved_user_email');
   };
 

@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, ScrollView, Image, TouchableOpacity, TextInput, Modal, Alert, Dimensions, TouchableWithoutFeedback, PanResponder, Animated } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, Image, TouchableOpacity, TextInput, Modal, Alert, Dimensions, TouchableWithoutFeedback, PanResponder, Animated, AppState } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import * as ImagePicker from 'expo-image-picker';
@@ -51,6 +51,7 @@ type Story = {
   userUid?: string;
   name: string;
   imageUrl: string;
+  mediaType?: 'image' | 'video';
   avatarUrl: string;
   caption?: string;
   captionStyle?: {
@@ -75,6 +76,7 @@ type GroupedStory = {
   avatarUrl: string;
   stories: Story[];
   isMine?: boolean;
+  hasUnwatched?: boolean;
 };
 
 const getTimeAgo = (timestamp: any) => {
@@ -99,18 +101,66 @@ const getTimeAgo = (timestamp: any) => {
   }
 };
 
-// רכיב עזר לנגן וידאו בפיד ובמודאל
-function PostVideoPlayer({ uri }: { uri: string }) {
+// נגן וידאו חכם לפוסטים שמקבל פסקה או עצירה חיצונית לפי צורך
+function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boolean }) {
   const player = useVideoPlayer(uri, player => {
     player.loop = true;
     player.staysActiveInBackground = false;
+    player.muted = false;
+    if (!isStoryOpen) {
+      player.play();
+    }
   });
+
+  useEffect(() => {
+    if (isStoryOpen) {
+      try {
+        player.pause();
+      } catch (e) {}
+    }
+  }, [isStoryOpen, player]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        player.pause();
+      } catch (e) {}
+    };
+  }, [player]);
 
   return (
     <VideoView
       style={styles.postImageContent}
       player={player}
       nativeControls={true}
+      contentFit="cover"
+    />
+  );
+}
+
+// נגן וידאו חכם לסטורי שמפסיק מיד את הניגון בעת מעבר או סגירה
+function StoryVideoPlayer({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, player => {
+    player.loop = true;
+    player.staysActiveInBackground = false;
+    player.muted = false;
+    player.play();
+  });
+
+  useEffect(() => {
+    return () => {
+      try {
+        player.pause();
+      } catch (e) {}
+    };
+  }, [player]);
+
+  return (
+    <VideoView
+      style={styles.fullStoryVideo}
+      player={player}
+      nativeControls={false}
+      contentFit="cover"
     />
   );
 }
@@ -205,6 +255,7 @@ export default function HomeScreen() {
             userUid: data.userUid,
             name: data.name,
             imageUrl: data.imageUrl,
+            mediaType: data.mediaType || 'image',
             avatarUrl: resolvedAvatar,
             caption: data.caption,
             captionStyle: data.captionStyle,
@@ -254,6 +305,18 @@ export default function HomeScreen() {
         };
       });
       setPosts(postsList);
+
+      setCommentsModalPost(prevModalPost => {
+        if (!prevModalPost) return null;
+        const updatedCurrentPost = postsList.find(p => p.id === prevModalPost.id);
+        return updatedCurrentPost || prevModalPost;
+      });
+
+      setSelectedPostModal(prevSelectedPost => {
+        if (!prevSelectedPost) return null;
+        const updatedSelectedPost = postsList.find(p => p.id === prevSelectedPost.id);
+        return updatedSelectedPost || prevSelectedPost;
+      });
     }, (error) => {
       console.error('Error listening to posts:', error);
     });
@@ -268,22 +331,27 @@ export default function HomeScreen() {
   const [isPaused, setIsPaused] = useState(false);
   const progressValueRef = useRef(0);
 
-  const groupedStories: GroupedStory[] = [];
+  const rawGroupedStories: GroupedStory[] = [];
   const myStories = stories.filter(s => s.isMine || s.userUid === currentUserId || s.name === liveName);
   
   const otherStories = stories.filter(s => {
     if (s.isMine || s.userUid === currentUserId || s.name === liveName) return false;
-    const isFollowed = s.userUid ? followingList.includes(s.userUid) : false;
+    const isFollowed = s.userUid ? followingList.includes(s.userUid) : true;
     return isFollowed;
   });
 
   if (myStories.length > 0) {
-    groupedStories.push({
+    const hasUnwatchedMine = myStories.some(st => {
+      const viewers = st.viewersList || [];
+      return !viewers.includes(currentUserId);
+    });
+    rawGroupedStories.push({
       userUid: currentUserId || 'mine',
       name: liveName,
       avatarUrl: liveAvatar,
       stories: myStories,
-      isMine: true
+      isMine: true,
+      hasUnwatched: hasUnwatchedMine
     });
   }
 
@@ -297,13 +365,26 @@ export default function HomeScreen() {
   });
 
   otherUsersMap.forEach((userStoriesList, key) => {
-    groupedStories.push({
+    const hasUnwatched = userStoriesList.some(st => {
+      const viewers = st.viewersList || [];
+      const isOwner = st.isMine || st.userUid === currentUserId;
+      return !isOwner && !viewers.includes(currentUserId);
+    });
+
+    rawGroupedStories.push({
       userUid: key,
       name: userStoriesList[0].name,
       avatarUrl: userStoriesList[0].avatarUrl,
       stories: userStoriesList,
-      isMine: false
+      isMine: false,
+      hasUnwatched
     });
+  });
+
+  const groupedStories = [...rawGroupedStories].sort((a, b) => {
+    if (a.hasUnwatched && !b.hasUnwatched) return -1;
+    if (!a.hasUnwatched && b.hasUnwatched) return 1;
+    return 0;
   });
 
   useEffect(() => {
@@ -399,6 +480,7 @@ export default function HomeScreen() {
   const [messageInput, setMessageInput] = useState('');
 
   const [selectedPostModal, setSelectedPostModal] = useState<Post | null>(null);
+  const [commentsModalPost, setCommentsModalPost] = useState<Post | null>(null);
   const [modalCommentInput, setModalCommentInput] = useState('');
 
   const openUserProfileById = (userId?: string, playerName?: string) => {
@@ -415,6 +497,7 @@ export default function HomeScreen() {
     setTargetActiveModalList(null);
     setSelectedUserModalId(null);
     setSelectedPostModal(null);
+    setCommentsModalPost(null);
 
     setTimeout(() => {
       let found: any | undefined = undefined;
@@ -536,6 +619,7 @@ export default function HomeScreen() {
 
   const [storyModalVisible, setStoryModalVisible] = useState(false);
   const [selectedStoryUri, setSelectedStoryUri] = useState<string | null>(null);
+  const [storyMediaType, setStoryMediaType] = useState<'image' | 'video'>('image');
   const [storyCaption, setStoryCaption] = useState('');
   
   const [storyFontSize, setStoryFontSize] = useState<number>(20);
@@ -610,6 +694,14 @@ export default function HomeScreen() {
           isLiked: currentUserId ? updatedLikesList.includes(currentUserId) : false
         });
       }
+      if (commentsModalPost && commentsModalPost.id === postId) {
+        setCommentsModalPost({
+          ...commentsModalPost,
+          likesList: updatedLikesList,
+          likes: updatedLikesList.length,
+          isLiked: currentUserId ? updatedLikesList.includes(currentUserId) : false
+        });
+      }
     } catch (e) {
       console.error('Error toggling like:', e);
     }
@@ -649,7 +741,10 @@ export default function HomeScreen() {
       const story = stories.find(s => s.id === storyId);
       if (story) {
         const currentComments = story.storyComments || [];
-        await updateDoc(storyRef, { storyComments: [...currentComments, newComment] });
+        const updatedStoryComments = [...currentComments, newComment];
+        await updateDoc(storyRef, { storyComments: updatedStoryComments });
+        
+        setStories(prevStories => prevStories.map(st => st.id === storyId ? { ...st, storyComments: updatedStoryComments } : st));
       }
       setStoryCommentInput('');
     } catch (e) {
@@ -668,6 +763,9 @@ export default function HomeScreen() {
             await deleteDoc(doc(db, 'posts', postId));
             if (selectedPostModal?.id === postId) {
               setSelectedPostModal(null);
+            }
+            if (commentsModalPost?.id === postId) {
+              setCommentsModalPost(null);
             }
           } catch (e) {
             console.error('Error deleting post:', e);
@@ -695,16 +793,18 @@ export default function HomeScreen() {
     ]);
   };
 
-  const handlePickStoryImage = async () => {
+  const handlePickStoryMedia = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ImagePicker.MediaTypeOptions.All,
       allowsEditing: true,
       aspect: [9, 16],
       quality: 0.8,
     });
 
     if (!result.canceled && result.assets && result.assets.length > 0) {
-      setSelectedStoryUri(result.assets[0].uri);
+      const asset = result.assets[0];
+      setSelectedStoryUri(asset.uri);
+      setStoryMediaType(asset.type === 'video' ? 'video' : 'image');
       setStoryCaption('');
       setStoryFontSize(20);
       setStoryTextColor('#ffffff');
@@ -724,6 +824,7 @@ export default function HomeScreen() {
         userUid: currentUserId,
         name: liveName,
         imageUrl: selectedStoryUri,
+        mediaType: storyMediaType,
         avatarUrl: liveAvatar || '',
         caption: storyCaption.trim() ? storyCaption : '',
         captionStyle: {
@@ -837,7 +938,7 @@ export default function HomeScreen() {
     const text = isModal ? modalCommentInput : commentInputs[postId];
     if (!text || !text.trim()) return;
 
-    const post = posts.find(p => p.id === postId);
+    const post = posts.find(p => p.id === postId) || (commentsModalPost?.id === postId ? commentsModalPost : null);
     if (!post) return;
 
     const newComment: Comment = {
@@ -845,7 +946,7 @@ export default function HomeScreen() {
       userId: currentUserId,
       user: liveName,
       avatarUrl: liveAvatar || '',
-      text,
+      text: text.trim(),
       createdAt: new Date()
     };
 
@@ -856,10 +957,12 @@ export default function HomeScreen() {
 
       if (isModal) {
         setModalCommentInput('');
-        setSelectedPostModal(prev => prev ? { ...prev, comments: updatedComments } : null);
+        setCommentsModalPost(prev => prev ? { ...prev, comments: updatedComments } : null);
       } else {
         setCommentInputs({ ...commentInputs, [postId]: '' });
       }
+
+      setPosts(prevPosts => prevPosts.map(p => p.id === postId ? { ...p, comments: updatedComments } : p));
     } catch (e) {
       console.error('Error adding comment:', e);
     }
@@ -909,7 +1012,7 @@ export default function HomeScreen() {
       
       <View style={styles.headerRow}>
         <View>
-          <Text style={styles.homeCategory}>FEED & COMMUNITY</Text>
+          <Text style={styles.homeCategory}>Home</Text>
           <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
         </View>
 
@@ -930,7 +1033,7 @@ export default function HomeScreen() {
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.storiesContainer}>
-        <TouchableOpacity style={styles.storyItem} onPress={handlePickStoryImage} activeOpacity={0.85}>
+        <TouchableOpacity style={styles.storyItem} onPress={handlePickStoryMedia} activeOpacity={0.85}>
           <View style={styles.myStoryRing}>
             {liveAvatar ? (
               <Image source={{ uri: liveAvatar }} style={styles.storyImg} />
@@ -953,12 +1056,7 @@ export default function HomeScreen() {
 
         {groupedStories.map((group, groupIndex) => {
           const groupUserObj = allUsersList.find(u => u.uid === group.userUid || u.name === group.name);
-          
-          const hasUnwatchedStories = group.stories.some(st => {
-            const viewers = st.viewersList || [];
-            const isOwner = st.isMine || st.userUid === currentUserId;
-            return !isOwner && !viewers.includes(currentUserId);
-          });
+          const hasUnwatchedStories = group.hasUnwatched;
 
           return (
             <View key={group.userUid} style={styles.storyItem}>
@@ -1062,7 +1160,7 @@ export default function HomeScreen() {
                 <TouchableWithoutFeedback onPress={() => handleDoubleTap(post.id)}>
                   <View style={styles.postImageBox}>
                     {isVideo ? (
-                      <PostVideoPlayer uri={post.imageUrl} />
+                      <PostVideoPlayer key={post.id} uri={post.imageUrl} isStoryOpen={activeGroupIndex !== null} />
                     ) : (
                       <Image source={{ uri: post.imageUrl }} style={styles.postImageContent} />
                     )}
@@ -1081,55 +1179,11 @@ export default function HomeScreen() {
                     {post.likes} Likes
                   </Text>
                 </TouchableOpacity>
-                <View style={styles.actionBtn}>
+
+                <TouchableOpacity style={styles.actionBtn} onPress={() => setCommentsModalPost(post)} activeOpacity={0.7}>
                   <Ionicons name="chatbubble-outline" size={18} color="#A1A1AA" />
                   <Text style={styles.actionText}>{post.comments.length} Comments</Text>
-                </View>
-              </View>
-
-              <View style={styles.commentsSection}>
-                {post.comments.map(c => {
-                  const commentTimeAgo = getTimeAgo(c.createdAt);
-                  const commentUserObj = allUsersList.find(u => u.uid === c.userId || u.name === c.user);
-                  return (
-                    <View key={c.id} style={styles.commentRow}>
-                      <TouchableOpacity onPress={() => openUserProfileById(c.userId, c.user)} activeOpacity={0.85}>
-                        {c.avatarUrl ? (
-                          <Image source={{ uri: c.avatarUrl }} style={styles.commentAvatar} />
-                        ) : (
-                          <View style={styles.commentAvatarPlaceholder}>
-                            <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>{c.user ? c.user[0].toUpperCase() : 'U'}</Text>
-                          </View>
-                        )}
-                      </TouchableOpacity>
-                      <View style={{ flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 8, borderRadius: 10 }}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-                          <TouchableOpacity onPress={() => openUserProfileById(c.userId, c.user)} activeOpacity={0.85}>
-                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                              <Text style={styles.commentUser}>{c.user}</Text>
-                              {commentUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color="#EAB308" />}
-                            </View>
-                          </TouchableOpacity>
-                          <Text style={styles.commentTimeText}>{commentTimeAgo}</Text>
-                        </View>
-                        <Text style={styles.commentText}>{c.text}</Text>
-                      </View>
-                    </View>
-                  );
-                })}
-
-                <View style={styles.commentInputRow}>
-                  <TextInput 
-                    style={styles.commentInput} 
-                    placeholder="Write a comment..." 
-                    placeholderTextColor="#52525B"
-                    value={commentInputs[post.id] || ''}
-                    onChangeText={(val) => setCommentInputs({ ...commentInputs, [post.id]: val })}
-                  />
-                  <TouchableOpacity style={styles.commentSendBtn} onPress={() => handleAddComment(post.id)} activeOpacity={0.85}>
-                    <Ionicons name="send" size={14} color="#09090B" />
-                  </TouchableOpacity>
-                </View>
+                </TouchableOpacity>
               </View>
 
             </View>
@@ -1138,6 +1192,73 @@ export default function HomeScreen() {
       )}
 
       </ScrollView>
+
+      {/* מודל תגובות מלא ומעודכן */}
+      <Modal visible={!!commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setCommentsModalPost(null)}>
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.commentsModalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Comments 💬</Text>
+              <TouchableOpacity onPress={() => setCommentsModalPost(null)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
+                <Ionicons name="close" size={22} color="#FAFAFA" />
+              </TouchableOpacity>
+            </View>
+
+            {commentsModalPost && (
+              <View style={{ flex: 1, width: '100%' }}>
+                <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 15 }}>
+                  {commentsModalPost.comments.length === 0 ? (
+                    <Text style={{ color: '#71717A', textAlign: 'center', marginVertical: 30, fontSize: 13 }}>No comments yet. Be the first to comment!</Text>
+                  ) : (
+                    commentsModalPost.comments.map(c => {
+                      const commentTimeAgo = getTimeAgo(c.createdAt);
+                      const commentUserObj = allUsersList.find(u => u.uid === c.userId || u.name === c.user);
+                      return (
+                        <View key={c.id} style={styles.commentRow}>
+                          <TouchableOpacity onPress={() => { setCommentsModalPost(null); openUserProfileById(c.userId, c.user); }} activeOpacity={0.85}>
+                            {c.avatarUrl ? (
+                              <Image source={{ uri: c.avatarUrl }} style={styles.commentAvatar} />
+                            ) : (
+                              <View style={styles.commentAvatarPlaceholder}>
+                                <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>{c.user ? c.user[0].toUpperCase() : 'U'}</Text>
+                              </View>
+                            )}
+                          </TouchableOpacity>
+                          <View style={{ flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 10, borderRadius: 12 }}>
+                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                              <TouchableOpacity onPress={() => { setCommentsModalPost(null); openUserProfileById(c.userId, c.user); }} activeOpacity={0.85}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                  <Text style={styles.commentUser}>{c.user}</Text>
+                                  {commentUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color="#EAB308" />}
+                                </View>
+                              </TouchableOpacity>
+                              <Text style={styles.commentTimeText}>{commentTimeAgo}</Text>
+                            </View>
+                            <Text style={styles.commentText}>{c.text}</Text>
+                          </View>
+                        </View>
+                      );
+                    })
+                  )}
+                </ScrollView>
+
+                <View style={styles.commentInputRow}>
+                  <TextInput 
+                    style={styles.commentInput} 
+                    placeholder="Write a comment..." 
+                    placeholderTextColor="#52525B"
+                    value={modalCommentInput}
+                    onChangeText={setModalCommentInput}
+                  />
+                  <TouchableOpacity style={styles.commentSendBtn} onPress={() => handleAddComment(commentsModalPost.id, true)} activeOpacity={0.85}>
+                    <Ionicons name="send" size={14} color="#09090B" />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
 
       {/* מודל יצירת סטורי */}
       <Modal visible={storyModalVisible} transparent={true} animationType="slide" onRequestClose={() => setStoryModalVisible(false)}>
@@ -1149,7 +1270,11 @@ export default function HomeScreen() {
           <View style={styles.storyEditorCard}>
             {selectedStoryUri && (
               <View style={styles.storyCanvasBox}>
-                <Image source={{ uri: selectedStoryUri }} style={styles.storyCanvasImage} />
+                {storyMediaType === 'video' ? (
+                  <PostVideoPlayer key="editor_video" uri={selectedStoryUri} isStoryOpen={false} />
+                ) : (
+                  <Image source={{ uri: selectedStoryUri }} style={styles.storyCanvasImage} />
+                )}
                 
                 {storyCaption ? (
                   <Animated.View 
@@ -1255,7 +1380,7 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      {/* מודל צפייה בסטורי */}
+      {/* מודל צפייה בסטורי תואם מסך מלא אמיתי */}
       <Modal visible={activeGroupIndex !== null} transparent={true} animationType="fade" onRequestClose={() => setActiveGroupIndex(null)}>
         <View style={styles.storyModalOverlay}>
           <TouchableOpacity style={styles.closeStoryBtn} onPress={() => { setActiveGroupIndex(null); setStoryCommentInput(''); }} activeOpacity={0.8}>
@@ -1272,6 +1397,7 @@ export default function HomeScreen() {
             const storyCommentsList = currentStory.storyComments || [];
             const isStoryMine = currentGroup.isMine;
             const headerUserObj = allUsersList.find(u => u.uid === currentGroup.userUid || u.name === currentGroup.name);
+            const isStoryVideo = currentStory.mediaType === 'video';
 
             return (
               <TouchableWithoutFeedback 
@@ -1331,7 +1457,13 @@ export default function HomeScreen() {
                       <Text style={{ color: '#A1A1AA', fontSize: 11 }}>{storyTimeAgo}</Text>
                     </View>
 
-                    <Image source={{ uri: currentStory.imageUrl }} style={styles.fullStoryImage} />
+                    <View style={styles.fullStoryMediaBox}>
+                      {isStoryVideo ? (
+                        <StoryVideoPlayer key={currentStory.id} uri={currentStory.imageUrl} />
+                      ) : (
+                        <Image source={{ uri: currentStory.imageUrl }} style={styles.fullStoryImage} />
+                      )}
+                    </View>
                     
                     {currentStory.caption && (
                       <View style={[
@@ -1453,7 +1585,7 @@ export default function HomeScreen() {
       </Modal>
 
       {/* מודל פרופיל משתמש */}
-      <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
+      <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
             
@@ -1573,16 +1705,28 @@ export default function HomeScreen() {
                   </View>
                 ) : (
                   <View style={styles.postsGrid}>
-                    {targetUserPosts.map(post => (
-                      <TouchableOpacity 
-                        key={post.id} 
-                        style={styles.postThumbnailBox} 
-                        onPress={() => setSelectedPostModal(post)} 
-                        activeOpacity={0.7}
-                      >
-                        <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
-                      </TouchableOpacity>
-                    ))}
+                    {targetUserPosts.map(post => {
+                      const isVid = post.mediaType === 'video';
+                      return (
+                        <TouchableOpacity 
+                          key={post.id} 
+                          style={styles.postThumbnailBox} 
+                          onPress={() => setSelectedPostModal(post)} 
+                          activeOpacity={0.7}
+                        >
+                          {isVid ? (
+                            <View style={[styles.postThumbnailImage, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', position: 'relative' }]}>
+                              <PostVideoPlayer key={`thumb_${post.id}`} uri={post.imageUrl || ''} isStoryOpen={false} />
+                              <View style={styles.videoBadgeOverlay}>
+                                <Ionicons name="play" size={14} color="#FAFAFA" />
+                              </View>
+                            </View>
+                          ) : (
+                            <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
                   </View>
                 )}
 
@@ -1642,7 +1786,7 @@ export default function HomeScreen() {
                     <TouchableWithoutFeedback onPress={() => handleDoubleTap(selectedPostModal.id)}>
                       <View style={styles.postImageBox}>
                         {selectedPostModal.mediaType === 'video' ? (
-                          <PostVideoPlayer uri={selectedPostModal.imageUrl} />
+                          <PostVideoPlayer key={`modal_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isStoryOpen={false} />
                         ) : (
                           <Image source={{ uri: selectedPostModal.imageUrl }} style={styles.postImageContent} />
                         )}
@@ -1661,55 +1805,11 @@ export default function HomeScreen() {
                         {selectedPostModal.likes} Likes
                       </Text>
                     </TouchableOpacity>
-                    <View style={styles.actionBtn}>
+
+                    <TouchableOpacity style={styles.actionBtn} onPress={() => { setSelectedPostModal(null); setCommentsModalPost(selectedPostModal); }} activeOpacity={0.7}>
                       <Ionicons name="chatbubble-outline" size={18} color="#A1A1AA" />
                       <Text style={styles.actionText}>{selectedPostModal.comments.length} Comments</Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.commentsSection}>
-                    {selectedPostModal.comments.map(c => {
-                      const commentTimeAgo = getTimeAgo(c.createdAt);
-                      const commentUserObj = allUsersList.find(u => u.uid === c.userId || u.name === c.user);
-                      return (
-                        <View key={c.id} style={styles.commentRow}>
-                          <TouchableOpacity onPress={() => { setSelectedPostModal(null); openUserProfileById(c.userId, c.user); }} activeOpacity={0.85}>
-                            {c.avatarUrl ? (
-                              <Image source={{ uri: c.avatarUrl }} style={styles.commentAvatar} />
-                            ) : (
-                              <View style={styles.commentAvatarPlaceholder}>
-                                <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>{c.user ? c.user[0].toUpperCase() : 'U'}</Text>
-                              </View>
-                            )}
-                          </TouchableOpacity>
-                          <View style={{ flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 8, borderRadius: 10 }}>
-                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-                              <TouchableOpacity onPress={() => { setSelectedPostModal(null); openUserProfileById(c.userId, c.user); }} activeOpacity={0.85}>
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                                  <Text style={styles.commentUser}>{c.user}</Text>
-                                  {commentUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color="#EAB308" />}
-                                </View>
-                              </TouchableOpacity>
-                              <Text style={styles.commentTimeText}>{commentTimeAgo}</Text>
-                            </View>
-                            <Text style={styles.commentText}>{c.text}</Text>
-                          </View>
-                        </View>
-                      );
-                    })}
-
-                    <View style={styles.commentInputRow}>
-                      <TextInput 
-                        style={styles.commentInput} 
-                        placeholder="Write a comment..." 
-                        placeholderTextColor="#52525B"
-                        value={modalCommentInput}
-                        onChangeText={setModalCommentInput}
-                      />
-                      <TouchableOpacity style={styles.commentSendBtn} onPress={() => handleAddComment(selectedPostModal.id, true)} activeOpacity={0.85}>
-                        <Ionicons name="send" size={14} color="#09090B" />
-                      </TouchableOpacity>
-                    </View>
+                    </TouchableOpacity>
                   </View>
 
                 </View>
@@ -1928,28 +2028,29 @@ const styles = StyleSheet.create({
   postTime: { color: '#71717A', fontSize: 11 },
 
   postText: { color: '#E4E4E7', fontSize: 14, marginBottom: 12, lineHeight: 20 },
-  postImageBox: { height: 220, backgroundColor: '#09090B', borderRadius: 14, overflow: 'hidden', marginBottom: 12, borderWidth: 1, borderColor: '#27272A', position: 'relative' },
+  postImageBox: { height: 320, backgroundColor: '#09090B', borderRadius: 14, overflow: 'hidden', marginBottom: 12, borderWidth: 1, borderColor: '#27272A', position: 'relative' },
   postImageContent: { width: '100%', height: '100%' },
 
-  postActionsRow: { flexDirection: 'row', gap: 20, marginBottom: 12, borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 12 },
+  postActionsRow: { flexDirection: 'row', gap: 20, borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 12 },
   actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   actionText: { color: '#A1A1AA', fontSize: 13, fontWeight: '600' },
 
-  commentsSection: { borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 10 },
-  commentRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 8 },
-  commentAvatar: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
-  commentAvatarPlaceholder: { width: 30, height: 30, borderRadius: 15, borderWidth: 1, borderColor: '#EAB308', backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center' },
+  commentRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10 },
+  commentAvatar: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
+  commentAvatarPlaceholder: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: '#EAB308', backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center' },
   commentUser: { color: '#EAB308', fontSize: 12, fontWeight: '700' },
-  commentText: { color: '#D4D4D8', fontSize: 12 },
+  commentText: { color: '#D4D4D8', fontSize: 13 },
   commentTimeText: { color: '#71717A', fontSize: 10 },
-  commentInputRow: { flexDirection: 'row', gap: 8, marginTop: 8, alignItems: 'center' },
-  commentInput: { flex: 1, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 12, height: 38, color: '#FAFAFA', paddingHorizontal: 12, fontSize: 12 },
-  commentSendBtn: { backgroundColor: '#EAB308', width: 34, height: 38, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  
+  commentsModalContent: { backgroundColor: '#121215', borderRadius: 28, padding: 20, borderWidth: 1, borderColor: '#27272A', width: '100%', maxWidth: 400, height: '75%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 10 },
+  commentInputRow: { flexDirection: 'row', gap: 8, alignItems: 'center', borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 12, marginTop: 4 },
+  commentInput: { flex: 1, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 12, height: 42, color: '#FAFAFA', paddingHorizontal: 12, fontSize: 13 },
+  commentSendBtn: { backgroundColor: '#EAB308', width: 38, height: 42, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
 
   storyModalOverlay: { flex: 1, backgroundColor: 'rgba(9,9,11,0.95)', justifyContent: 'center', alignItems: 'center', position: 'relative' },
   closeStoryBtn: { position: 'absolute', top: 50, right: 20, zIndex: 20, backgroundColor: '#18181B', width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#27272A' },
-  storyViewerScrollContentContainer: { flexGrow: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 40, width: '100%' },
-  storyViewerCard: { width: width * 0.9, backgroundColor: '#121215', borderRadius: 24, overflow: 'hidden', alignItems: 'center', position: 'relative', paddingBottom: 20, borderWidth: 1, borderColor: '#27272A' },
+  storyViewerScrollContentContainer: { flexGrow: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 10, width: '100%' },
+  storyViewerCard: { width: width * 0.96, height: height * 0.92, backgroundColor: '#121215', borderRadius: 24, overflow: 'hidden', alignItems: 'center', position: 'relative', paddingBottom: 15, borderWidth: 1, borderColor: '#27272A' },
   storyEditorCard: { width: '92%', height: '88%', backgroundColor: '#121215', borderRadius: 24, overflow: 'hidden', alignItems: 'center', padding: 16, borderWidth: 1, borderColor: '#27272A' },
   
   storyCanvasBox: { width: '100%', height: '52%', position: 'relative', justifyContent: 'center', alignItems: 'center', borderRadius: 16, overflow: 'hidden', backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A' },
@@ -1970,35 +2071,38 @@ const styles = StyleSheet.create({
   activeBgChip: { borderColor: '#EAB308', backgroundColor: '#27272A' },
   bgOptionText: { color: '#FAFAFA', fontSize: 11, fontWeight: '700' },
 
-  fullStoryImage: { width: '100%', height: 300, resizeMode: 'cover' },
+  /* קונטיינר וידאו תואם למסך מלא עד הסוף (flex: 1) */
+  fullStoryMediaBox: { width: '100%', flex: 1, backgroundColor: '#000', overflow: 'hidden' },
+  fullStoryImage: { width: '100%', height: '100%', resizeMode: 'cover' },
+  fullStoryVideo: { width: '100%', height: '100%' },
   fullStoryName: { color: '#FAFAFA', fontSize: 14, fontWeight: '700' },
   
-  storyHeaderUserRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', paddingHorizontal: 16, paddingVertical: 12 },
+  storyHeaderUserRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', paddingHorizontal: 16, paddingVertical: 8 },
   storyHeaderUserBtn: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   storyHeaderAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
 
-  storyProgressBarsRow: { flexDirection: 'row', width: '92%', height: 3, backgroundColor: '#27272A', marginTop: 14, gap: 4, borderRadius: 2, overflow: 'hidden' },
+  storyProgressBarsRow: { flexDirection: 'row', width: '92%', height: 3, backgroundColor: '#27272A', marginTop: 8, gap: 4, borderRadius: 2, overflow: 'hidden' },
   storyProgressBarContainer: { flex: 1, height: '100%', backgroundColor: '#3F3F46', overflow: 'hidden' },
   storyProgressBarFill: { height: '100%', backgroundColor: '#EAB308' },
 
-  storyLikeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, backgroundColor: '#18181B', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#27272A' },
-  creatorInsightsBox: { width: '90%', backgroundColor: '#18181B', borderRadius: 14, padding: 10, marginTop: 10, borderWidth: 1, borderColor: '#EAB308' },
-  creatorInsightsTitle: { color: '#EAB308', fontWeight: 'bold', fontSize: 12, marginBottom: 4 },
-  viewerItemRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#09090B', padding: 4, borderRadius: 8, marginTop: 3, borderWidth: 1, borderColor: '#27272A' },
+  storyLikeRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6, backgroundColor: '#18181B', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: '#27272A' },
+  creatorInsightsBox: { width: '90%', backgroundColor: '#18181B', borderRadius: 14, padding: 8, marginTop: 6, borderWidth: 1, borderColor: '#EAB308' },
+  creatorInsightsTitle: { color: '#EAB308', fontWeight: 'bold', fontSize: 12, marginBottom: 2 },
+  viewerItemRow: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#09090B', padding: 4, borderRadius: 8, marginTop: 2, borderWidth: 1, borderColor: '#27272A' },
   viewerAvatar: { width: 22, height: 22, borderRadius: 11, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
-  storyCommentItem: { flexDirection: 'row', backgroundColor: '#09090B', padding: 6, borderRadius: 8, marginTop: 4, borderWidth: 1, borderColor: '#27272A' },
+  storyCommentItem: { flexDirection: 'row', backgroundColor: '#09090B', padding: 4, borderRadius: 8, marginTop: 2, borderWidth: 1, borderColor: '#27272A' },
 
-  storyCommentInputRow: { flexDirection: 'row', width: '90%', marginTop: 8, gap: 8, alignItems: 'center' },
-  storyCommentInputField: { flex: 1, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 12, height: 38, color: '#FAFAFA', paddingHorizontal: 12, fontSize: 12 },
-  storyCommentSendBtn: { backgroundColor: '#EAB308', width: 36, height: 38, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  storyCommentInputRow: { flexDirection: 'row', width: '90%', marginTop: 6, gap: 8, alignItems: 'center' },
+  storyCommentInputField: { flex: 1, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 12, height: 36, color: '#FAFAFA', paddingHorizontal: 12, fontSize: 12 },
+  storyCommentSendBtn: { backgroundColor: '#EAB308', width: 36, height: 36, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
 
-  deleteStoryIconBtn: { position: 'absolute', top: 64, left: 16, backgroundColor: '#18181B', width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', zIndex: 20, borderWidth: 1, borderColor: '#27272A' },
+  deleteStoryIconBtn: { position: 'absolute', top: 52, left: 16, backgroundColor: '#18181B', width: 34, height: 34, borderRadius: 17, justifyContent: 'center', alignItems: 'center', zIndex: 20, borderWidth: 1, borderColor: '#27272A' },
 
-  storyTapLeft: { position: 'absolute', top: 60, left: 0, width: '40%', height: 300, zIndex: 10 },
-  storyTapRight: { position: 'absolute', top: 60, right: 0, width: '40%', height: 300, zIndex: 10 },
+  storyTapLeft: { position: 'absolute', top: 45, left: 0, width: '40%', height: '85%', zIndex: 10 },
+  storyTapRight: { position: 'absolute', top: 45, right: 0, width: '40%', height: '85%', zIndex: 10 },
 
   captionOverlayBox: { position: 'absolute', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, maxWidth: '85%', alignSelf: 'center' },
-  captionViewerBox: { position: 'absolute', top: 160, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, maxWidth: '85%', alignSelf: 'center', zIndex: 5 },
+  captionViewerBox: { position: 'absolute', top: 200, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, maxWidth: '85%', alignSelf: 'center', zIndex: 5 },
   captionOverlayText: { textAlign: 'center' },
 
   storyTextInput: { width: '100%', backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 12, color: '#FAFAFA', paddingHorizontal: 14, height: 44, marginBottom: 12, fontSize: 13 },
@@ -2049,6 +2153,7 @@ const styles = StyleSheet.create({
   postsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 2 },
   postThumbnailBox: { width: (width * 0.85) / 3 - 4, height: (width * 0.85) / 3 - 4, backgroundColor: '#121215', borderRadius: 8, overflow: 'hidden' },
   postThumbnailImage: { width: '100%', height: '100%' },
+  videoBadgeOverlay: { position: 'absolute', top: 6, right: 6, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 10, width: 22, height: 22, justifyContent: 'center', alignItems: 'center' },
   emptyPostsBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30, backgroundColor: '#18181B', borderRadius: 14, borderWidth: 1, borderColor: '#27272A' },
   emptyPostsText: { color: '#71717A', fontSize: 12, marginTop: 6 },
 

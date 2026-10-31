@@ -3,13 +3,21 @@ import { Platform } from 'react-native';
 import { Slot } from 'expo-router';
 import { AuthProvider } from '../context/AuthContext';
 import Purchases from 'react-native-purchases';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 
 export default function RootLayout() {
   useEffect(() => {
-    // אתחול ספרית התשלומים של RevenueCat בעליית האפליקציה
-    Purchases.setDebugLogsEnabled(true); // מומלץ לשלב בזמן פיתוח ובדיקות
+    // בדיקה האם אנחנו רצים בסביבת Expo Go או ב-Web
+    const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 
-    // אתחול לפי פלטפורמה (יש להחליף מחר במפתחות האמיתיים שתקבל מ-RevenueCat)
+    if (Platform.OS === 'web' || isExpoGo) {
+      console.log('RevenueCat SDK is disabled in Expo Go / Web mode for local development.');
+      return;
+    }
+
+    // אתחול ספרית התשלומים של RevenueCat בעליית האפליקציה (במכשיר נייטיב אמיתי / Build)
+    Purchases.setDebugLogsEnabled(true);
+
     if (Platform.OS === 'ios') {
       Purchases.configure({ apiKey: 'appl_your_ios_api_key_here' });
     } else if (Platform.OS === 'android') {
