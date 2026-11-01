@@ -21,7 +21,9 @@ type UserProfile = {
   sport?: string;
   followers?: string[];
   following?: string[];
+  pendingRequests?: string[];
   isVip?: boolean;
+  isPrivate?: boolean;
 };
 
 type Comment = {
@@ -94,8 +96,6 @@ function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boole
   );
 }
 
-// תצוגה מקדימה שקטה של הפריים הראשון בסרטון בתוך רשת הפרופיל.
-// הסרטון אינו מתנגן אוטומטית; הניגון המלא מתבצע רק לאחר פתיחת הפוסט.
 function ProfileVideoThumbnail({ uri }: { uri: string }) {
   const player = useVideoPlayer(uri, player => {
     player.loop = false;
@@ -327,22 +327,36 @@ export default function DiscoverScreen() {
 
   const handleToggleFollowTarget = async () => {
     if (!targetProfileUser || !currentUser) return;
-    const isFollowing = targetProfileUser.followers?.includes(currentUser.uid);
+    const isApproved = targetProfileUser.followers?.includes(currentUser.uid);
+    const hasRequested = targetProfileUser.pendingRequests?.includes(currentUser.uid);
+    const isPrivateAccount = targetProfileUser.isPrivate === true;
 
     try {
       const myRef = doc(db, 'users', currentUser.uid);
       const targetRef = doc(db, 'users', targetProfileUser.uid);
 
-      if (isFollowing) {
-        await updateDoc(myRef, { following: arrayRemove(targetProfileUser.uid) });
+      if (isApproved) {
         await updateDoc(targetRef, { followers: arrayRemove(currentUser.uid) });
+        await updateDoc(myRef, { following: arrayRemove(targetProfileUser.uid) });
         setTargetProfileUser({
           ...targetProfileUser,
           followers: targetProfileUser.followers?.filter(id => id !== currentUser.uid)
         });
+      } else if (hasRequested) {
+        await updateDoc(targetRef, { pendingRequests: arrayRemove(currentUser.uid) });
+        setTargetProfileUser({
+          ...targetProfileUser,
+          pendingRequests: targetProfileUser.pendingRequests?.filter(id => id !== currentUser.uid)
+        });
+      } else if (isPrivateAccount) {
+        await updateDoc(targetRef, { pendingRequests: arrayUnion(currentUser.uid) });
+        setTargetProfileUser({
+          ...targetProfileUser,
+          pendingRequests: [...(targetProfileUser.pendingRequests || []), currentUser.uid]
+        });
       } else {
-        await updateDoc(myRef, { following: arrayUnion(targetProfileUser.uid) });
         await updateDoc(targetRef, { followers: arrayUnion(currentUser.uid) });
+        await updateDoc(myRef, { following: arrayUnion(targetProfileUser.uid) });
         setTargetProfileUser({
           ...targetProfileUser,
           followers: [...(targetProfileUser.followers || []), currentUser.uid]
@@ -423,7 +437,14 @@ export default function DiscoverScreen() {
 
   const vipAthletes = allUsers.filter(u => u.isVip && u.uid !== currentUser?.uid);
   const targetSportsList = targetProfileUser?.sports || (targetProfileUser?.sport ? [targetProfileUser.sport] : ['Football']);
-  const isFollowingTarget = targetProfileUser?.followers?.includes(currentUser?.uid || '');
+  
+  const isViewingMyOwnProfile = targetProfileUser?.uid === currentUser?.uid;
+  const isApprovedFollower = targetProfileUser?.followers?.includes(currentUser?.uid || '');
+  const hasRequestedFollow = targetProfileUser?.pendingRequests?.includes(currentUser?.uid || '');
+  const isPrivateAccount = targetProfileUser?.isPrivate === true;
+
+  // פתוח תמיד אם זה אתה, אם החשבון ציבורי (!isPrivateAccount), או אם אתה עוקב מאושר
+  const canViewPostsContent = isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower;
 
   const targetFollowersList = allUsers.filter(u => targetProfileUser?.followers?.includes(u.uid));
   const targetFollowingList = allUsers.filter(u => targetProfileUser?.following?.includes(u.uid));
@@ -515,6 +536,7 @@ export default function DiscoverScreen() {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                   <Text style={styles.userName}>{user.name}</Text>
                   {user.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                  {user.isPrivate && <Ionicons name="lock-closed" size={12} color="#EF4444" />}
                 </View>
                 <Text style={styles.userMeta}>📍 {user.city || 'Netanya'} | 🎂 {user.age || 20} yrs</Text>
               </View>
@@ -525,7 +547,7 @@ export default function DiscoverScreen() {
 
       </ScrollView>
 
-      {/* מודל פרופיל שחקן מותאם אישית זהה לחלוטין למסך הבית */}
+      {/* מודל פרופיל שחקן במבנה אינסטגרם */}
       <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
@@ -575,6 +597,7 @@ export default function DiscoverScreen() {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
                     <Text style={styles.profileName}>{targetProfileUser.name}</Text>
                     {targetProfileUser.isVip && <Ionicons name="checkmark-circle" size={18} color="#EAB308" />}
+                    {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
                   </View>
                   
                   <View style={styles.sportsTagsRow}>
@@ -590,6 +613,7 @@ export default function DiscoverScreen() {
                   </Text>
                 </View>
 
+                {/* סטטיסטיקות תמיד גלויות כמו באינסטגרם */}
                 <View style={styles.statsRow}>
                   <TouchableOpacity style={styles.statBox} onPress={() => setTargetActiveModalList('followers')} activeOpacity={0.8}>
                     <Text style={styles.statNumber}>{targetProfileUser.followers?.length || 0}</Text>
@@ -610,12 +634,21 @@ export default function DiscoverScreen() {
                 {targetProfileUser.uid !== currentUser?.uid && currentUser && (
                   <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
                     <TouchableOpacity 
-                      style={[styles.profileFollowBtn, isFollowingTarget && styles.profileFollowingBtn, { flex: 1 }]} 
+                      style={[
+                        styles.profileFollowBtn, 
+                        isApprovedFollower && styles.profileFollowingBtn,
+                        hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
+                        { flex: 1 }
+                      ]} 
                       onPress={handleToggleFollowTarget}
                       activeOpacity={0.85}
                     >
-                      <Text style={[styles.profileFollowBtnText, isFollowingTarget && styles.profileFollowingBtnText]}>
-                        {isFollowingTarget ? 'Following ✓' : 'Follow Player 🤝'}
+                      <Text style={[
+                        styles.profileFollowBtnText, 
+                        isApprovedFollower && styles.profileFollowingBtnText,
+                        hasRequestedFollow && { color: '#FAFAFA' }
+                      ]}>
+                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
                       </Text>
                     </TouchableOpacity>
 
@@ -634,40 +667,51 @@ export default function DiscoverScreen() {
                   </View>
                 )}
 
-                <View style={styles.postsSectionHeader}>
-                  <Ionicons name="grid-outline" size={18} color="#EAB308" />
-                  <Text style={styles.sectionTitle}>Player Posts</Text>
-                </View>
+                {/* אזור הפוסטים: פתוח אם החשבון ציבורי או שאושרת, נעול אם החשבון פרטי וטרם אושרת */}
+                {canViewPostsContent ? (
+                  <>
+                    <View style={styles.postsSectionHeader}>
+                      <Ionicons name="grid-outline" size={18} color="#EAB308" />
+                      <Text style={styles.sectionTitle}>Player Posts</Text>
+                    </View>
 
-                {targetUserPosts.length === 0 ? (
-                  <View style={styles.emptyPostsBox}>
-                    <Ionicons name="images-outline" size={32} color="#52525B" />
-                    <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
-                  </View>
+                    {targetUserPosts.length === 0 ? (
+                      <View style={styles.emptyPostsBox}>
+                        <Ionicons name="images-outline" size={32} color="#52525B" />
+                        <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.postsGrid}>
+                        {targetUserPosts.map(post => {
+                          const isVid = post.mediaType === 'video';
+                          return (
+                            <TouchableOpacity 
+                              key={post.id} 
+                              style={styles.postThumbnailBox} 
+                              onPress={() => setSelectedPostModal(post)} 
+                              activeOpacity={0.7}
+                            >
+                              {isVid ? (
+                                <View style={[styles.postThumbnailImage, { backgroundColor: '#000', position: 'relative' }]}>
+                                  {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} /> : null}
+                                  <View style={styles.videoBadgeOverlay}>
+                                    <Ionicons name="play" size={14} color="#FAFAFA" />
+                                  </View>
+                                </View>
+                              ) : (
+                                <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
+                              )}
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </>
                 ) : (
-                  <View style={styles.postsGrid}>
-                    {targetUserPosts.map(post => {
-                      const isVid = post.mediaType === 'video';
-                      return (
-                        <TouchableOpacity 
-                          key={post.id} 
-                          style={styles.postThumbnailBox} 
-                          onPress={() => setSelectedPostModal(post)} 
-                          activeOpacity={0.7}
-                        >
-                          {isVid ? (
-                            <View style={[styles.postThumbnailImage, { backgroundColor: '#000', position: 'relative' }]}>
-                              {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} /> : null}
-                              <View style={styles.videoBadgeOverlay}>
-                                <Ionicons name="play" size={14} color="#FAFAFA" />
-                              </View>
-                            </View>
-                          ) : (
-                            <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
-                          )}
-                        </TouchableOpacity>
-                      );
-                    })}
+                  <View style={styles.privateAccountBox}>
+                    <Ionicons name="lock-closed" size={40} color="#EAB308" style={{ marginBottom: 8 }} />
+                    <Text style={styles.privateAccountTitle}>This Account is Private 🔒</Text>
+                    <Text style={styles.privateAccountText}>Follow this account to see their photos and videos.</Text>
                   </View>
                 )}
 
@@ -1017,6 +1061,10 @@ const styles = StyleSheet.create({
 
   emptyPostsBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30, backgroundColor: '#18181B', borderRadius: 14, borderWidth: 1, borderColor: '#27272A' },
   emptyPostsText: { color: '#71717A', fontSize: 12, marginTop: 6 },
+
+  privateAccountBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40, paddingHorizontal: 20, backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', marginTop: 10 },
+  privateAccountTitle: { color: '#FAFAFA', fontSize: 16, fontWeight: 'bold', marginBottom: 6 },
+  privateAccountText: { color: '#A1A1AA', fontSize: 12, textAlign: 'center', lineHeight: 18 },
 
   profileFollowBtn: { backgroundColor: '#EAB308', borderRadius: 12, height: 44, justifyContent: 'center', alignItems: 'center' },
   profileFollowBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },

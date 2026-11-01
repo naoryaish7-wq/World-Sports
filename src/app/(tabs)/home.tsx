@@ -12,7 +12,6 @@ import { useVideoPlayer, VideoView } from 'expo-video';
 
 const { width, height } = Dimensions.get('window');
 
-// ניהול גלובלי של כל נגני הווידאו הפעילים באפליקציה למניעת השמעה מקבילה
 const activeVideoPlayers = new Set<any>();
 
 type Comment = {
@@ -83,6 +82,16 @@ type GroupedStory = {
   hasUnwatched?: boolean;
 };
 
+type AppNotification = {
+  id: string;
+  senderUid: string;
+  type: 'follow_request' | 'like' | 'comment';
+  message: string;
+  isRead?: boolean;
+  status?: 'pending' | 'accepted' | 'rejected';
+  createdAt?: any;
+};
+
 const getTimeAgo = (timestamp: any) => {
   if (!timestamp) return 'Just now';
   try {
@@ -105,7 +114,6 @@ const getTimeAgo = (timestamp: any) => {
   }
 };
 
-// נגן וידאו חכם לפוסטים: מפסיק לחלוטין שמע וניגון ברגע שאינו פעיל במסך
 function PostVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean }) {
   const player = useVideoPlayer(uri, player => {
     player.loop = true;
@@ -159,7 +167,6 @@ function PostVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean }) 
   );
 }
 
-// תצוגה מקדימה של סרטון בפרופיל: מציג את הפריים הראשון בלי להתחיל לנגן
 function ProfileVideoThumbnail({ uri }: { uri: string }) {
   const player = useVideoPlayer(uri, player => {
     player.loop = false;
@@ -191,7 +198,6 @@ function ProfileVideoThumbnail({ uri }: { uri: string }) {
   );
 }
 
-// נגן סטורי: מתנגן רק כאשר מסך הבית והסטורי פעילים
 function StoryVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean }) {
   const player = useVideoPlayer(uri, player => {
     player.loop = true;
@@ -242,17 +248,17 @@ export default function HomeScreen() {
   const { user } = useAuth();
   const [isScreenFocused, setIsScreenFocused] = useState(true);
 
-useFocusEffect(
-  useCallback(() => {
-    setIsScreenFocused(true);
+  useFocusEffect(
+    useCallback(() => {
+      setIsScreenFocused(true);
 
-    return () => {
-      setIsScreenFocused(false);
-      stopAllVideos();
-      setActiveGroupIndex(null);
-    };
-  }, [])
-);
+      return () => {
+        setIsScreenFocused(false);
+        stopAllVideos();
+        setActiveGroupIndex(null);
+      };
+    }, [])
+  );
 
   const [liveAvatar, setLiveAvatar] = useState(user?.avatarUrl || '');
   const [liveName, setLiveName] = useState(user?.name || 'Player');
@@ -261,6 +267,10 @@ useFocusEffect(
   const [followingList, setFollowingList] = useState<string[]>([]);
   const [currentUserId, setCurrentUserId] = useState('');
   const [allUsersList, setAllUsersList] = useState<any[]>([]);
+  const [liveUserData, setLiveUserData] = useState<any>(null);
+
+  const [notificationsModalVisible, setNotificationsModalVisible] = useState(false);
+  const [notificationsList, setNotificationsList] = useState<AppNotification[]>([]);
 
   const [zoomedAvatarUri, setZoomedAvatarUri] = useState<string | null>(null);
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
@@ -274,8 +284,8 @@ useFocusEffect(
   }, []);
 
   useEffect(() => {
-    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
-      const users = snapshot.docs.map(docSnap => ({
+    const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot: any) => {
+      const users = snapshot.docs.map((docSnap: any) => ({
         uid: docSnap.id,
         ...(docSnap.data() as any)
       }));
@@ -291,9 +301,10 @@ useFocusEffect(
         if (savedEmail) {
           const userId = savedEmail.toLowerCase().replace(/[^a-z0-9]/g, '_');
           setCurrentUserId(userId);
-          const unsubscribe = onSnapshot(doc(db, 'users', userId), (docSnap) => {
+          const unsubscribe = onSnapshot(doc(db, 'users', userId), (docSnap: any) => {
             if (docSnap.exists()) {
               const data = docSnap.data();
+              setLiveUserData({ uid: docSnap.id, ...data });
               if (data.avatar !== undefined) setLiveAvatar(data.avatar);
               if (data.name) setLiveName(data.name);
               if (data.country && data.city) {
@@ -318,17 +329,33 @@ useFocusEffect(
     fetchLiveUserData();
   }, []);
 
+  useEffect(() => {
+    if (!currentUserId) return;
+    const notifRef = collection(db, 'users', currentUserId, 'notifications');
+    const q = query(notifRef, orderBy('createdAt', 'desc'));
+
+    const unsubscribeNotifs = onSnapshot(q, (snapshot) => {
+      const loadedNotifs: AppNotification[] = snapshot.docs.map(docSnap => ({
+        id: docSnap.id,
+        ...(docSnap.data() as any)
+      }));
+      setNotificationsList(loadedNotifs);
+    });
+
+    return () => unsubscribeNotifs();
+  }, [currentUserId]);
+
   const [stories, setStories] = useState<Story[]>([]);
   const [posts, setPosts] = useState<Post[]>([]);
   const [storyCommentInput, setStoryCommentInput] = useState('');
 
   useEffect(() => {
     const q = query(collection(db, 'stories'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
+    const unsubscribe = onSnapshot(q, (snapshot: any) => {
       const now = new Date().getTime();
       const storiesList: Story[] = [];
 
-      snapshot.docs.forEach(docSnap => {
+      snapshot.docs.forEach((docSnap: any) => {
         const data = docSnap.data();
         const createdAtDate = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || now);
         const diffHours = (now - createdAtDate.getTime()) / (1000 * 60 * 60);
@@ -365,8 +392,8 @@ useFocusEffect(
       orderBy('createdAt', 'desc'),
       limit(15)
     );
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const postsList: Post[] = snapshot.docs.map(docSnap => {
+    const unsubscribe = onSnapshot(q, (snapshot: any) => {
+      const postsList: Post[] = snapshot.docs.map((docSnap: any) => {
         const data = docSnap.data();
         const likesList = data.likesList || [];
         
@@ -392,18 +419,6 @@ useFocusEffect(
         };
       });
       setPosts(postsList);
-
-      setCommentsModalPost(prevModalPost => {
-        if (!prevModalPost) return null;
-        const updatedCurrentPost = postsList.find(p => p.id === prevModalPost.id);
-        return updatedCurrentPost || prevModalPost;
-      });
-
-      setSelectedPostModal(prevSelectedPost => {
-        if (!prevSelectedPost) return null;
-        const updatedSelectedPost = postsList.find(p => p.id === prevSelectedPost.id);
-        return updatedSelectedPost || prevSelectedPost;
-      });
     }, (error) => {
       console.error('Error listening to posts:', error);
     });
@@ -570,7 +585,6 @@ useFocusEffect(
   const [commentsModalPost, setCommentsModalPost] = useState<Post | null>(null);
   const [modalCommentInput, setModalCommentInput] = useState('');
 
-  // עצירת כל נגני הווידאו באופן מוחלט בכל מעבר לפרופיל או מודל
   const stopAllVideos = () => {
     activeVideoPlayers.forEach(p => {
       try {
@@ -582,7 +596,6 @@ useFocusEffect(
     setActiveVideoId(null);
   };
 
-  // בעת יציאה מעמוד הבית (למשל מעבר לטאב אחר) עוצרים גם פוסטים וגם סטוריז.
   useEffect(() => {
     if (!isScreenFocused) {
       stopAllVideos();
@@ -647,7 +660,6 @@ useFocusEffect(
     fetchTargetUser();
   }, [selectedUserModalId]);
 
-  // טוענים את כל הפוסטים של המשתמש שמוצג בפרופיל, ולא רק את 15 הפוסטים שבעמוד הבית.
   useEffect(() => {
     if (!targetProfileUser) {
       setTargetUserPosts([]);
@@ -660,8 +672,8 @@ useFocusEffect(
     const targetEmail = normalize(targetProfileUser.email || targetProfileUser.userEmail);
     const targetEmailId = targetEmail ? targetEmail.replace(/[^a-z0-9]/g, '_') : '';
 
-    const unsubscribe = onSnapshot(collection(db, 'posts'), (snapshot) => {
-      const profilePosts: Post[] = snapshot.docs.map(docSnap => {
+    const unsubscribe = onSnapshot(collection(db, 'posts'), (snapshot: any) => {
+      const profilePosts: Post[] = snapshot.docs.map((docSnap: any) => {
         const data = docSnap.data();
         const likesList = data.likesList || [];
         return {
@@ -681,7 +693,7 @@ useFocusEffect(
           comments: data.comments || [],
           createdAt: data.createdAt,
         };
-      }).filter(post => {
+      }).filter((post: any) => {
         const postUserId = normalize(post.userId);
         const postEmail = normalize(post.userEmail);
         const postName = normalize(post.authorName);
@@ -705,7 +717,7 @@ useFocusEffect(
 
       profilePosts.sort((a, b) => getPostTime(b.createdAt) - getPostTime(a.createdAt));
       setTargetUserPosts(profilePosts);
-    }, (error) => {
+    }, (error: any) => {
       console.error('Error loading profile posts:', error);
       setTargetUserPosts([]);
     });
@@ -713,41 +725,91 @@ useFocusEffect(
     return () => unsubscribe();
   }, [targetProfileUser, currentUserId]);
 
-  useEffect(() => {
-    if (!currentUserId || !chatTargetUser || !chatModalVisible) return;
-    const chatId = [currentUserId, chatTargetUser.uid].sort().join('_');
-    const messagesRef = collection(db, 'chats', chatId, 'messages');
-    const q = query(messagesRef, orderBy('createdAt', 'asc'));
+  const handleAcceptRequest = async (notifId: string, requesterUid: string) => {
+    if (!currentUserId) return;
+    try {
+      const myRef = doc(db, 'users', currentUserId);
+      const requesterRef = doc(db, 'users', requesterUid);
+      const notifRef = doc(db, 'users', currentUserId, 'notifications', notifId);
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs: any[] = snapshot.docs.map(docSnap => ({
-        id: docSnap.id,
-        ...(docSnap.data() as any)
-      }));
-      setChatMessages(msgs);
-    });
-    return () => unsubscribe();
-  }, [currentUserId, chatTargetUser, chatModalVisible]);
+      await updateDoc(myRef, {
+        followers: arrayUnion(requesterUid)
+      });
+
+      await updateDoc(requesterRef, {
+        following: arrayUnion(currentUserId)
+      });
+
+      await updateDoc(notifRef, {
+        status: 'accepted',
+        message: 'You accepted this follow request.'
+      });
+
+      Alert.alert('Success', 'Follow request approved! 🎉');
+    } catch (error) {
+      console.error('Error accepting request:', error);
+    }
+  };
+
+  const handleRejectRequest = async (notifId: string, requesterUid: string) => {
+    if (!currentUserId) return;
+    try {
+      const notifRef = doc(db, 'users', currentUserId, 'notifications', notifId);
+
+      await updateDoc(notifRef, {
+        status: 'rejected',
+        message: 'You declined this follow request.'
+      });
+
+      Alert.alert('Request Declined', 'The follow request was updated.');
+    } catch (error) {
+      console.error('Error rejecting request:', error);
+    }
+  };
 
   const handleToggleFollowTarget = async () => {
     if (!targetProfileUser || !currentUserId) return;
-    const isFollowing = targetProfileUser.followers?.includes(currentUserId);
+    
+    const isApproved = targetProfileUser.followers?.includes(currentUserId);
+    const hasRequested = targetProfileUser.pendingRequests?.includes(currentUserId);
+    const isPrivateAccount = targetProfileUser.isPrivate === true;
 
     try {
       const myRef = doc(db, 'users', currentUserId);
       const targetRef = doc(db, 'users', targetProfileUser.uid);
 
-      if (isFollowing) {
-        await updateDoc(myRef, { following: arrayRemove(targetProfileUser.uid) });
+      if (isApproved) {
         await updateDoc(targetRef, { followers: arrayRemove(currentUserId) });
+        await updateDoc(myRef, { following: arrayRemove(targetProfileUser.uid) });
         setFollowingList(prev => prev.filter(id => id !== targetProfileUser.uid));
         setTargetProfileUser({
           ...targetProfileUser,
           followers: targetProfileUser.followers?.filter((id: string) => id !== currentUserId)
         });
+      } else if (hasRequested) {
+        await updateDoc(targetRef, { pendingRequests: arrayRemove(currentUserId) });
+        setTargetProfileUser({
+          ...targetProfileUser,
+          pendingRequests: targetProfileUser.pendingRequests?.filter((id: string) => id !== currentUserId)
+        });
+      } else if (isPrivateAccount) {
+        await updateDoc(targetRef, { pendingRequests: arrayUnion(currentUserId) });
+        
+        await addDoc(collection(db, 'users', targetProfileUser.uid, 'notifications'), {
+          senderUid: currentUserId,
+          type: 'follow_request',
+          message: `${liveName} requested to follow you.`,
+          status: 'pending',
+          createdAt: serverTimestamp()
+        });
+
+        setTargetProfileUser({
+          ...targetProfileUser,
+          pendingRequests: [...(targetProfileUser.pendingRequests || []), currentUserId]
+        });
       } else {
-        await updateDoc(myRef, { following: arrayUnion(targetProfileUser.uid) });
         await updateDoc(targetRef, { followers: arrayUnion(currentUserId) });
+        await updateDoc(myRef, { following: arrayUnion(targetProfileUser.uid) });
         setFollowingList(prev => [...prev, targetProfileUser.uid]);
         setTargetProfileUser({
           ...targetProfileUser,
@@ -851,6 +913,16 @@ useFocusEffect(
         likesList: updatedLikesList
       });
 
+      // יצירת התראה בלייק חדש (אם המשתמש לא עושה לייק לעצמו והוסיף לייק כעת)
+      if (!hasLiked && post.userId && post.userId !== currentUserId) {
+        await addDoc(collection(db, 'users', post.userId, 'notifications'), {
+          senderUid: currentUserId,
+          type: 'like',
+          message: `${liveName} liked your post.`,
+          createdAt: serverTimestamp()
+        });
+      }
+
       if (selectedPostModal && selectedPostModal.id === postId) {
         setSelectedPostModal({
           ...selectedPostModal,
@@ -886,6 +958,15 @@ useFocusEffect(
         : [...likesList, currentUserId];
 
       await updateDoc(storyRef, { likesList: updatedLikes });
+
+      if (!hasLiked && story.userUid && story.userUid !== currentUserId) {
+        await addDoc(collection(db, 'users', story.userUid, 'notifications'), {
+          senderUid: currentUserId,
+          type: 'like',
+          message: `${liveName} liked your story.`,
+          createdAt: serverTimestamp()
+        });
+      }
     } catch (e) {
       console.error('Error toggling story like:', e);
     }
@@ -909,6 +990,15 @@ useFocusEffect(
         const updatedStoryComments = [...currentComments, newComment];
         await updateDoc(storyRef, { storyComments: updatedStoryComments });
         
+        if (story.userUid && story.userUid !== currentUserId) {
+          await addDoc(collection(db, 'users', story.userUid, 'notifications'), {
+            senderUid: currentUserId,
+            type: 'comment',
+            message: `${liveName} replied to your story: "${storyCommentInput.trim()}"`,
+            createdAt: serverTimestamp()
+          });
+        }
+
         setStories(prevStories => prevStories.map(st => st.id === storyId ? { ...st, storyComments: updatedStoryComments } : st));
       }
       setStoryCommentInput('');
@@ -1122,6 +1212,16 @@ useFocusEffect(
       const updatedComments = [...post.comments, newComment];
       await updateDoc(postRef, { comments: updatedComments });
 
+      // יצירת התראה על תגובה חדשה (אם המשתמש לא הגיב לפוסט של עצמו)
+      if (post.userId && post.userId !== currentUserId) {
+        await addDoc(collection(db, 'users', post.userId, 'notifications'), {
+          senderUid: currentUserId,
+          type: 'comment',
+          message: `${liveName} commented on your post: "${text.trim()}"`,
+          createdAt: serverTimestamp()
+        });
+      }
+
       if (isModal) {
         setModalCommentInput('');
         setCommentsModalPost(prev => prev ? { ...prev, comments: updatedComments } : null);
@@ -1139,7 +1239,16 @@ useFocusEffect(
 
   const filteredPosts = posts.filter(post => {
     const matchesSport = userSports.length === 0 || (post.sport && userSports.includes(post.sport)) || !post.sport;
-    return matchesSport;
+    if (!matchesSport) return false;
+
+    const isMine = post.userId === currentUserId || post.authorName === liveName;
+    if (isMine) return true;
+
+    const postAuthor = allUsersList.find(u => u.uid === post.userId || u.name === post.authorName);
+    if (!postAuthor || !postAuthor.isPrivate) return true;
+
+    const isFollowingAuthor = postAuthor.followers?.includes(currentUserId);
+    return isFollowingAuthor;
   }).sort((a, b) => {
     const authorA = allUsersList.find(u => u.uid === a.userId || u.name === a.authorName);
     const authorB = allUsersList.find(u => u.uid === b.userId || u.name === b.authorName);
@@ -1168,18 +1277,21 @@ useFocusEffect(
   const targetFollowersList = allUsersList.filter(u => targetProfileUser?.followers?.includes(u.uid));
   const targetFollowingList = allUsersList.filter(u => targetProfileUser?.following?.includes(u.uid));
   const targetSportsList = targetProfileUser?.sports || (targetProfileUser?.sport ? [targetProfileUser.sport] : ['Football']);
-  const isFollowingTarget = targetProfileUser?.followers?.includes(currentUserId || '');
+  
   const isViewingMyOwnProfile = targetProfileUser?.uid === currentUserId;
+  const isApprovedFollower = targetProfileUser?.followers?.includes(currentUserId || '');
+  const hasRequestedFollow = targetProfileUser?.pendingRequests?.includes(currentUserId || '');
+  const isPrivateAccount = targetProfileUser?.isPrivate === true;
 
-  const isAnyModalOpen = activeGroupIndex !== null || !!selectedUserModalId || !!selectedPostModal || !!commentsModalPost;
+  const canViewFullProfile = isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower;
 
-  // refs מונעים callback ישן של FlatList מלהשתמש בערכי focus/modal לא מעודכנים.
+  const isAnyModalOpen = activeGroupIndex !== null || !!selectedUserModalId || !!selectedPostModal || !!commentsModalPost || notificationsModalVisible;
+
   const screenFocusedRef = useRef(isScreenFocused);
   const modalOpenRef = useRef(isAnyModalOpen);
   useEffect(() => { screenFocusedRef.current = isScreenFocused; }, [isScreenFocused]);
   useEffect(() => { modalOpenRef.current = isAnyModalOpen; }, [isAnyModalOpen]);
 
-  // הפעלת סרטון רק כאשר לפחות 60% מהפוסט גלויים והמסך הנוכחי בפוקוס.
   const viewabilityConfig = { itemVisiblePercentThreshold: 60 };
   const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<any> }) => {
     if (!screenFocusedRef.current || modalOpenRef.current) {
@@ -1219,11 +1331,24 @@ useFocusEffect(
                   style={styles.notificationBellBtn} 
                   onPress={() => {
                     stopAllVideos();
-                    router.push('/notifications');
+                    setNotificationsModalVisible(true);
                   }}
                   activeOpacity={0.8}
                 >
                   <Ionicons name="notifications-outline" size={20} color="#EAB308" />
+                  {notificationsList.some(n => n.status === 'pending') && (
+                    <View style={{
+                      position: 'absolute',
+                      top: -2,
+                      right: -2,
+                      backgroundColor: '#EF4444',
+                      width: 10,
+                      height: 10,
+                      borderRadius: 5,
+                      borderWidth: 1,
+                      borderColor: '#09090B'
+                    }} />
+                  )}
                 </TouchableOpacity>
 
                 <TouchableOpacity style={styles.createBtn} onPress={() => { stopAllVideos(); setCreatePostVisible(true); }} activeOpacity={0.85}>
@@ -1402,7 +1527,76 @@ useFocusEffect(
         }}
       />
 
-      {/* מודל תגובות */}
+      <Modal visible={notificationsModalVisible} animationType="slide" transparent={true} onRequestClose={() => setNotificationsModalVisible(false)}>
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.modalContentCenter}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Notifications History 🔔</Text>
+              <TouchableOpacity onPress={() => setNotificationsModalVisible(false)} activeOpacity={0.8}>
+                <Ionicons name="close" size={24} color="#FAFAFA" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
+              {notificationsList.length === 0 ? (
+                <View style={{ alignItems: 'center', paddingVertical: 40 }}>
+                  <Ionicons name="notifications-off-outline" size={36} color="#52525B" />
+                  <Text style={{ color: '#71717A', fontSize: 13, marginTop: 10 }}>No notifications yet.</Text>
+                </View>
+              ) : (
+                notificationsList.map((notif) => {
+                  const senderUser = allUsersList.find(u => u.uid === notif.senderUid);
+                  const isPending = notif.status === 'pending';
+
+                  return (
+                    <View key={notif.id} style={styles.listItem}>
+                      <View style={styles.listAvatar}>
+                        {senderUser?.avatar ? (
+                          <Image source={{ uri: senderUser.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
+                        ) : (
+                          <Text style={{color: '#EAB308', fontWeight: 'bold'}}>{senderUser?.name ? senderUser.name[0] : 'U'}</Text>
+                        )}
+                      </View>
+                      
+                      <View style={{flex: 1, marginRight: 8}}>
+                        <Text style={styles.listName}>{notif.message}</Text>
+                        <Text style={styles.listCity}>{getTimeAgo(notif.createdAt)}</Text>
+                      </View>
+
+                      {isPending ? (
+                        <View style={{ flexDirection: 'row', gap: 6 }}>
+                          <TouchableOpacity 
+                            style={{ backgroundColor: '#EAB308', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}
+                            onPress={() => handleAcceptRequest(notif.id, notif.senderUid)}
+                            activeOpacity={0.8}
+                          >
+                            <Text style={{ color: '#09090B', fontWeight: 'bold', fontSize: 11 }}>Accept</Text>
+                          </TouchableOpacity>
+
+                          <TouchableOpacity 
+                            style={{ backgroundColor: '#27272A', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#52525B' }}
+                            onPress={() => handleRejectRequest(notif.id, notif.senderUid)}
+                            activeOpacity={0.8}
+                          >
+                            <Text style={{ color: '#EF4444', fontWeight: 'bold', fontSize: 11 }}>Reject</Text>
+                          </TouchableOpacity>
+                        </View>
+                      ) : notif.status === 'accepted' || notif.status === 'rejected' ? (
+                        <View style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: notif.status === 'accepted' ? '#064E3B' : '#3F3F46' }}>
+                          <Text style={{ color: notif.status === 'accepted' ? '#34D399' : '#A1A1AA', fontSize: 10, fontWeight: 'bold' }}>
+                            {notif.status === 'accepted' ? 'Accepted ✓' : 'Declined ✕'}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={!!commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setCommentsModalPost(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.commentsModalContent}>
@@ -1469,7 +1663,6 @@ useFocusEffect(
         </View>
       </Modal>
 
-      {/* מודל יצירת סטורי */}
       <Modal visible={storyModalVisible} transparent={true} animationType="slide" onRequestClose={() => setStoryModalVisible(false)}>
         <View style={styles.storyModalOverlay}>
           <TouchableOpacity style={styles.closeStoryBtn} onPress={() => setStoryModalVisible(false)} activeOpacity={0.8}>
@@ -1589,7 +1782,6 @@ useFocusEffect(
         </View>
       </Modal>
 
-      {/* מודל צפייה בסטורי */}
       <Modal visible={activeGroupIndex !== null} transparent={true} animationType="fade" onRequestClose={() => setActiveGroupIndex(null)}>
         <View style={styles.storyModalOverlay}>
           <TouchableOpacity style={styles.closeStoryBtn} onPress={() => { setActiveGroupIndex(null); setStoryCommentInput(''); }} activeOpacity={0.8}>
@@ -1793,7 +1985,6 @@ useFocusEffect(
         </View>
       </Modal>
 
-      {/* מודל פרופיל משתמש */}
       <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
@@ -1843,6 +2034,7 @@ useFocusEffect(
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
                     <Text style={styles.profileName}>{targetProfileUser.name}</Text>
                     {targetProfileUser.isVip && <Ionicons name="checkmark-circle" size={18} color="#EAB308" />}
+                    {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
                   </View>
                   
                   <View style={styles.sportsTagsRow}>
@@ -1859,12 +2051,20 @@ useFocusEffect(
                 </View>
 
                 <View style={styles.statsRow}>
-                  <TouchableOpacity style={styles.statBox} onPress={() => setTargetActiveModalList('followers')} activeOpacity={0.8}>
+                  <TouchableOpacity 
+                    style={styles.statBox} 
+                    onPress={() => setTargetActiveModalList('followers')} 
+                    activeOpacity={0.8}
+                  >
                     <Text style={styles.statNumber}>{targetProfileUser.followers?.length || 0}</Text>
                     <Text style={styles.statLabel}>Followers</Text>
                   </TouchableOpacity>
 
-                  <TouchableOpacity style={styles.statBox} onPress={() => setTargetActiveModalList('following')} activeOpacity={0.8}>
+                  <TouchableOpacity 
+                    style={styles.statBox} 
+                    onPress={() => setTargetActiveModalList('following')} 
+                    activeOpacity={0.8}
+                  >
                     <Text style={styles.statNumber}>{targetProfileUser.following?.length || 0}</Text>
                     <Text style={styles.statLabel}>Following</Text>
                   </TouchableOpacity>
@@ -1878,12 +2078,21 @@ useFocusEffect(
                 {!isViewingMyOwnProfile && currentUserId && (
                   <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
                     <TouchableOpacity 
-                      style={[styles.profileFollowBtn, isFollowingTarget && styles.profileFollowingBtn, { flex: 1 }]} 
+                      style={[
+                        styles.profileFollowBtn, 
+                        isApprovedFollower && styles.profileFollowingBtn,
+                        hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
+                        { flex: 1 }
+                      ]} 
                       onPress={handleToggleFollowTarget}
                       activeOpacity={0.85}
                     >
-                      <Text style={[styles.profileFollowBtnText, isFollowingTarget && styles.profileFollowingBtnText]}>
-                        {isFollowingTarget ? 'Following ✓' : 'Follow Player 🤝'}
+                      <Text style={[
+                        styles.profileFollowBtnText, 
+                        isApprovedFollower && styles.profileFollowingBtnText,
+                        hasRequestedFollow && { color: '#FAFAFA' }
+                      ]}>
+                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
                       </Text>
                     </TouchableOpacity>
 
@@ -1903,50 +2112,60 @@ useFocusEffect(
                   </View>
                 )}
 
-                <View style={styles.postsSectionHeader}>
-                  <Ionicons name="grid-outline" size={18} color="#EAB308" />
-                  <Text style={styles.sectionTitle}>Player Posts</Text>
-                </View>
+                {canViewFullProfile ? (
+                  <>
+                    <View style={styles.postsSectionHeader}>
+                      <Ionicons name="grid-outline" size={18} color="#EAB308" />
+                      <Text style={styles.sectionTitle}>Player Posts</Text>
+                    </View>
 
-                {targetUserPosts.length === 0 ? (
-                  <View style={styles.emptyPostsBox}>
-                    <Ionicons name="images-outline" size={32} color="#52525B" />
-                    <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
-                  </View>
+                    {targetUserPosts.length === 0 ? (
+                      <View style={styles.emptyPostsBox}>
+                        <Ionicons name="images-outline" size={32} color="#52525B" />
+                        <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.postsGrid}>
+                        {targetUserPosts.map(post => {
+                          const isVid = post.mediaType === 'video';
+                          return (
+                            <TouchableOpacity 
+                              key={post.id} 
+                              style={styles.postThumbnailBox} 
+                              onPress={() => {
+                                stopAllVideos();
+                                setSelectedPostModal(post);
+                              }} 
+                              activeOpacity={0.7}
+                            >
+                              {post.imageUrl && !isVid ? (
+                                <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
+                              ) : isVid ? (
+                                <View style={[styles.postThumbnailImage, { position: 'relative', backgroundColor: '#18181B' }]}>
+                                  {!!post.imageUrl && <ProfileVideoThumbnail uri={post.imageUrl} />}
+                                  <View style={styles.videoBadgeOverlay}>
+                                    <Ionicons name="play" size={14} color="#FAFAFA" />
+                                  </View>
+                                </View>
+                              ) : (
+                                <View style={[styles.postThumbnailImage, styles.textPostThumbnail]}>
+                                  <Ionicons name="document-text-outline" size={22} color="#EAB308" />
+                                  <Text style={styles.postThumbnailText} numberOfLines={5}>
+                                    {post.text || 'Text post'}
+                                  </Text>
+                                </View>
+                              )}
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </>
                 ) : (
-                  <View style={styles.postsGrid}>
-                    {targetUserPosts.map(post => {
-                      const isVid = post.mediaType === 'video';
-                      return (
-                        <TouchableOpacity 
-                          key={post.id} 
-                          style={styles.postThumbnailBox} 
-                          onPress={() => {
-                            stopAllVideos();
-                            setSelectedPostModal(post);
-                          }} 
-                          activeOpacity={0.7}
-                        >
-                          {post.imageUrl && !isVid ? (
-                            <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
-                          ) : isVid ? (
-                            <View style={[styles.postThumbnailImage, { position: 'relative', backgroundColor: '#18181B' }]}>
-                              {!!post.imageUrl && <ProfileVideoThumbnail uri={post.imageUrl} />}
-                              <View style={styles.videoBadgeOverlay}>
-                                <Ionicons name="play" size={14} color="#FAFAFA" />
-                              </View>
-                            </View>
-                          ) : (
-                            <View style={[styles.postThumbnailImage, styles.textPostThumbnail]}>
-                              <Ionicons name="document-text-outline" size={22} color="#EAB308" />
-                              <Text style={styles.postThumbnailText} numberOfLines={5}>
-                                {post.text || 'Text post'}
-                              </Text>
-                            </View>
-                          )}
-                        </TouchableOpacity>
-                      );
-                    })}
+                  <View style={styles.privateAccountBox}>
+                    <Ionicons name="lock-closed" size={40} color="#EAB308" style={{ marginBottom: 8 }} />
+                    <Text style={styles.privateAccountTitle}>This Account is Private 🔒</Text>
+                    <Text style={styles.privateAccountText}>Follow this account to see their photos and videos.</Text>
                   </View>
                 )}
 
@@ -1957,7 +2176,6 @@ useFocusEffect(
         </View>
       </Modal>
 
-      {/* מודל פרטי פוסט */}
       <Modal visible={!!selectedPostModal} animationType="slide" transparent={true} onRequestClose={() => setSelectedPostModal(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
@@ -2039,7 +2257,6 @@ useFocusEffect(
         </View>
       </Modal>
 
-      {/* מודל תמונת פרופיל מוגדלת */}
       <Modal visible={!!zoomedAvatarUri} transparent={true} animationType="fade" onRequestClose={() => setZoomedAvatarUri(null)}>
         <View style={styles.zoomedAvatarOverlay}>
           <TouchableOpacity 
@@ -2055,7 +2272,6 @@ useFocusEffect(
         </View>
       </Modal>
 
-      {/* מודל רשימת עוקבים/נעקבים */}
       <Modal visible={!!targetActiveModalList} animationType="slide" transparent={true} onRequestClose={() => setTargetActiveModalList(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -2104,7 +2320,6 @@ useFocusEffect(
         </View>
       </Modal>
 
-      {/* מודל צ'אט */}
       <Modal visible={chatModalVisible} animationType="slide" transparent={true} onRequestClose={() => setChatModalVisible(false)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -2160,7 +2375,6 @@ useFocusEffect(
         </View>
       </Modal>
 
-      {/* מודל יצירת פוסט */}
       <Modal visible={createPostVisible} transparent={true} animationType="fade" onRequestClose={() => setCreatePostVisible(false)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -2217,7 +2431,8 @@ const styles = StyleSheet.create({
     borderWidth: 1, 
     borderColor: '#27272A', 
     justifyContent: 'center', 
-    alignItems: 'center' 
+    alignItems: 'center',
+    position: 'relative'
   },
 
   storiesContainer: { marginBottom: 25 },
@@ -2384,6 +2599,10 @@ const styles = StyleSheet.create({
   videoBadgeOverlay: { position: 'absolute', top: 6, right: 6, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 10, width: 22, height: 22, justifyContent: 'center', alignItems: 'center' },
   emptyPostsBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30, backgroundColor: '#18181B', borderRadius: 14, borderWidth: 1, borderColor: '#27272A' },
   emptyPostsText: { color: '#71717A', fontSize: 12, marginTop: 6 },
+  
+  privateAccountBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40, paddingHorizontal: 20, backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', marginTop: 10 },
+  privateAccountTitle: { color: '#FAFAFA', fontSize: 16, fontWeight: 'bold', marginBottom: 6 },
+  privateAccountText: { color: '#A1A1AA', fontSize: 12, textAlign: 'center', lineHeight: 18 },
 
   listItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#09090B', padding: 12, borderRadius: 14, marginBottom: 8, borderWidth: 1, borderColor: '#27272A' },
   listAvatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },

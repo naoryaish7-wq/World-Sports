@@ -4,7 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import MapView, { Marker, PROVIDER_DEFAULT, MapPressEvent } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { collection, onSnapshot, doc, getDoc, addDoc, setDoc, deleteDoc, arrayUnion, arrayRemove, query, orderBy, updateDoc, where } from 'firebase/firestore';
+import { collection, onSnapshot, doc, getDoc, addDoc, setDoc, deleteDoc, arrayUnion, arrayRemove, query, orderBy, updateDoc, where, getDocs } from 'firebase/firestore';
 import { db } from '../../firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { registerForPushNotificationsAsync, triggerLocalNotification } from '../../services/notificationService';
@@ -125,11 +125,7 @@ const getSportIconAndColor = (sportName: string) => {
 };
 
 const supportsTournamentDraw = (sportName: string) => {
-  // הגרלות וטורנירים מותרים רק בכדורגל, כדורסל ובטניס.
-  // בדיקה מול שם הענף המקורי מאפשרת גם שמות בעברית וגם באנגלית,
-  // ומתעלמת מתוספות כמו אימוג'י או טקסט מסביב לשם.
   const sport = (sportName || '').toLowerCase().trim();
-
   return (
     sport.includes('football') ||
     sport.includes('soccer') ||
@@ -165,8 +161,6 @@ function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boole
   return <VideoView style={styles.postImageContent} player={player} nativeControls={true} contentFit="cover" />;
 }
 
-
-// תצוגה מקדימה של סרטון בפרופיל: מציג את הפריים הראשון בלי להתחיל לנגן.
 function ProfileVideoThumbnail({ uri }: { uri: string }) {
   const player = useVideoPlayer(uri, player => {
     player.loop = false;
@@ -374,23 +368,40 @@ export default function RadarScreen() {
           
           registerForPushNotificationsAsync(userId);
 
-          const unsubscribeUserDoc = onSnapshot(doc(db, 'users', userId), (userSnap) => {
+          const unsubscribeUserDoc = onSnapshot(doc(db, 'users', userId), async (userSnap) => {
             if (userSnap.exists()) {
               const data = userSnap.data() as UserProfile;
               setCurrentUser({ ...data, uid: userSnap.id });
+              
+              let activeSports: string[] = [];
               if (data.sports) {
+                activeSports = data.sports;
                 setUserSports(data.sports);
                 setNewSport(data.sports[0]);
               } else if (data.sport) {
+                activeSports = [data.sport];
                 setUserSports([data.sport]);
                 setNewSport(data.sport);
               }
+
               if (data.name) setUserName(data.name);
               if (data.avatar) setUserAvatar(data.avatar);
               if (data.following) {
                 setFollowingIds(data.following);
               } else {
                 setFollowingIds([]);
+              }
+
+              // בדיקה ומחיקת משחקים אוטומטית אם המשתמש החליף ענף ספורט פעיל והמשחק אינו שייך עוד לענפים שלו
+              if (activeSports.length > 0) {
+                const gamesQuery = query(collection(db, 'games'), where('creator', '==', userId));
+                const gamesSnap = await getDocs(gamesQuery);
+                gamesSnap.forEach(async (gameDoc) => {
+                  const gameData = gameDoc.data() as GameItem;
+                  if (gameData.sport && !activeSports.includes(gameData.sport)) {
+                    await deleteDoc(doc(db, 'games', gameDoc.id));
+                  }
+                });
               }
             }
           });
@@ -457,9 +468,9 @@ export default function RadarScreen() {
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'added') {
           const gameData = change.doc.data() as GameItem;
-          const userSports = currentUser.sports || [currentUser.sport] || [];
+          const userSportsList = currentUser.sports || [currentUser.sport] || [];
 
-          if (userSports.includes(gameData.sport) && userCoords) {
+          if (userSportsList.includes(gameData.sport) && userCoords) {
             const distKm = calculateDistance(userCoords.latitude, userCoords.longitude, gameData.latitude, gameData.longitude);
             if (distKm <= 0.5) {
               triggerLocalNotification(
@@ -559,7 +570,6 @@ export default function RadarScreen() {
     fetchTargetUser();
   }, [selectedUserModalId]);
 
-  // טוענים את כל הפוסטים פעם אחת, כמו במסך Discover.
   useEffect(() => {
     const unsubscribe = onSnapshot(
       collection(db, 'posts'),
@@ -579,7 +589,6 @@ export default function RadarScreen() {
     return () => unsubscribe();
   }, []);
 
-  // מסננים מתוך רשימת הפוסטים המלאה לפי המשתמש שמוצג בפרופיל.
   useEffect(() => {
     if (!targetProfileUser) {
       setTargetUserPosts([]);
@@ -590,9 +599,7 @@ export default function RadarScreen() {
     const targetUid = normalize(targetProfileUser.uid);
     const targetName = normalize(targetProfileUser.name);
     const targetEmail = normalize((targetProfileUser as any).email || (targetProfileUser as any).userEmail);
-    const targetEmailId = targetEmail
-      ? targetEmail.replace(/[^a-z0-9]/g, '_')
-      : '';
+    const targetEmailId = targetEmail ? targetEmail.replace(/[^a-z0-9]/g, '_') : '';
 
     const filtered = allPosts.filter(post => {
       const postUserId = normalize(post.userId);
@@ -1566,7 +1573,7 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* Player Profile Modal */}
+      {/* Player Profile Modal - מעוצב בדיוק לפי הסגנון של שאר המסכים */}
       <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>

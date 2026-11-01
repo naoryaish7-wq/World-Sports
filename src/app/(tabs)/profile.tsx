@@ -23,9 +23,11 @@ type UserProfile = {
   sport?: string;
   followers?: string[];
   following?: string[];
+  pendingRequests?: string[];
   isVip?: boolean;
   isPromoted?: boolean;
   promotedUntil?: any;
+  isPrivate?: boolean;
 };
 
 type Comment = {
@@ -121,7 +123,6 @@ function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boole
     />
   );
 }
-
 
 function ProfileVideoThumbnail({ uri }: { uri: string }) {
   const player = useVideoPlayer(uri, player => {
@@ -239,6 +240,7 @@ export default function ProfileScreen() {
             avatar: '',
             followers: [],
             following: [],
+            pendingRequests: [],
             isVip: false,
             isPromoted: false,
             isPrivate: false,
@@ -493,6 +495,40 @@ export default function ProfileScreen() {
     }
   };
 
+  const handleRemoveFollower = async (followerUid: string) => {
+    if (!currentUser) return;
+    Alert.alert(
+      "Remove Follower",
+      "Are you sure you want to remove this user from your followers?",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Remove",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const myRef = doc(db, 'users', currentUser.uid);
+              const followerRef = doc(db, 'users', followerUid);
+
+              await updateDoc(myRef, {
+                followers: arrayRemove(followerUid)
+              });
+
+              await updateDoc(followerRef, {
+                following: arrayRemove(currentUser.uid)
+              });
+
+              Alert.alert("Success", "Follower removed successfully.");
+            } catch (error) {
+              console.error("Error removing follower:", error);
+              Alert.alert("Error", "Could not remove follower.");
+            }
+          }
+        }
+      ]
+    );
+  };
+
   const followersList = allUsers.filter(u => currentUser?.followers?.includes(u.uid));
   const followingList = allUsers.filter(u => currentUser?.following?.includes(u.uid));
 
@@ -628,22 +664,46 @@ export default function ProfileScreen() {
 
   const handleToggleFollowTarget = async () => {
     if (!targetProfileUser || !currentUser) return;
-    const isFollowing = targetProfileUser.followers?.includes(currentUser.uid);
+    
+    const isApproved = targetProfileUser.followers?.includes(currentUser.uid);
+    const hasRequested = targetProfileUser.pendingRequests?.includes(currentUser.uid);
+    const isPrivateAccount = targetProfileUser.isPrivate === true;
 
     try {
       const myRef = doc(db, 'users', currentUser.uid);
       const targetRef = doc(db, 'users', targetProfileUser.uid);
 
-      if (isFollowing) {
-        await updateDoc(myRef, { following: arrayRemove(targetProfileUser.uid) });
+      if (isApproved) {
         await updateDoc(targetRef, { followers: arrayRemove(currentUser.uid) });
+        await updateDoc(myRef, { following: arrayRemove(targetProfileUser.uid) });
         setTargetProfileUser({
           ...targetProfileUser,
           followers: targetProfileUser.followers?.filter(id => id !== currentUser.uid)
         });
+      } else if (hasRequested) {
+        await updateDoc(targetRef, { pendingRequests: arrayRemove(currentUser.uid) });
+        setTargetProfileUser({
+          ...targetProfileUser,
+          pendingRequests: targetProfileUser.pendingRequests?.filter(id => id !== currentUser.uid)
+        });
+      } else if (isPrivateAccount) {
+        await updateDoc(targetRef, { pendingRequests: arrayUnion(currentUser.uid) });
+        
+        await addDoc(collection(db, 'users', targetProfileUser.uid, 'notifications'), {
+          senderUid: currentUser.uid,
+          type: 'follow_request',
+          message: `${currentUser.name} requested to follow you.`,
+          status: 'pending',
+          createdAt: new Date()
+        });
+
+        setTargetProfileUser({
+          ...targetProfileUser,
+          pendingRequests: [...(targetProfileUser.pendingRequests || []), currentUser.uid]
+        });
       } else {
-        await updateDoc(myRef, { following: arrayUnion(targetProfileUser.uid) });
         await updateDoc(targetRef, { followers: arrayUnion(currentUser.uid) });
+        await updateDoc(myRef, { following: arrayUnion(targetProfileUser.uid) });
         setTargetProfileUser({
           ...targetProfileUser,
           followers: [...(targetProfileUser.followers || []), currentUser.uid]
@@ -727,8 +787,13 @@ export default function ProfileScreen() {
 
   const userSportsList = currentUser?.sports || (currentUser?.sport ? [currentUser.sport] : ['Football']);
   const targetSportsList = targetProfileUser?.sports || (targetProfileUser?.sport ? [targetProfileUser.sport] : ['Football']);
-  const isFollowingTarget = targetProfileUser?.followers?.includes(currentUser?.uid || '');
+  
   const isViewingMyOwnProfile = targetProfileUser?.uid === currentUser?.uid;
+  const isApprovedFollower = targetProfileUser?.followers?.includes(currentUser?.uid || '');
+  const hasRequestedFollow = targetProfileUser?.pendingRequests?.includes(currentUser?.uid || '');
+  const isPrivateAccount = targetProfileUser?.isPrivate === true;
+
+  const canViewFullProfile = isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower;
 
   return (
     <View style={styles.container}>
@@ -769,6 +834,7 @@ export default function ProfileScreen() {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
             <Text style={styles.profileName}>{currentUser?.name || 'Loading...'}</Text>
             {currentUser?.isVip && <Ionicons name="checkmark-circle" size={18} color="#EAB308" />}
+            {currentUser?.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
           </View>
           
           <View style={styles.sportsTagsRow}>
@@ -1144,31 +1210,41 @@ export default function ProfileScreen() {
 
             <ScrollView style={{ maxHeight: 350 }} showsVerticalScrollIndicator={false}>
               {(activeModalList === 'followers' ? followersList : followingList).map((item) => (
-                <TouchableOpacity 
-                  key={item.uid} 
-                  style={styles.listItem} 
-                  onPress={() => {
-                    setActiveModalList(null); 
-                    openUserProfileById(item.uid, item.name); 
-                  }}
-                  activeOpacity={0.85}
-                >
-                  <View style={styles.listAvatar}>
-                    {item.avatar ? (
-                      <Image source={{ uri: item.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
-                    ) : (
-                      <Text style={{color: '#EAB308', fontWeight: 'bold'}}>{item.name ? item.name[0] : 'P'}</Text>
-                    )}
-                  </View>
-                  <View style={{flex: 1}}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Text style={styles.listName}>{item.name}</Text>
-                      {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                <View key={item.uid} style={styles.listItem}>
+                  <TouchableOpacity 
+                    style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }} 
+                    onPress={() => {
+                      setActiveModalList(null); 
+                      openUserProfileById(item.uid, item.name); 
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.listAvatar}>
+                      {item.avatar ? (
+                        <Image source={{ uri: item.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
+                      ) : (
+                        <Text style={{color: '#EAB308', fontWeight: 'bold'}}>{item.name ? item.name[0] : 'P'}</Text>
+                      )}
                     </View>
-                    <Text style={styles.listCity}>📍 {item.city} | 🎂 Age: {item.age || 'N/A'}</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color="#71717A" />
-                </TouchableOpacity>
+                    <View style={{flex: 1}}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <Text style={styles.listName}>{item.name}</Text>
+                        {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                      </View>
+                      <Text style={styles.listCity}>📍 {item.city} | 🎂 Age: {item.age || 'N/A'}</Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  {activeModalList === 'followers' && (
+                    <TouchableOpacity 
+                      style={styles.removeFollowerBtn}
+                      onPress={() => handleRemoveFollower(item.uid)}
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.removeFollowerBtnText}>Remove</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               ))}
             </ScrollView>
           </View>
@@ -1259,6 +1335,7 @@ export default function ProfileScreen() {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
                     <Text style={styles.profileName}>{targetProfileUser.name}</Text>
                     {targetProfileUser.isVip && <Ionicons name="checkmark-circle" size={18} color="#EAB308" />}
+                    {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
                   </View>
                   
                   <View style={styles.sportsTagsRow}>
@@ -1274,10 +1351,12 @@ export default function ProfileScreen() {
                   </Text>
                 </View>
 
+                {/* שורת הסטטיסטיקה מציגה תמיד את המספרים האמיתיים */}
                 <View style={styles.statsRow}>
                   <TouchableOpacity 
                     style={styles.statBox} 
                     onPress={() => {
+                      if (!canViewFullProfile) return;
                       if (isViewingMyOwnProfile) {
                         setSelectedUserModalId(null);
                         setActiveModalList('followers');
@@ -1285,7 +1364,7 @@ export default function ProfileScreen() {
                         setTargetActiveModalList('followers');
                       }
                     }}
-                    activeOpacity={0.8}
+                    activeOpacity={canViewFullProfile ? 0.8 : 1}
                   >
                     <Text style={styles.statNumber}>{targetProfileUser.followers?.length || 0}</Text>
                     <Text style={styles.statLabel}>Followers</Text>
@@ -1294,6 +1373,7 @@ export default function ProfileScreen() {
                   <TouchableOpacity 
                     style={styles.statBox} 
                     onPress={() => {
+                      if (!canViewFullProfile) return;
                       if (isViewingMyOwnProfile) {
                         setSelectedUserModalId(null);
                         setActiveModalList('following');
@@ -1301,7 +1381,7 @@ export default function ProfileScreen() {
                         setTargetActiveModalList('following');
                       }
                     }}
-                    activeOpacity={0.8}
+                    activeOpacity={canViewFullProfile ? 0.8 : 1}
                   >
                     <Text style={styles.statNumber}>{targetProfileUser.following?.length || 0}</Text>
                     <Text style={styles.statLabel}>Following</Text>
@@ -1316,12 +1396,21 @@ export default function ProfileScreen() {
                 {!isViewingMyOwnProfile && (
                   <View style={{ flexDirection: 'row', gap: 10, marginVertical: 12 }}>
                     <TouchableOpacity 
-                      style={[styles.profileFollowBtn, isFollowingTarget && styles.profileFollowingBtn, { flex: 1 }]} 
+                      style={[
+                        styles.profileFollowBtn, 
+                        isApprovedFollower && styles.profileFollowingBtn,
+                        hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
+                        { flex: 1 }
+                      ]} 
                       onPress={handleToggleFollowTarget}
                       activeOpacity={0.85}
                     >
-                      <Text style={[styles.profileFollowBtnText, isFollowingTarget && styles.profileFollowingBtnText]}>
-                        {isFollowingTarget ? 'Following ✓' : 'Follow Player 🤝'}
+                      <Text style={[
+                        styles.profileFollowBtnText, 
+                        isApprovedFollower && styles.profileFollowingBtnText,
+                        hasRequestedFollow && { color: '#FAFAFA' }
+                      ]}>
+                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : isPrivateAccount ? 'Request Follow 🤝' : 'Follow Player 🤝'}
                       </Text>
                     </TouchableOpacity>
 
@@ -1340,37 +1429,48 @@ export default function ProfileScreen() {
                   </View>
                 )}
 
-                <View style={styles.postsSectionHeader}>
-                  <Ionicons name="grid-outline" size={18} color="#EAB308" />
-                  <Text style={styles.sectionTitle}>Posts</Text>
-                </View>
+                {canViewFullProfile ? (
+                  <>
+                    <View style={styles.postsSectionHeader}>
+                      <Ionicons name="grid-outline" size={18} color="#EAB308" />
+                      <Text style={styles.sectionTitle}>Posts</Text>
+                    </View>
 
-                {targetUserPosts.length === 0 ? (
-                  <View style={styles.emptyPostsBox}>
-                    <Ionicons name="images-outline" size={32} color="#52525B" />
-                    <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
-                  </View>
+                    {targetUserPosts.length === 0 ? (
+                      <View style={styles.emptyPostsBox}>
+                        <Ionicons name="images-outline" size={32} color="#52525B" />
+                        <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.postsGrid}>
+                        {targetUserPosts.map(post => {
+                          const isVid = post.mediaType === 'video';
+                          return (
+                            <TouchableOpacity key={post.id} style={styles.postThumbnailBox} onPress={() => setSelectedPostModal(post)} activeOpacity={0.9}>
+                              {isVid ? (
+                                <View style={[styles.postThumbnailImage, { backgroundColor: '#000' }]}>
+                                  {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} /> : null}
+                                  <View style={styles.videoBadgeOverlay}>
+                                    <Ionicons name="play" size={14} color="#FAFAFA" />
+                                  </View>
+                                </View>
+                              ) : (
+                                <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
+                              )}
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </>
                 ) : (
-                  <View style={styles.postsGrid}>
-                    {targetUserPosts.map(post => {
-                      const isVid = post.mediaType === 'video';
-                      return (
-                        <TouchableOpacity key={post.id} style={styles.postThumbnailBox} onPress={() => setSelectedPostModal(post)} activeOpacity={0.9}>
-                          {isVid ? (
-                            <View style={[styles.postThumbnailImage, { backgroundColor: '#000' }]}>
-                              {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} /> : null}
-                              <View style={styles.videoBadgeOverlay}>
-                                <Ionicons name="play" size={14} color="#FAFAFA" />
-                              </View>
-                            </View>
-                          ) : (
-                            <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
-                          )}
-                        </TouchableOpacity>
-                      );
-                    })}
+                  <View style={styles.privateAccountBox}>
+                    <Ionicons name="lock-closed" size={40} color="#EAB308" style={{ marginBottom: 8 }} />
+                    <Text style={styles.privateAccountTitle}>This Account is Private 🔒</Text>
+                    <Text style={styles.privateAccountText}>Follow this player to see their posts, stories, and connections.</Text>
                   </View>
                 )}
+
               </ScrollView>
             )}
           </View>
@@ -1668,6 +1768,10 @@ const styles = StyleSheet.create({
   emptyPostsBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30, backgroundColor: '#18181B', borderRadius: 14, borderWidth: 1, borderColor: '#27272A' },
   emptyPostsText: { color: '#71717A', fontSize: 12, marginTop: 6 },
 
+  privateAccountBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40, paddingHorizontal: 20, backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', marginTop: 10 },
+  privateAccountTitle: { color: '#FAFAFA', fontSize: 16, fontWeight: 'bold', marginBottom: 6 },
+  privateAccountText: { color: '#A1A1AA', fontSize: 12, textAlign: 'center', lineHeight: 18 },
+
   modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(9,9,11,0.85)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20 },
   modalContentHomeStyle: { backgroundColor: '#09090B', borderRadius: 28, padding: 20, borderWidth: 1, borderColor: '#27272A', width: '100%', maxWidth: 420, height: '88%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.5, shadowRadius: 16, elevation: 12 },
   modalContentCenter: { backgroundColor: '#121215', borderRadius: 28, padding: 20, borderWidth: 1, borderColor: '#27272A', width: '100%', maxWidth: 400, maxHeight: '85%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 10 },
@@ -1691,6 +1795,9 @@ const styles = StyleSheet.create({
   listAvatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
   listName: { color: '#FAFAFA', fontSize: 14, fontWeight: '700' },
   listCity: { color: '#A1A1AA', fontSize: 11, marginTop: 2 },
+
+  removeFollowerBtn: { backgroundColor: '#271215', borderWidth: 1, borderColor: '#EF4444', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 8 },
+  removeFollowerBtnText: { color: '#EF4444', fontSize: 11, fontWeight: 'bold' },
 
   profileFollowBtn: { backgroundColor: '#EAB308', borderRadius: 12, height: 44, justifyContent: 'center', alignItems: 'center' },
   profileFollowBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
