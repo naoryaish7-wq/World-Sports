@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, Dimensions, TouchableOpacity, ScrollView, Modal, TextInput, Alert, Linking, Platform, Image, KeyboardAvoidingView, FlatList, Share } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { useVideoPlayer, VideoView } from 'expo-video';
 import MapView, { Marker, PROVIDER_DEFAULT, MapPressEvent } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { collection, onSnapshot, doc, getDoc, addDoc, setDoc, deleteDoc, arrayUnion, arrayRemove, query, orderBy, updateDoc, where } from 'firebase/firestore';
 import { db } from '../../firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { registerForPushNotificationsAsync, triggerLocalNotification } from '../../services/notificationService';
-import { useVideoPlayer, VideoView } from 'expo-video';
 
 const { width, height } = Dimensions.get('window');
 
@@ -65,6 +65,13 @@ type PostItem = {
   createdAt?: any;
 };
 
+type TournamentMatch = {
+  id: number;
+  teamA: string;
+  teamB: string;
+  round: string;
+};
+
 type GameItem = {
   id: string;
   title: string;
@@ -81,8 +88,58 @@ type GameItem = {
   players: string[];
   chat: ChatMessage[];
   teamsResult?: Array<{ id: number; players: string[] }>;
+  tournamentMatches?: TournamentMatch[];
   playersPerTeam?: number;
   createdAt?: any;
+};
+
+const getSportIconAndColor = (sportName: string) => {
+  const sport = (sportName || '').toLowerCase().trim();
+
+  if (sport.includes('football') || sport.includes('כדורגל') || sport.includes('soccer')) {
+    return { icon: 'football', color: '#22C55E', bg: '#143825', border: '#22C55E' };
+  }
+  if (sport.includes('basketball') || sport.includes('כדורסל')) {
+    return { icon: 'basketball', color: '#F97316', bg: '#3D2012', border: '#F97316' };
+  }
+  if (sport.includes('tennis') || sport.includes('טניס')) {
+    return { icon: 'tennisball', color: '#EAB308', bg: '#332E0F', border: '#EAB308' };
+  }
+  if (sport.includes('running') || sport.includes('ריצה')) {
+    return { icon: 'fitness', color: '#3B82F6', bg: '#10223D', border: '#3B82F6' };
+  }
+  if (sport.includes('gym') || sport.includes('fitness') || sport.includes('כושר') || sport.includes('workout')) {
+    return { icon: 'barbell', color: '#EF4444', bg: '#3D1518', border: '#EF4444' };
+  }
+  if (sport.includes('padel') || sport.includes('פדל')) {
+    return { icon: 'planet', color: '#A855F7', bg: '#2C153D', border: '#A855F7' };
+  }
+  if (sport.includes('cycling') || sport.includes('אופניים')) {
+    return { icon: 'bicycle', color: '#06B6D4', bg: '#0F3138', border: '#06B6D4' };
+  }
+  if (sport.includes('swimming') || sport.includes('שחייה')) {
+    return { icon: 'water', color: '#0EA5E9', bg: '#102B3D', border: '#0EA5E9' };
+  }
+
+  return { icon: 'trophy', color: '#EAB308', bg: '#332E0F', border: '#EAB308' };
+};
+
+const supportsTournamentDraw = (sportName: string) => {
+  // הגרלות וטורנירים מותרים רק בכדורגל, כדורסל ובטניס.
+  // בדיקה מול שם הענף המקורי מאפשרת גם שמות בעברית וגם באנגלית,
+  // ומתעלמת מתוספות כמו אימוג'י או טקסט מסביב לשם.
+  const sport = (sportName || '').toLowerCase().trim();
+
+  return (
+    sport.includes('football') ||
+    sport.includes('soccer') ||
+    sport.includes('futbol') ||
+    sport.includes('כדורגל') ||
+    sport.includes('basketball') ||
+    sport.includes('כדורסל') ||
+    sport.includes('tennis') ||
+    sport.includes('טניס')
+  );
 };
 
 function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boolean }) {
@@ -90,69 +147,56 @@ function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boole
     player.loop = true;
     player.staysActiveInBackground = false;
     player.muted = false;
-    if (!isStoryOpen) {
-      player.play();
-    }
+    if (!isStoryOpen) player.play();
   });
 
   useEffect(() => {
     if (isStoryOpen) {
-      try {
-        player.pause();
-      } catch (e) {}
+      try { player.pause(); } catch (e) {}
     }
   }, [isStoryOpen, player]);
 
   useEffect(() => {
     return () => {
+      try { player.pause(); } catch (e) {}
+    };
+  }, [player]);
+
+  return <VideoView style={styles.postImageContent} player={player} nativeControls={true} contentFit="cover" />;
+}
+
+
+// תצוגה מקדימה של סרטון בפרופיל: מציג את הפריים הראשון בלי להתחיל לנגן.
+function ProfileVideoThumbnail({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, player => {
+    player.loop = false;
+    player.staysActiveInBackground = false;
+    player.muted = true;
+  });
+
+  useEffect(() => {
+    try {
+      player.muted = true;
+      player.pause();
+      player.currentTime = 0;
+    } catch (e) {}
+    return () => {
       try {
         player.pause();
+        player.muted = true;
       } catch (e) {}
     };
   }, [player]);
 
   return (
     <VideoView
-      style={styles.postImageContent}
+      style={styles.postThumbnailImage}
       player={player}
-      nativeControls={true}
+      nativeControls={false}
       contentFit="cover"
     />
   );
 }
-
-// פונקציה מתקדמת המקצה אייקון ייחודי וצבעים מותאמים אישית לכל ענף ספורט
-const getSportIconAndColor = (sportName: string) => {
-  const sport = (sportName || '').toLowerCase().trim();
-
-  if (sport.includes('football') || sport.includes('כדורגל') || sport.includes('soccer')) {
-    return { icon: 'football', color: '#22C55E', bg: '#143825', border: '#22C55E' }; // ירוק כדורגל
-  }
-  if (sport.includes('basketball') || sport.includes('כדורסל')) {
-    return { icon: 'basketball', color: '#F97316', bg: '#3D2012', border: '#F97316' }; // כתום כדורסל
-  }
-  if (sport.includes('tennis') || sport.includes('טניס')) {
-    return { icon: 'tennisball', color: '#EAB308', bg: '#332E0F', border: '#EAB308' }; // צהוב טניס
-  }
-  if (sport.includes('running') || sport.includes('ריצה')) {
-    return { icon: 'fitness', color: '#3B82F6', bg: '#10223D', border: '#3B82F6' }; // כחול ריצה
-  }
-  if (sport.includes('gym') || sport.includes('fitness') || sport.includes('כושר') || sport.includes('workout')) {
-    return { icon: 'barbell', color: '#EF4444', bg: '#3D1518', border: '#EF4444' }; // אדום כושר
-  }
-  if (sport.includes('padel') || sport.includes('פדל')) {
-    return { icon: 'planet', color: '#A855F7', bg: '#2C153D', border: '#A855F7' }; // סגול פדל
-  }
-  if (sport.includes('cycling') || sport.includes('אופניים')) {
-    return { icon: 'bicycle', color: '#06B6D4', bg: '#0F3138', border: '#06B6D4' }; // תכלת אופניים
-  }
-  if (sport.includes('swimming') || sport.includes('שחייה')) {
-    return { icon: 'water', color: '#0EA5E9', bg: '#102B3D', border: '#0EA5E9' }; // כחול מים
-  }
-
-  // ברירת מחדל לכל ענף אחר
-  return { icon: 'trophy', color: '#EAB308', bg: '#332E0F', border: '#EAB308' };
-};
 
 const getTimeAgo = (timestamp: any) => {
   if (!timestamp) return 'Just now';
@@ -212,6 +256,7 @@ export default function RadarScreen() {
   const [autoCity, setAutoCity] = useState('Netanya');
   const [followingIds, setFollowingIds] = useState<string[]>([]);
   const [allUsersList, setAllUsersList] = useState<UserProfile[]>([]);
+  const [allPosts, setAllPosts] = useState<PostItem[]>([]);
 
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [newTitle, setNewTitle] = useState('');
@@ -229,6 +274,7 @@ export default function RadarScreen() {
   const chatScrollRef = useRef<any>(null);
 
   const [drawPlayersPerTeam, setDrawPlayersPerTeam] = useState('5');
+  const [activeManagerTab, setActiveManagerTab] = useState<'draw' | 'tournament'>('draw');
 
   const [selectedUserModalId, setSelectedUserModalId] = useState<string | null>(null);
   const [targetProfileUser, setTargetProfileUser] = useState<UserProfile | null>(null);
@@ -513,27 +559,70 @@ export default function RadarScreen() {
     fetchTargetUser();
   }, [selectedUserModalId]);
 
+  // טוענים את כל הפוסטים פעם אחת, כמו במסך Discover.
   useEffect(() => {
-    if (!targetProfileUser) return;
-
-    const postsRef = collection(db, 'posts');
-    const unsubscribe = onSnapshot(postsRef, (snapshot) => {
-      const allPosts: PostItem[] = snapshot.docs.map(docSnap => ({
-        id: docSnap.id,
-        ...(docSnap.data() as Omit<PostItem, 'id'>)
-      }));
-
-      const filtered = allPosts.filter(p => 
-        p.userId === targetProfileUser.uid || 
-        p.userName === targetProfileUser.name ||
-        p.authorName === targetProfileUser.name
-      );
-
-      setTargetUserPosts(filtered);
-    });
+    const unsubscribe = onSnapshot(
+      collection(db, 'posts'),
+      (snapshot) => {
+        const postsList: PostItem[] = snapshot.docs.map(docSnap => ({
+          id: docSnap.id,
+          ...(docSnap.data() as Omit<PostItem, 'id'>)
+        }));
+        setAllPosts(postsList);
+      },
+      (error) => {
+        console.error('Error loading posts in Radar:', error);
+        setAllPosts([]);
+      }
+    );
 
     return () => unsubscribe();
-  }, [targetProfileUser]);
+  }, []);
+
+  // מסננים מתוך רשימת הפוסטים המלאה לפי המשתמש שמוצג בפרופיל.
+  useEffect(() => {
+    if (!targetProfileUser) {
+      setTargetUserPosts([]);
+      return;
+    }
+
+    const normalize = (value?: string) => (value || '').trim().toLowerCase();
+    const targetUid = normalize(targetProfileUser.uid);
+    const targetName = normalize(targetProfileUser.name);
+    const targetEmail = normalize((targetProfileUser as any).email || (targetProfileUser as any).userEmail);
+    const targetEmailId = targetEmail
+      ? targetEmail.replace(/[^a-z0-9]/g, '_')
+      : '';
+
+    const filtered = allPosts.filter(post => {
+      const postUserId = normalize(post.userId);
+      const postEmail = normalize(post.userEmail);
+      const postUserName = normalize(post.userName);
+      const postAuthorName = normalize(post.authorName);
+      const postEmailId = postEmail ? postEmail.replace(/[^a-z0-9]/g, '_') : '';
+
+      return (
+        (!!targetUid && postUserId === targetUid) ||
+        (!!targetEmail && postEmail === targetEmail) ||
+        (!!targetEmailId && (postUserId === targetEmailId || postEmailId === targetEmailId)) ||
+        (!!targetName && postUserName === targetName) ||
+        (!!targetName && postAuthorName === targetName)
+      );
+    });
+
+    filtered.sort((a, b) => {
+      const getTime = (value: any) => {
+        if (!value) return 0;
+        if (typeof value.toMillis === 'function') return value.toMillis();
+        if (typeof value.toDate === 'function') return value.toDate().getTime();
+        const time = new Date(value).getTime();
+        return Number.isNaN(time) ? 0 : time;
+      };
+      return getTime(b.createdAt) - getTime(a.createdAt);
+    });
+
+    setTargetUserPosts(filtered);
+  }, [targetProfileUser, allPosts]);
 
   useEffect(() => {
     if (!currentUserId || !chatTargetUser || !chatModalVisible) return;
@@ -826,17 +915,21 @@ export default function RadarScreen() {
 
   const handleRunAutoDraw = async () => {
     if (!selectedGame) return;
+    if (!supportsTournamentDraw(selectedGame.sport)) {
+      Alert.alert('Not Available', 'Team draw is available only for football, basketball, and tennis.');
+      return;
+    }
     const playersList = selectedGame.players || [];
+    const totalPlayers = playersList.length;
 
-    if (playersList.length === 0) {
+    if (totalPlayers === 0) {
       Alert.alert('Error', 'No registered players found for the draw.');
       return;
     }
 
-    const teamSize = parseInt(drawPlayersPerTeam, 10);
+    let teamSize = parseInt(drawPlayersPerTeam, 10);
     if (isNaN(teamSize) || teamSize <= 0) {
-      Alert.alert('Error', 'Please enter a valid number of players per team.');
-      return;
+      teamSize = 5;
     }
 
     const shuffled = [...playersList];
@@ -847,9 +940,10 @@ export default function RadarScreen() {
 
     const newTeams: Array<{ id: number; players: string[] }> = [];
     let currentTeamIndex = 1;
+    const effectiveTeamSize = totalPlayers < teamSize ? Math.max(1, Math.floor(totalPlayers / 2)) || 1 : teamSize;
 
-    for (let i = 0; i < shuffled.length; i += teamSize) {
-      const teamPlayers = shuffled.slice(i, i + teamSize);
+    for (let i = 0; i < shuffled.length; i += effectiveTeamSize) {
+      const teamPlayers = shuffled.slice(i, i + effectiveTeamSize);
       newTeams.push({
         id: currentTeamIndex++,
         players: teamPlayers,
@@ -860,12 +954,80 @@ export default function RadarScreen() {
       const gameRef = doc(db, 'games', selectedGame.id);
       await updateDoc(gameRef, {
         teamsResult: newTeams,
-        playersPerTeam: teamSize
+        playersPerTeam: effectiveTeamSize
       });
-      Alert.alert('Success! 🎲', 'Auto draw completed and teams have been assigned successfully.');
+      Alert.alert('Success! 🎲', `Dynamic draw completed for ${totalPlayers} active players!`);
     } catch (e) {
       console.error('Error saving team draw:', e);
       Alert.alert('Error', 'Could not save team draw results.');
+    }
+  };
+
+  const handleGenerateTournamentBracket = async () => {
+    if (!selectedGame) return;
+    if (!supportsTournamentDraw(selectedGame.sport)) {
+      Alert.alert('Not Available', 'Tournament fixtures are available only for football, basketball, and tennis.');
+      return;
+    }
+    
+    let teams = selectedGame.teamsResult;
+    const playersList = selectedGame.players || [];
+
+    if (!teams || teams.length < 2) {
+      if (playersList.length < 2) {
+        Alert.alert('Notice ⚠️', 'You need at least 2 players registered in the game to build a tournament bracket.');
+        return;
+      }
+      
+      const totalPlayers = playersList.length;
+      const effectiveTeamSize = totalPlayers < 2 ? 1 : Math.max(1, Math.floor(totalPlayers / 2));
+      const shuffled = [...playersList];
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+      }
+
+      teams = [];
+      let idx = 1;
+      for (let i = 0; i < shuffled.length; i += effectiveTeamSize) {
+        teams.push({ id: idx++, players: shuffled.slice(i, i + effectiveTeamSize) });
+      }
+    }
+
+    if (teams.length < 2) {
+      Alert.alert('Error', 'Need at least 2 teams or participants to generate a tournament bracket.');
+      return;
+    }
+
+    const matches: TournamentMatch[] = [];
+    for (let i = 0; i < teams.length; i += 2) {
+      if (i + 1 < teams.length) {
+        matches.push({
+          id: matches.length + 1,
+          teamA: `Team #${teams[i].id} (${teams[i].players.join(', ')})`,
+          teamB: `Team #${teams[i+1].id} (${teams[i+1].players.join(', ')})`,
+          round: 'Match Fixture'
+        });
+      } else {
+        matches.push({
+          id: matches.length + 1,
+          teamA: `Team #${teams[i].id} (${teams[i].players.join(', ')})`,
+          teamB: 'Bye (Direct Advance)',
+          round: 'Preliminary'
+        });
+      }
+    }
+
+    try {
+      const gameRef = doc(db, 'games', selectedGame.id);
+      await updateDoc(gameRef, {
+        teamsResult: teams,
+        tournamentMatches: matches
+      });
+      Alert.alert('Tournament Ready! 🏆', 'Dynamic bracket and match fixtures generated successfully!');
+    } catch (e) {
+      console.error('Error generating tournament:', e);
+      Alert.alert('Error', 'Could not generate tournament bracket.');
     }
   };
 
@@ -895,6 +1057,7 @@ export default function RadarScreen() {
         players: [activeName],
         chat: [],
         teamsResult: [],
+        tournamentMatches: [],
         createdAt: new Date()
       });
 
@@ -1177,7 +1340,7 @@ export default function RadarScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContentLarge}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>🏟️ Game & Team Details</Text>
+              <Text style={styles.modalTitle}>🏟️ Game & Tournament Hub</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                 {selectedGame && (
                   <TouchableOpacity onPress={() => handleShareGame(selectedGame.id, selectedGame.title, selectedGame.sport, selectedGame.venueName, selectedGame.city, selectedGame.time, selectedGame.creatorName)}>
@@ -1238,36 +1401,85 @@ export default function RadarScreen() {
                     <Text style={styles.detailText}>{selectedGame.description}</Text>
                   </View>
 
-                  {isUserAdmin(selectedGame) && (
+                  {isUserAdmin(selectedGame) && supportsTournamentDraw(selectedGame.sport) && (
                     <View style={styles.detailBox}>
-                      <Text style={styles.detailLabel}>🎲 Auto Team Draw (Admin Only):</Text>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-                        <Text style={{ color: '#D4D4D8', fontSize: 12 }}>Players per team:</Text>
-                        <TextInput
-                          style={styles.drawInput}
-                          keyboardType="numeric"
-                          value={drawPlayersPerTeam}
-                          onChangeText={setDrawPlayersPerTeam}
-                          placeholder="5"
-                          placeholderTextColor="#52525B"
-                        />
-                        <TouchableOpacity style={[styles.drawBtn, { backgroundColor: sportStyle.color }]} onPress={handleRunAutoDraw}>
-                          <Ionicons name="shuffle" size={14} color="#09090B" style={{ marginRight: 4 }} />
-                          <Text style={styles.drawBtnText}>Run Draw 🚀</Text>
+                      <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14 }]}>⚡ Dynamic Tournament Hub (Admin)</Text>
+                      
+                      <View style={styles.adminTabsRow}>
+                        <TouchableOpacity 
+                          style={[styles.adminTabBtn, activeManagerTab === 'draw' && { backgroundColor: sportStyle.color }]}
+                          onPress={() => setActiveManagerTab('draw')}
+                        >
+                          <Text style={[styles.adminTabText, activeManagerTab === 'draw' && { color: '#09090B', fontWeight: 'bold' }]}>🎲 Team Draw</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity 
+                          style={[styles.adminTabBtn, activeManagerTab === 'tournament' && { backgroundColor: sportStyle.color }]}
+                          onPress={() => setActiveManagerTab('tournament')}
+                        >
+                          <Text style={[styles.adminTabText, activeManagerTab === 'tournament' && { color: '#09090B', fontWeight: 'bold' }]}>🏆 Tournament Brackets</Text>
                         </TouchableOpacity>
                       </View>
+
+                      {activeManagerTab === 'draw' ? (
+                        <View style={{ marginTop: 6 }}>
+                          <Text style={{ color: '#D4D4D8', fontSize: 12, marginBottom: 8 }}>Shuffle {selectedGame.players?.length || 0} participants into balanced teams:</Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                            <Text style={{ color: '#A1A1AA', fontSize: 12 }}>Players per team:</Text>
+                            <TextInput
+                              style={styles.drawInput}
+                              keyboardType="numeric"
+                              value={drawPlayersPerTeam}
+                              onChangeText={setDrawPlayersPerTeam}
+                              placeholder="5"
+                              placeholderTextColor="#52525B"
+                            />
+                            <TouchableOpacity style={[styles.drawBtn, { backgroundColor: sportStyle.color }]} onPress={handleRunAutoDraw}>
+                              <Ionicons name="shuffle" size={14} color="#09090B" style={{ marginRight: 4 }} />
+                              <Text style={styles.drawBtnText}>Run Draw 🚀</Text>
+                            </TouchableOpacity>
+                          </View>
+                        </View>
+                      ) : (
+                        <View style={{ marginTop: 6 }}>
+                          <Text style={{ color: '#D4D4D8', fontSize: 12, marginBottom: 8 }}>Generate match fixtures based on active participants:</Text>
+                          <TouchableOpacity style={[styles.drawBtn, { backgroundColor: sportStyle.color, width: '100%', height: 40, justifyContent: 'center' }]} onPress={handleGenerateTournamentBracket}>
+                            <Ionicons name="git-branch" size={14} color="#09090B" style={{ marginRight: 6 }} />
+                            <Text style={[styles.drawBtnText, { fontSize: 14 }]}>Generate Tournament Fixtures 🏆</Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
                     </View>
                   )}
 
-                  {selectedGame.teamsResult && selectedGame.teamsResult.length > 0 && (
+                  {supportsTournamentDraw(selectedGame.sport) && selectedGame.teamsResult && selectedGame.teamsResult.length > 0 && (
                     <View style={styles.detailBox}>
-                      <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14 }]}>🏆 Team Draw Results:</Text>
+                      <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14 }]}>👥 Teams Formed ({selectedGame.teamsResult.length} Teams):</Text>
                       {selectedGame.teamsResult.map(team => (
                         <View key={team.id} style={styles.teamResultCard}>
                           <Text style={styles.teamResultHeader}>Team #{team.id}</Text>
                           {team.players.map((pName, pIdx) => (
                             <Text key={pIdx} style={styles.teamResultPlayer}>• {pName}</Text>
                           ))}
+                        </View>
+                      ))}
+                    </View>
+                  )}
+
+                  {supportsTournamentDraw(selectedGame.sport) && selectedGame.tournamentMatches && selectedGame.tournamentMatches.length > 0 && (
+                    <View style={styles.detailBox}>
+                      <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14 }]}>⚔️ Tournament Fixtures (Matches):</Text>
+                      {selectedGame.tournamentMatches.map(match => (
+                        <View key={match.id} style={styles.matchFixtureCard}>
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
+                            <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>Match #{match.id}</Text>
+                            <Text style={{ color: '#71717A', fontSize: 10 }}>{match.round}</Text>
+                          </View>
+                          <View style={styles.matchTeamsRow}>
+                            <Text style={styles.matchTeamText}>{match.teamA}</Text>
+                            <Text style={{ color: '#EF4444', fontWeight: '900', fontSize: 12 }}>VS</Text>
+                            <Text style={styles.matchTeamText}>{match.teamB}</Text>
+                          </View>
                         </View>
                       ))}
                     </View>
@@ -1476,7 +1688,6 @@ export default function RadarScreen() {
                 ) : (
                   <View style={styles.postsGrid}>
                     {targetUserPosts.map(post => {
-                      const isVid = post.mediaType === 'video';
                       return (
                         <TouchableOpacity 
                           key={post.id} 
@@ -1484,14 +1695,19 @@ export default function RadarScreen() {
                           onPress={() => setSelectedPostModal(post)} 
                           activeOpacity={0.7}
                         >
-                          {isVid ? (
-                            <View style={[styles.postThumbnailImage, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', position: 'relative' }]}>
+                          {post.mediaType === 'video' && post.imageUrl ? (
+                            <View style={[styles.postThumbnailImage, { backgroundColor: '#000', position: 'relative' }]}>
+                              <ProfileVideoThumbnail uri={post.imageUrl} />
                               <View style={styles.videoBadgeOverlay}>
                                 <Ionicons name="play" size={14} color="#FAFAFA" />
                               </View>
                             </View>
-                          ) : (
+                          ) : post.imageUrl ? (
                             <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
+                          ) : (
+                            <View style={[styles.postThumbnailImage, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#18181B' }]}>
+                              <Ionicons name="document-text-outline" size={20} color="#EAB308" />
+                            </View>
                           )}
                         </TouchableOpacity>
                       );
@@ -1675,7 +1891,7 @@ export default function RadarScreen() {
                   {selectedPostModal.imageUrl ? (
                     <View style={styles.postImageBox}>
                       {selectedPostModal.mediaType === 'video' ? (
-                        <PostVideoPlayer key={`modal_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isStoryOpen={false} />
+                        <PostVideoPlayer key={`modal_radar_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isStoryOpen={false} />
                       ) : (
                         <Image source={{ uri: selectedPostModal.imageUrl }} style={styles.postImageContent} />
                       )}
@@ -1923,6 +2139,10 @@ const styles = StyleSheet.create({
   detailBox: { backgroundColor: '#09090B', borderRadius: 12, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#27272A' },
   detailLabel: { color: '#A1A1AA', fontSize: 12, fontWeight: 'bold', marginBottom: 6 },
   detailText: { color: '#FAFAFA', fontSize: 13 },
+
+  adminTabsRow: { flexDirection: 'row', backgroundColor: '#18181B', borderRadius: 10, padding: 4, marginBottom: 10 },
+  adminTabBtn: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
+  adminTabText: { color: '#A1A1AA', fontSize: 12, fontWeight: '600' },
   
   playersChipsContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   playerChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
@@ -1935,6 +2155,10 @@ const styles = StyleSheet.create({
   teamResultCard: { backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 10, padding: 10, marginTop: 8 },
   teamResultHeader: { color: '#FAFAFA', fontSize: 13, fontWeight: 'bold', marginBottom: 4 },
   teamResultPlayer: { color: '#D4D4D8', fontSize: 12, marginBottom: 2 },
+
+  matchFixtureCard: { backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 10, padding: 10, marginTop: 8 },
+  matchTeamsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
+  matchTeamText: { color: '#FAFAFA', fontSize: 13, fontWeight: 'bold' },
 
   listItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#09090B', padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#27272A' },
   listAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },

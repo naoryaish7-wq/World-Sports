@@ -159,6 +159,38 @@ function PostVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean }) 
   );
 }
 
+// תצוגה מקדימה של סרטון בפרופיל: מציג את הפריים הראשון בלי להתחיל לנגן
+function ProfileVideoThumbnail({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, player => {
+    player.loop = false;
+    player.staysActiveInBackground = false;
+    player.muted = true;
+  });
+
+  useEffect(() => {
+    try {
+      player.muted = true;
+      player.pause();
+      player.currentTime = 0;
+    } catch (e) {}
+    return () => {
+      try {
+        player.pause();
+        player.muted = true;
+      } catch (e) {}
+    };
+  }, [player]);
+
+  return (
+    <VideoView
+      style={styles.postThumbnailImage}
+      player={player}
+      nativeControls={false}
+      contentFit="cover"
+    />
+  );
+}
+
 // נגן סטורי: מתנגן רק כאשר מסך הבית והסטורי פעילים
 function StoryVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean }) {
   const player = useVideoPlayer(uri, player => {
@@ -615,14 +647,71 @@ useFocusEffect(
     fetchTargetUser();
   }, [selectedUserModalId]);
 
+  // טוענים את כל הפוסטים של המשתמש שמוצג בפרופיל, ולא רק את 15 הפוסטים שבעמוד הבית.
   useEffect(() => {
-    if (!targetProfileUser) return;
-    const filtered = posts.filter(p => 
-      p.userId === targetProfileUser.uid || 
-      p.authorName === targetProfileUser.name
-    );
-    setTargetUserPosts(filtered);
-  }, [targetProfileUser, posts]);
+    if (!targetProfileUser) {
+      setTargetUserPosts([]);
+      return;
+    }
+
+    const normalize = (value?: string) => (value || '').trim().toLowerCase();
+    const targetUid = normalize(targetProfileUser.uid);
+    const targetName = normalize(targetProfileUser.name);
+    const targetEmail = normalize(targetProfileUser.email || targetProfileUser.userEmail);
+    const targetEmailId = targetEmail ? targetEmail.replace(/[^a-z0-9]/g, '_') : '';
+
+    const unsubscribe = onSnapshot(collection(db, 'posts'), (snapshot) => {
+      const profilePosts: Post[] = snapshot.docs.map(docSnap => {
+        const data = docSnap.data();
+        const likesList = data.likesList || [];
+        return {
+          id: docSnap.id,
+          userId: data.userId,
+          userEmail: data.userEmail,
+          authorName: data.userName || data.authorName || 'Player',
+          authorMeta: data.authorMeta || 'Israel, Netanya',
+          avatarUrl: data.avatarUrl || targetProfileUser.avatar || '',
+          text: data.caption || data.text || '',
+          imageUrl: data.imageUrl || undefined,
+          mediaType: data.mediaType || 'image',
+          sport: data.sport || 'Football',
+          likes: likesList.length,
+          likesList,
+          isLiked: currentUserId ? likesList.includes(currentUserId) : false,
+          comments: data.comments || [],
+          createdAt: data.createdAt,
+        };
+      }).filter(post => {
+        const postUserId = normalize(post.userId);
+        const postEmail = normalize(post.userEmail);
+        const postName = normalize(post.authorName);
+        const postEmailId = postEmail ? postEmail.replace(/[^a-z0-9]/g, '_') : '';
+
+        return (
+          (!!targetUid && postUserId === targetUid) ||
+          (!!targetEmail && postEmail === targetEmail) ||
+          (!!targetEmailId && (postUserId === targetEmailId || postEmailId === targetEmailId)) ||
+          (!!targetName && postName === targetName)
+        );
+      });
+
+      const getPostTime = (value: any) => {
+        if (!value) return 0;
+        if (typeof value.toMillis === 'function') return value.toMillis();
+        if (typeof value.toDate === 'function') return value.toDate().getTime();
+        const time = new Date(value).getTime();
+        return Number.isNaN(time) ? 0 : time;
+      };
+
+      profilePosts.sort((a, b) => getPostTime(b.createdAt) - getPostTime(a.createdAt));
+      setTargetUserPosts(profilePosts);
+    }, (error) => {
+      console.error('Error loading profile posts:', error);
+      setTargetUserPosts([]);
+    });
+
+    return () => unsubscribe();
+  }, [targetProfileUser, currentUserId]);
 
   useEffect(() => {
     if (!currentUserId || !chatTargetUser || !chatModalVisible) return;
@@ -1838,15 +1927,22 @@ useFocusEffect(
                           }} 
                           activeOpacity={0.7}
                         >
-                          {isVid ? (
-                            <View style={[styles.postThumbnailImage, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', position: 'relative' }]}>
-                              <PostVideoPlayer key={`thumb_${post.id}`} uri={post.imageUrl || ''} isActive={false} />
+                          {post.imageUrl && !isVid ? (
+                            <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
+                          ) : isVid ? (
+                            <View style={[styles.postThumbnailImage, { position: 'relative', backgroundColor: '#18181B' }]}>
+                              {!!post.imageUrl && <ProfileVideoThumbnail uri={post.imageUrl} />}
                               <View style={styles.videoBadgeOverlay}>
                                 <Ionicons name="play" size={14} color="#FAFAFA" />
                               </View>
                             </View>
                           ) : (
-                            <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
+                            <View style={[styles.postThumbnailImage, styles.textPostThumbnail]}>
+                              <Ionicons name="document-text-outline" size={22} color="#EAB308" />
+                              <Text style={styles.postThumbnailText} numberOfLines={5}>
+                                {post.text || 'Text post'}
+                              </Text>
+                            </View>
                           )}
                         </TouchableOpacity>
                       );
@@ -2283,6 +2379,8 @@ const styles = StyleSheet.create({
   postsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 2 },
   postThumbnailBox: { width: (width * 0.85) / 3 - 4, height: (width * 0.85) / 3 - 4, backgroundColor: '#121215', borderRadius: 8, overflow: 'hidden' },
   postThumbnailImage: { width: '100%', height: '100%' },
+  textPostThumbnail: { backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center', padding: 8 },
+  postThumbnailText: { color: '#E4E4E7', fontSize: 10, lineHeight: 14, textAlign: 'center', marginTop: 5 },
   videoBadgeOverlay: { position: 'absolute', top: 6, right: 6, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 10, width: 22, height: 22, justifyContent: 'center', alignItems: 'center' },
   emptyPostsBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30, backgroundColor: '#18181B', borderRadius: 14, borderWidth: 1, borderColor: '#27272A' },
   emptyPostsText: { color: '#71717A', fontSize: 12, marginTop: 6 },

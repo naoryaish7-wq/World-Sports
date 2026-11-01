@@ -122,6 +122,39 @@ function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boole
   );
 }
 
+
+function ProfileVideoThumbnail({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, player => {
+    player.loop = false;
+    player.staysActiveInBackground = false;
+    player.muted = true;
+  });
+
+  useEffect(() => {
+    try {
+      player.pause();
+      player.muted = true;
+      player.currentTime = 0;
+    } catch (e) {}
+
+    return () => {
+      try {
+        player.pause();
+        player.muted = true;
+      } catch (e) {}
+    };
+  }, [player]);
+
+  return (
+    <VideoView
+      style={styles.postThumbnailImage}
+      player={player}
+      nativeControls={false}
+      contentFit="cover"
+    />
+  );
+}
+
 const { width } = Dimensions.get('window');
 const imageSize = (width * 0.85) / 3 - 4;
 
@@ -802,8 +835,8 @@ export default function ProfileScreen() {
               return (
                 <TouchableOpacity key={post.id} style={styles.postThumbnailBox} onPress={() => setSelectedPostModal(post)} activeOpacity={0.9}>
                   {isVid ? (
-                    <View style={[styles.postThumbnailImage, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }]}>
-                      <View style={{ flex: 1, backgroundColor: '#000' }} />
+                    <View style={[styles.postThumbnailImage, { backgroundColor: '#000' }]}>
+                      {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} /> : null}
                       <View style={styles.videoBadgeOverlay}>
                         <Ionicons name="play" size={14} color="#FAFAFA" />
                       </View>
@@ -1324,8 +1357,8 @@ export default function ProfileScreen() {
                       return (
                         <TouchableOpacity key={post.id} style={styles.postThumbnailBox} onPress={() => setSelectedPostModal(post)} activeOpacity={0.9}>
                           {isVid ? (
-                            <View style={[styles.postThumbnailImage, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }]}>
-                              <View style={{ flex: 1, backgroundColor: '#000' }} />
+                            <View style={[styles.postThumbnailImage, { backgroundColor: '#000' }]}>
+                              {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} /> : null}
                               <View style={styles.videoBadgeOverlay}>
                                 <Ionicons name="play" size={14} color="#FAFAFA" />
                               </View>

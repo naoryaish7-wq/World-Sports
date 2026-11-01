@@ -94,6 +94,40 @@ function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boole
   );
 }
 
+// תצוגה מקדימה שקטה של הפריים הראשון בסרטון בתוך רשת הפרופיל.
+// הסרטון אינו מתנגן אוטומטית; הניגון המלא מתבצע רק לאחר פתיחת הפוסט.
+function ProfileVideoThumbnail({ uri }: { uri: string }) {
+  const player = useVideoPlayer(uri, player => {
+    player.loop = false;
+    player.staysActiveInBackground = false;
+    player.muted = true;
+  });
+
+  useEffect(() => {
+    try {
+      player.pause();
+      player.muted = true;
+      player.currentTime = 0;
+    } catch (e) {}
+
+    return () => {
+      try {
+        player.pause();
+        player.muted = true;
+      } catch (e) {}
+    };
+  }, [player]);
+
+  return (
+    <VideoView
+      style={styles.postThumbnailImage}
+      player={player}
+      nativeControls={false}
+      contentFit="cover"
+    />
+  );
+}
+
 const getTimeAgo = (timestamp: any) => {
   if (!timestamp) return 'Just now';
   try {
@@ -622,7 +656,8 @@ export default function DiscoverScreen() {
                           activeOpacity={0.7}
                         >
                           {isVid ? (
-                            <View style={[styles.postThumbnailImage, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', position: 'relative' }]}>
+                            <View style={[styles.postThumbnailImage, { backgroundColor: '#000', position: 'relative' }]}>
+                              {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} /> : null}
                               <View style={styles.videoBadgeOverlay}>
                                 <Ionicons name="play" size={14} color="#FAFAFA" />
                               </View>
