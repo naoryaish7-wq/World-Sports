@@ -803,7 +803,7 @@ export default function ProfileScreen() {
                 <TouchableOpacity key={post.id} style={styles.postThumbnailBox} onPress={() => setSelectedPostModal(post)} activeOpacity={0.9}>
                   {isVid ? (
                     <View style={[styles.postThumbnailImage, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }]}>
-                      <PostVideoPlayer key={`mythumb_${post.id}`} uri={post.imageUrl || ''} isStoryOpen={false} />
+                      <View style={{ flex: 1, backgroundColor: '#000' }} />
                       <View style={styles.videoBadgeOverlay}>
                         <Ionicons name="play" size={14} color="#FAFAFA" />
                       </View>
@@ -1325,7 +1325,7 @@ export default function ProfileScreen() {
                         <TouchableOpacity key={post.id} style={styles.postThumbnailBox} onPress={() => setSelectedPostModal(post)} activeOpacity={0.9}>
                           {isVid ? (
                             <View style={[styles.postThumbnailImage, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center' }]}>
-                              <PostVideoPlayer key={`targetthumb_${post.id}`} uri={post.imageUrl || ''} isStoryOpen={false} />
+                              <View style={{ flex: 1, backgroundColor: '#000' }} />
                               <View style={styles.videoBadgeOverlay}>
                                 <Ionicons name="play" size={14} color="#FAFAFA" />
                               </View>

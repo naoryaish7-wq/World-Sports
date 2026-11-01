@@ -1,5 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, ScrollView, Image, TouchableOpacity, TextInput, Modal, Alert, Dimensions, TouchableWithoutFeedback, PanResponder, Animated, AppState } from 'react-native';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useFocusEffect } from 'expo-router';
+import { StyleSheet, Text, View, ScrollView, FlatList, Image, TouchableOpacity, TextInput, Modal, Alert, Dimensions, TouchableWithoutFeedback, PanResponder, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import * as ImagePicker from 'expo-image-picker';
@@ -10,6 +11,9 @@ import { router } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
 
 const { width, height } = Dimensions.get('window');
+
+// ניהול גלובלי של כל נגני הווידאו הפעילים באפליקציה למניעת השמעה מקבילה
+const activeVideoPlayers = new Set<any>();
 
 type Comment = {
   id: string;
@@ -101,32 +105,49 @@ const getTimeAgo = (timestamp: any) => {
   }
 };
 
-// נגן וידאו חכם לפוסטים שמקבל פסקה או עצירה חיצונית לפי צורך
-function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boolean }) {
+// נגן וידאו חכם לפוסטים: מפסיק לחלוטין שמע וניגון ברגע שאינו פעיל במסך
+function PostVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean }) {
   const player = useVideoPlayer(uri, player => {
     player.loop = true;
     player.staysActiveInBackground = false;
-    player.muted = false;
-    if (!isStoryOpen) {
-      player.play();
-    }
+    player.muted = true;
   });
 
   useEffect(() => {
-    if (isStoryOpen) {
-      try {
-        player.pause();
-      } catch (e) {}
-    }
-  }, [isStoryOpen, player]);
-
-  useEffect(() => {
+    activeVideoPlayers.add(player);
     return () => {
+      activeVideoPlayers.delete(player);
       try {
         player.pause();
+        player.muted = true;
       } catch (e) {}
     };
   }, [player]);
+
+  useEffect(() => {
+    try {
+      if (isActive) {
+        activeVideoPlayers.forEach(p => {
+          if (p !== player) {
+            try { 
+              p.pause(); 
+              p.muted = true;
+            } catch (e) {}
+          }
+        });
+        player.muted = false;
+        player.play();
+      } else {
+        player.pause();
+        player.muted = true;
+        player.currentTime = 0;
+      }
+    } catch (e) {}
+  }, [isActive, player]);
+
+  if (!isActive) {
+    return null;
+  }
 
   return (
     <VideoView
@@ -138,35 +159,68 @@ function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boole
   );
 }
 
-// נגן וידאו חכם לסטורי שמפסיק מיד את הניגון בעת מעבר או סגירה
-function StoryVideoPlayer({ uri }: { uri: string }) {
+// נגן סטורי: מתנגן רק כאשר מסך הבית והסטורי פעילים
+function StoryVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean }) {
   const player = useVideoPlayer(uri, player => {
     player.loop = true;
     player.staysActiveInBackground = false;
-    player.muted = false;
-    player.play();
+    player.muted = true;
   });
 
   useEffect(() => {
+    activeVideoPlayers.add(player);
     return () => {
+      activeVideoPlayers.delete(player);
       try {
         player.pause();
+        player.muted = true;
       } catch (e) {}
     };
   }, [player]);
+
+  useEffect(() => {
+    try {
+      if (isActive) {
+        activeVideoPlayers.forEach(otherPlayer => {
+          if (otherPlayer !== player) {
+            try { otherPlayer.pause(); otherPlayer.muted = true; } catch (e) {}
+          }
+        });
+        player.muted = false;
+        player.play();
+      } else {
+        player.pause();
+        player.muted = true;
+        player.currentTime = 0;
+      }
+    } catch (e) {}
+  }, [isActive, player]);
 
   return (
     <VideoView
       style={styles.fullStoryVideo}
       player={player}
       nativeControls={false}
-      contentFit="cover"
+      contentFit="contain"
     />
   );
 }
 
 export default function HomeScreen() {
   const { user } = useAuth();
+  const [isScreenFocused, setIsScreenFocused] = useState(true);
+
+useFocusEffect(
+  useCallback(() => {
+    setIsScreenFocused(true);
+
+    return () => {
+      setIsScreenFocused(false);
+      stopAllVideos();
+      setActiveGroupIndex(null);
+    };
+  }, [])
+);
 
   const [liveAvatar, setLiveAvatar] = useState(user?.avatarUrl || '');
   const [liveName, setLiveName] = useState(user?.name || 'Player');
@@ -177,6 +231,7 @@ export default function HomeScreen() {
   const [allUsersList, setAllUsersList] = useState<any[]>([]);
 
   const [zoomedAvatarUri, setZoomedAvatarUri] = useState<string | null>(null);
+  const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
 
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -483,6 +538,26 @@ export default function HomeScreen() {
   const [commentsModalPost, setCommentsModalPost] = useState<Post | null>(null);
   const [modalCommentInput, setModalCommentInput] = useState('');
 
+  // עצירת כל נגני הווידאו באופן מוחלט בכל מעבר לפרופיל או מודל
+  const stopAllVideos = () => {
+    activeVideoPlayers.forEach(p => {
+      try {
+        p.pause();
+        p.muted = true;
+        p.currentTime = 0;
+      } catch (e) {}
+    });
+    setActiveVideoId(null);
+  };
+
+  // בעת יציאה מעמוד הבית (למשל מעבר לטאב אחר) עוצרים גם פוסטים וגם סטוריז.
+  useEffect(() => {
+    if (!isScreenFocused) {
+      stopAllVideos();
+      setActiveGroupIndex(null);
+    }
+  }, [isScreenFocused]);
+
   const openUserProfileById = (userId?: string, playerName?: string) => {
     const cleanPlayerName = (playerName || '').trim().toLowerCase();
     const myCurrentName = (liveName || '').trim().toLowerCase();
@@ -493,6 +568,8 @@ export default function HomeScreen() {
     ) {
       return; 
     }
+
+    stopAllVideos();
 
     setTargetActiveModalList(null);
     setSelectedUserModalId(null);
@@ -653,7 +730,6 @@ export default function HomeScreen() {
   const [newPostText, setNewPostText] = useState('');
   const [newPostImage, setNewPostImage] = useState<string | null>(null);
   const [newPostMediaType, setNewPostMediaType] = useState<'image' | 'video'>('image');
-  const [commentInputs, setCommentInputs] = useState<{ [postId: string]: string }>({});
 
   const lastTapRef = useRef<{ [postId: string]: number }>({});
 
@@ -794,6 +870,8 @@ export default function HomeScreen() {
   };
 
   const handlePickStoryMedia = async () => {
+    stopAllVideos();
+
     let result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.All,
       allowsEditing: true,
@@ -968,6 +1046,8 @@ export default function HomeScreen() {
     }
   };
 
+  const [commentInputs, setCommentInputs] = useState<{ [postId: string]: string }>({});
+
   const filteredPosts = posts.filter(post => {
     const matchesSport = userSports.length === 0 || (post.sport && userSports.includes(post.sport)) || !post.sport;
     return matchesSport;
@@ -1002,117 +1082,153 @@ export default function HomeScreen() {
   const isFollowingTarget = targetProfileUser?.followers?.includes(currentUserId || '');
   const isViewingMyOwnProfile = targetProfileUser?.uid === currentUserId;
 
+  const isAnyModalOpen = activeGroupIndex !== null || !!selectedUserModalId || !!selectedPostModal || !!commentsModalPost;
+
+  // refs מונעים callback ישן של FlatList מלהשתמש בערכי focus/modal לא מעודכנים.
+  const screenFocusedRef = useRef(isScreenFocused);
+  const modalOpenRef = useRef(isAnyModalOpen);
+  useEffect(() => { screenFocusedRef.current = isScreenFocused; }, [isScreenFocused]);
+  useEffect(() => { modalOpenRef.current = isAnyModalOpen; }, [isAnyModalOpen]);
+
+  // הפעלת סרטון רק כאשר לפחות 60% מהפוסט גלויים והמסך הנוכחי בפוקוס.
+  const viewabilityConfig = { itemVisiblePercentThreshold: 60 };
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: Array<any> }) => {
+    if (!screenFocusedRef.current || modalOpenRef.current) {
+      setActiveVideoId(null);
+      activeVideoPlayers.forEach(p => {
+        try { p.pause(); p.muted = true; } catch (e) {}
+      });
+      return;
+    }
+
+    const visibleVideo = viewableItems.find(
+      item => item.item.mediaType === 'video' && item.isViewable
+    );
+    setActiveVideoId(visibleVideo ? visibleVideo.item.id : null);
+  }).current;
+
   return (
     <View style={{ flex: 1, backgroundColor: '#09090B' }}>
-      <ScrollView 
+      <FlatList 
+        data={filteredPosts}
+        keyExtractor={(item) => item.id}
         style={styles.container} 
         contentContainerStyle={styles.scrollContent} 
         showsVerticalScrollIndicator={false}
-      >
-      
-      <View style={styles.headerRow}>
-        <View>
-          <Text style={styles.homeCategory}>Home</Text>
-          <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
-        </View>
-
-        <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-          <TouchableOpacity 
-            style={styles.notificationBellBtn} 
-            onPress={() => router.push('/notifications')}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="notifications-outline" size={20} color="#EAB308" />
-          </TouchableOpacity>
-
-          <TouchableOpacity style={styles.createBtn} onPress={() => setCreatePostVisible(true)} activeOpacity={0.85}>
-            <Ionicons name="add" size={16} color="#09090B" style={{ marginRight: 4 }} />
-            <Text style={styles.createBtnText}>Post</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.storiesContainer}>
-        <TouchableOpacity style={styles.storyItem} onPress={handlePickStoryMedia} activeOpacity={0.85}>
-          <View style={styles.myStoryRing}>
-            {liveAvatar ? (
-              <Image source={{ uri: liveAvatar }} style={styles.storyImg} />
-            ) : (
-              <View style={styles.avatarPlaceholder}>
-                <Text style={styles.avatarPlaceholderText}>{liveName ? liveName[0].toUpperCase() : 'P'}</Text>
+        viewabilityConfig={viewabilityConfig}
+        onViewableItemsChanged={onViewableItemsChanged}
+        ListHeaderComponent={
+          <>
+            <View style={styles.headerRow}>
+              <View>
+                <Text style={styles.homeCategory}>Home</Text>
+                <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
               </View>
-            )}
-            <View style={styles.plusBadge}>
-              <Ionicons name="add" size={12} color="#09090B" />
+
+              <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+                <TouchableOpacity 
+                  style={styles.notificationBellBtn} 
+                  onPress={() => {
+                    stopAllVideos();
+                    router.push('/notifications');
+                  }}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="notifications-outline" size={20} color="#EAB308" />
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.createBtn} onPress={() => { stopAllVideos(); setCreatePostVisible(true); }} activeOpacity={0.85}>
+                  <Ionicons name="add" size={16} color="#09090B" style={{ marginRight: 4 }} />
+                  <Text style={styles.createBtnText}>Post</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 6 }}>
-            <Text style={styles.storyName}>Add Story</Text>
-            {allUsersList.find(u => u.uid === currentUserId)?.isVip && (
-              <Ionicons name="checkmark-circle" size={12} color="#EAB308" />
-            )}
-          </View>
-        </TouchableOpacity>
 
-        {groupedStories.map((group, groupIndex) => {
-          const groupUserObj = allUsersList.find(u => u.uid === group.userUid || u.name === group.name);
-          const hasUnwatchedStories = group.hasUnwatched;
-
-          return (
-            <View key={group.userUid} style={styles.storyItem}>
-              <TouchableOpacity 
-                style={[
-                  styles.storyRing, 
-                  group.isMine && styles.myStoryRingActive,
-                  hasUnwatchedStories ? styles.unwatchedRing : styles.watchedRing
-                ]} 
-                onPress={() => {
-                  setActiveGroupIndex(groupIndex);
-                  setActiveStoryInGroupIndex(0);
-                }}
-                activeOpacity={0.85}
-              >
-                {group.avatarUrl ? (
-                  <Image source={{ uri: group.avatarUrl }} style={styles.storyImg} />
-                ) : (
-                  <View style={styles.avatarPlaceholder}>
-                    <Text style={styles.avatarPlaceholderText}>{group.name ? group.name[0].toUpperCase() : 'S'}</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.storiesContainer}>
+              <TouchableOpacity style={styles.storyItem} onPress={handlePickStoryMedia} activeOpacity={0.85}>
+                <View style={styles.myStoryRing}>
+                  {liveAvatar ? (
+                    <Image source={{ uri: liveAvatar }} style={styles.storyImg} />
+                  ) : (
+                    <View style={styles.avatarPlaceholder}>
+                      <Text style={styles.avatarPlaceholderText}>{liveName ? liveName[0].toUpperCase() : 'P'}</Text>
+                    </View>
+                  )}
+                  <View style={styles.plusBadge}>
+                    <Ionicons name="add" size={12} color="#09090B" />
                   </View>
-                )}
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 6 }}>
+                  <Text style={styles.storyName}>Add Story</Text>
+                  {allUsersList.find(u => u.uid === currentUserId)?.isVip && (
+                    <Ionicons name="checkmark-circle" size={12} color="#EAB308" />
+                  )}
+                </View>
               </TouchableOpacity>
 
-              <TouchableOpacity 
-                onPress={() => {
-                  if (!group.isMine) {
-                    openUserProfileById(group.userUid, group.name);
-                  }
-                }}
-                activeOpacity={group.isMine ? 1 : 0.8}
-                style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 6 }}
-              >
-                <Text style={styles.storyName} numberOfLines={1}>{group.isMine ? 'Your Story' : group.name}</Text>
-                {groupUserObj?.isVip && (
-                  <Ionicons name="checkmark-circle" size={12} color="#EAB308" />
-                )}
-              </TouchableOpacity>
-            </View>
-          );
-        })}
-      </ScrollView>
+              {groupedStories.map((group, groupIndex) => {
+                const groupUserObj = allUsersList.find(u => u.uid === group.userUid || u.name === group.name);
+                const hasUnwatchedStories = group.hasUnwatched;
 
-      {filteredPosts.length === 0 ? (
-        <View style={styles.emptyFeedBox}>
-          <Ionicons name="football-outline" size={48} color="#52525B" />
-          <Text style={styles.emptyFeedText}>No posts found for your selected sports. Be the first to share!</Text>
-        </View>
-      ) : (
-        filteredPosts.map(post => {
+                return (
+                  <View key={group.userUid} style={styles.storyItem}>
+                    <TouchableOpacity 
+                      style={[
+                        styles.storyRing, 
+                        group.isMine && styles.myStoryRingActive,
+                        hasUnwatchedStories ? styles.unwatchedRing : styles.watchedRing
+                      ]} 
+                      onPress={() => {
+                        stopAllVideos();
+                        setActiveGroupIndex(groupIndex);
+                        setActiveStoryInGroupIndex(0);
+                      }}
+                      activeOpacity={0.85}
+                    >
+                      {group.avatarUrl ? (
+                        <Image source={{ uri: group.avatarUrl }} style={styles.storyImg} />
+                      ) : (
+                        <View style={styles.avatarPlaceholder}>
+                          <Text style={styles.avatarPlaceholderText}>{group.name ? group.name[0].toUpperCase() : 'S'}</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+
+                    <TouchableOpacity 
+                      onPress={() => {
+                        if (!group.isMine) {
+                          openUserProfileById(group.userUid, group.name);
+                        }
+                      }}
+                      activeOpacity={group.isMine ? 1 : 0.8}
+                      style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 6 }}
+                    >
+                      <Text style={styles.storyName} numberOfLines={1}>{group.isMine ? 'Your Story' : group.name}</Text>
+                      {groupUserObj?.isVip && (
+                        <Ionicons name="checkmark-circle" size={12} color="#EAB308" />
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                );
+              })}
+            </ScrollView>
+          </>
+        }
+        ListEmptyComponent={
+          <View style={styles.emptyFeedBox}>
+            <Ionicons name="football-outline" size={48} color="#52525B" />
+            <Text style={styles.emptyFeedText}>No posts found for your selected sports. Be the first to share!</Text>
+          </View>
+        }
+        renderItem={({ item: post }) => {
           const postTimeAgo = getTimeAgo(post.createdAt);
           const authorUserObj = allUsersList.find(u => u.uid === post.userId || u.name === post.authorName);
           const isVideo = post.mediaType === 'video';
           
           const promotedUntilTime = authorUserObj?.promotedUntil?.toMillis ? authorUserObj.promotedUntil.toMillis() : (authorUserObj?.promotedUntil?.seconds ? authorUserObj.promotedUntil.seconds * 1000 : 0);
           const isPostPromoted = authorUserObj?.isPromoted && promotedUntilTime > Date.now();
+
+          const isVideoActive = isScreenFocused && !isAnyModalOpen && activeVideoId === post.id;
 
           return (
             <View key={post.id} style={[styles.postCard, isPostPromoted && { borderColor: '#3B82F6', borderWidth: 1.5 }]}>
@@ -1157,10 +1273,13 @@ export default function HomeScreen() {
               <Text style={styles.postText}>{post.text}</Text>
               
               {post.imageUrl ? (
-                <TouchableWithoutFeedback onPress={() => handleDoubleTap(post.id)}>
+                <TouchableWithoutFeedback onPress={() => {
+                  if (isVideo) setActiveVideoId(post.id);
+                  handleDoubleTap(post.id);
+                }}>
                   <View style={styles.postImageBox}>
                     {isVideo ? (
-                      <PostVideoPlayer key={post.id} uri={post.imageUrl} isStoryOpen={activeGroupIndex !== null} />
+                      <PostVideoPlayer key={post.id} uri={post.imageUrl} isActive={isVideoActive} />
                     ) : (
                       <Image source={{ uri: post.imageUrl }} style={styles.postImageContent} />
                     )}
@@ -1180,7 +1299,10 @@ export default function HomeScreen() {
                   </Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity style={styles.actionBtn} onPress={() => setCommentsModalPost(post)} activeOpacity={0.7}>
+                <TouchableOpacity style={styles.actionBtn} onPress={() => {
+                  stopAllVideos();
+                  setCommentsModalPost(post);
+                }} activeOpacity={0.7}>
                   <Ionicons name="chatbubble-outline" size={18} color="#A1A1AA" />
                   <Text style={styles.actionText}>{post.comments.length} Comments</Text>
                 </TouchableOpacity>
@@ -1188,12 +1310,10 @@ export default function HomeScreen() {
 
             </View>
           );
-        })
-      )}
+        }}
+      />
 
-      </ScrollView>
-
-      {/* מודל תגובות מלא ומעודכן */}
+      {/* מודל תגובות */}
       <Modal visible={!!commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setCommentsModalPost(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.commentsModalContent}>
@@ -1271,7 +1391,7 @@ export default function HomeScreen() {
             {selectedStoryUri && (
               <View style={styles.storyCanvasBox}>
                 {storyMediaType === 'video' ? (
-                  <PostVideoPlayer key="editor_video" uri={selectedStoryUri} isStoryOpen={false} />
+                  <PostVideoPlayer key="editor_video" uri={selectedStoryUri} isActive={false} />
                 ) : (
                   <Image source={{ uri: selectedStoryUri }} style={styles.storyCanvasImage} />
                 )}
@@ -1380,7 +1500,7 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      {/* מודל צפייה בסטורי תואם מסך מלא אמיתי */}
+      {/* מודל צפייה בסטורי */}
       <Modal visible={activeGroupIndex !== null} transparent={true} animationType="fade" onRequestClose={() => setActiveGroupIndex(null)}>
         <View style={styles.storyModalOverlay}>
           <TouchableOpacity style={styles.closeStoryBtn} onPress={() => { setActiveGroupIndex(null); setStoryCommentInput(''); }} activeOpacity={0.8}>
@@ -1442,7 +1562,7 @@ export default function HomeScreen() {
                       >
                         <View style={styles.storyHeaderAvatar}>
                           {currentGroup.avatarUrl ? (
-                            <Image source={{ uri: currentGroup.avatarUrl }} style={styles.avatarImg} />
+                            <Image source={{ uri: currentGroup.avatarUrl }} style={styles.storyImg} />
                           ) : (
                             <Text style={{ color: '#EAB308', fontWeight: 'bold', fontSize: 11 }}>{currentGroup.name ? currentGroup.name[0] : 'P'}</Text>
                           )}
@@ -1459,7 +1579,7 @@ export default function HomeScreen() {
 
                     <View style={styles.fullStoryMediaBox}>
                       {isStoryVideo ? (
-                        <StoryVideoPlayer key={currentStory.id} uri={currentStory.imageUrl} />
+                        <StoryVideoPlayer key={currentStory.id} uri={currentStory.imageUrl} isActive={isScreenFocused && activeGroupIndex !== null} />
                       ) : (
                         <Image source={{ uri: currentStory.imageUrl }} style={styles.fullStoryImage} />
                       )}
@@ -1681,6 +1801,7 @@ export default function HomeScreen() {
                     <TouchableOpacity 
                       style={styles.chatOpenBtn} 
                       onPress={() => {
+                        stopAllVideos();
                         setChatTargetUser(targetProfileUser);
                         setSelectedUserModalId(null);
                         setChatModalVisible(true);
@@ -1711,12 +1832,15 @@ export default function HomeScreen() {
                         <TouchableOpacity 
                           key={post.id} 
                           style={styles.postThumbnailBox} 
-                          onPress={() => setSelectedPostModal(post)} 
+                          onPress={() => {
+                            stopAllVideos();
+                            setSelectedPostModal(post);
+                          }} 
                           activeOpacity={0.7}
                         >
                           {isVid ? (
                             <View style={[styles.postThumbnailImage, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', position: 'relative' }]}>
-                              <PostVideoPlayer key={`thumb_${post.id}`} uri={post.imageUrl || ''} isStoryOpen={false} />
+                              <PostVideoPlayer key={`thumb_${post.id}`} uri={post.imageUrl || ''} isActive={false} />
                               <View style={styles.videoBadgeOverlay}>
                                 <Ionicons name="play" size={14} color="#FAFAFA" />
                               </View>
@@ -1786,7 +1910,7 @@ export default function HomeScreen() {
                     <TouchableWithoutFeedback onPress={() => handleDoubleTap(selectedPostModal.id)}>
                       <View style={styles.postImageBox}>
                         {selectedPostModal.mediaType === 'video' ? (
-                          <PostVideoPlayer key={`modal_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isStoryOpen={false} />
+                          <PostVideoPlayer key={`modal_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isActive={true} />
                         ) : (
                           <Image source={{ uri: selectedPostModal.imageUrl }} style={styles.postImageContent} />
                         )}
@@ -2071,9 +2195,15 @@ const styles = StyleSheet.create({
   activeBgChip: { borderColor: '#EAB308', backgroundColor: '#27272A' },
   bgOptionText: { color: '#FAFAFA', fontSize: 11, fontWeight: '700' },
 
-  /* קונטיינר וידאו תואם למסך מלא עד הסוף (flex: 1) */
-  fullStoryMediaBox: { width: '100%', flex: 1, backgroundColor: '#000', overflow: 'hidden' },
-  fullStoryImage: { width: '100%', height: '100%', resizeMode: 'cover' },
+  fullStoryMediaBox: { 
+    width: '100%', 
+    flex: 1, 
+    backgroundColor: '#000000', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    overflow: 'hidden' 
+  },
+  fullStoryImage: { width: '100%', height: '100%', resizeMode: 'contain' },
   fullStoryVideo: { width: '100%', height: '100%' },
   fullStoryName: { color: '#FAFAFA', fontSize: 14, fontWeight: '700' },
   

@@ -623,7 +623,6 @@ export default function DiscoverScreen() {
                         >
                           {isVid ? (
                             <View style={[styles.postThumbnailImage, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', position: 'relative' }]}>
-                              <PostVideoPlayer key={`thumb_disc_${post.id}`} uri={post.imageUrl || ''} isStoryOpen={false} />
                               <View style={styles.videoBadgeOverlay}>
                                 <Ionicons name="play" size={14} color="#FAFAFA" />
                               </View>

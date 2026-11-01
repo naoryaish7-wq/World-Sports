@@ -80,6 +80,9 @@ type GameItem = {
   maxPlayers: number;
   players: string[];
   chat: ChatMessage[];
+  teamsResult?: Array<{ id: number; players: string[] }>;
+  playersPerTeam?: number;
+  createdAt?: any;
 };
 
 function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boolean }) {
@@ -118,23 +121,37 @@ function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boole
   );
 }
 
-const getSportIcon = (sportName: string) => {
-  switch (sportName?.toLowerCase()) {
-    case 'football':
-    case 'כדורגל':
-      return 'football';
-    case 'basketball':
-    case 'כדורסל':
-      return 'basketball';
-    case 'tennis':
-    case 'טניס':
-      return 'tennisball';
-    case 'running':
-    case 'ריצה':
-      return 'fitness';
-    default:
-      return 'football';
+// פונקציה מתקדמת המקצה אייקון ייחודי וצבעים מותאמים אישית לכל ענף ספורט
+const getSportIconAndColor = (sportName: string) => {
+  const sport = (sportName || '').toLowerCase().trim();
+
+  if (sport.includes('football') || sport.includes('כדורגל') || sport.includes('soccer')) {
+    return { icon: 'football', color: '#22C55E', bg: '#143825', border: '#22C55E' }; // ירוק כדורגל
   }
+  if (sport.includes('basketball') || sport.includes('כדורסל')) {
+    return { icon: 'basketball', color: '#F97316', bg: '#3D2012', border: '#F97316' }; // כתום כדורסל
+  }
+  if (sport.includes('tennis') || sport.includes('טניס')) {
+    return { icon: 'tennisball', color: '#EAB308', bg: '#332E0F', border: '#EAB308' }; // צהוב טניס
+  }
+  if (sport.includes('running') || sport.includes('ריצה')) {
+    return { icon: 'fitness', color: '#3B82F6', bg: '#10223D', border: '#3B82F6' }; // כחול ריצה
+  }
+  if (sport.includes('gym') || sport.includes('fitness') || sport.includes('כושר') || sport.includes('workout')) {
+    return { icon: 'barbell', color: '#EF4444', bg: '#3D1518', border: '#EF4444' }; // אדום כושר
+  }
+  if (sport.includes('padel') || sport.includes('פדל')) {
+    return { icon: 'planet', color: '#A855F7', bg: '#2C153D', border: '#A855F7' }; // סגול פדל
+  }
+  if (sport.includes('cycling') || sport.includes('אופניים')) {
+    return { icon: 'bicycle', color: '#06B6D4', bg: '#0F3138', border: '#06B6D4' }; // תכלת אופניים
+  }
+  if (sport.includes('swimming') || sport.includes('שחייה')) {
+    return { icon: 'water', color: '#0EA5E9', bg: '#102B3D', border: '#0EA5E9' }; // כחול מים
+  }
+
+  // ברירת מחדל לכל ענף אחר
+  return { icon: 'trophy', color: '#EAB308', bg: '#332E0F', border: '#EAB308' };
 };
 
 const getTimeAgo = (timestamp: any) => {
@@ -157,6 +174,30 @@ const getTimeAgo = (timestamp: any) => {
     return 'Just now';
   } catch (e) {
     return 'Just now';
+  }
+};
+
+const getRemainingTime = (timestamp: any) => {
+  if (!timestamp) return '24h left';
+  try {
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+    if (isNaN(date.getTime())) return '24h left';
+    
+    const expiryTime = date.getTime() + 24 * 60 * 60 * 1000;
+    const remainingMs = expiryTime - Date.now();
+
+    if (remainingMs <= 0) return 'Expired';
+
+    const totalMinutes = Math.floor(remainingMs / (1000 * 60));
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+
+    if (hours > 0) {
+      return `${hours}h ${minutes}m left`;
+    }
+    return `${minutes}m left`;
+  } catch (e) {
+    return '24h left';
   }
 };
 
@@ -186,6 +227,8 @@ export default function RadarScreen() {
   const [selectedGame, setSelectedGame] = useState<GameItem | null>(null);
   const [chatMessage, setChatMessage] = useState('');
   const chatScrollRef = useRef<any>(null);
+
+  const [drawPlayersPerTeam, setDrawPlayersPerTeam] = useState('5');
 
   const [selectedUserModalId, setSelectedUserModalId] = useState<string | null>(null);
   const [targetProfileUser, setTargetProfileUser] = useState<UserProfile | null>(null);
@@ -324,7 +367,7 @@ export default function RadarScreen() {
       const followers = data.followers || [];
 
       if (prevFollowersLength.current > 0 && followers.length > prevFollowersLength.current) {
-        triggerLocalNotification('עוקב חדש! 👤', 'מישהו חדש החל לעקוב אחריך בפרופיל!');
+        triggerLocalNotification('New Follower! 👤', 'Someone new started following your profile!');
       }
       prevFollowersLength.current = followers.length;
     });
@@ -333,7 +376,7 @@ export default function RadarScreen() {
     const unsubscribeChatNotif = onSnapshot(chatsQuery, (snapshot) => {
       snapshot.docChanges().forEach((change) => {
         if (change.type === 'modified') {
-          triggerLocalNotification('הודעה חדשה 💬', 'קיבלת הודעה חדשה בצ\'אט האישי.');
+          triggerLocalNotification('New Message 💬', 'You received a new private chat message.');
         }
       });
     });
@@ -352,10 +395,10 @@ export default function RadarScreen() {
           const prevState = postsStateRef.current[postId];
           if (prevState) {
             if (currentLikes > prevState.likes) {
-              triggerLocalNotification('לייק חדש! ❤️', `יש לך כעת סך הכל ${currentLikes} לייקים על הפוסט שלך.`);
+              triggerLocalNotification('New Like! ❤️', `You now have a total of ${currentLikes} likes on your post.`);
             }
             if (currentComments > prevState.comments) {
-              triggerLocalNotification('תגובה חדשה! 📝', `יש לך כעת סך הכל ${currentComments} תגובות על הפוסט שלך בזמן אמת.`);
+              triggerLocalNotification('New Comment! 📝', `You now have a total of ${currentComments} comments on your post.`);
             }
           }
           postsStateRef.current[postId] = { likes: currentLikes, comments: currentComments };
@@ -374,8 +417,8 @@ export default function RadarScreen() {
             const distKm = calculateDistance(userCoords.latitude, userCoords.longitude, gameData.latitude, gameData.longitude);
             if (distKm <= 0.5) {
               triggerLocalNotification(
-                'משחק חדש בקרבת מקום! 🏟️',
-                `נוצר משחק ${gameData.sport} "${gameData.title}" במרחק של פחות מ־500 מטר ממך!`
+                'New Game Nearby! 🏟️',
+                `A ${gameData.sport} game "${gameData.title}" was created less than 500m from you!`
               );
             }
           }
@@ -397,7 +440,7 @@ export default function RadarScreen() {
     const gameDocRef = doc(db, 'games', selectedGame.id);
     const unsubscribeSelectedGame = onSnapshot(gameDocRef, (docSnap) => {
       if (!docSnap.exists()) {
-        triggerLocalNotification('הקבוצה נמחקה ⚠️', 'מנהל הקבוצה מחק את המשחק.');
+        triggerLocalNotification('Game Removed ⚠️', 'The game admin deleted the match.');
         setSelectedGame(null);
         return;
       }
@@ -406,15 +449,15 @@ export default function RadarScreen() {
       if (updatedGame.chat && selectedGame.chat && updatedGame.chat.length > selectedGame.chat.length) {
         const lastMsg = updatedGame.chat[updatedGame.chat.length - 1];
         if (lastMsg.sender !== userName) {
-          triggerLocalNotification('הודעה קבוצתית חדשה 💬', `${lastMsg.sender}: ${lastMsg.text}`);
+          triggerLocalNotification('New Team Message 💬', `${lastMsg.sender}: ${lastMsg.text}`);
         }
       }
 
       if (updatedGame.players && selectedGame.players) {
         if (updatedGame.players.length > selectedGame.players.length) {
-          triggerLocalNotification('שחקן הצטרף למשחק! 🤝', 'שחקן חדש נכנס לסגל הקבוצה.');
+          triggerLocalNotification('Player Joined! 🤝', 'A new player has joined the squad.');
         } else if (updatedGame.players.length < selectedGame.players.length) {
-          triggerLocalNotification('שחקן עזב את המשחק 🚪', 'שחקן עזב את סגל הקבוצה.');
+          triggerLocalNotification('Player Left 🚪', 'A player has left the squad.');
         }
       }
 
@@ -567,10 +610,22 @@ export default function RadarScreen() {
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'games'), (snapshot) => {
-      const markers: GameItem[] = snapshot.docs.map(docSnap => ({
-        id: docSnap.id,
-        ...(docSnap.data() as Omit<GameItem, 'id'>)
-      }));
+      const now = Date.now();
+      const markers: GameItem[] = [];
+
+      snapshot.docs.forEach(docSnap => {
+        const data = docSnap.data();
+        const createdAtDate = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || now);
+        const diffHours = (now - createdAtDate.getTime()) / (1000 * 60 * 60);
+
+        if (diffHours <= 24) {
+          markers.push({
+            id: docSnap.id,
+            ...(data as Omit<GameItem, 'id'>)
+          });
+        }
+      });
+
       setGamesList(markers);
 
       setSelectedGame(prev => {
@@ -592,7 +647,7 @@ export default function RadarScreen() {
     const gameDeepLink = `findgames://game/${gameId}`;
     try {
       await Share.share({
-        message: `⚽ בואו להצטרף למשחק "${gameTitle}" (${gameSport})!\n📍 מיקום: ${venueName}, ${city}\n⏰ שעה: ${time}\n👑 מנהל המשחק: ${creatorName}\n\nלפתיחה והצטרפות ישירה למשחק באפליקציה לחצו על הקישור:\n${gameDeepLink}`,
+        message: `⚽ Join the game "${gameTitle}" (${gameSport})!\n📍 Venue: ${venueName}, ${city}\n⏰ Time: ${time}\n👑 Admin: ${creatorName}\n\nClick the link to open and join directly in the app:\n${gameDeepLink}`,
       });
     } catch (error: any) {
       Alert.alert('Error', error.message);
@@ -769,6 +824,51 @@ export default function RadarScreen() {
     }
   };
 
+  const handleRunAutoDraw = async () => {
+    if (!selectedGame) return;
+    const playersList = selectedGame.players || [];
+
+    if (playersList.length === 0) {
+      Alert.alert('Error', 'No registered players found for the draw.');
+      return;
+    }
+
+    const teamSize = parseInt(drawPlayersPerTeam, 10);
+    if (isNaN(teamSize) || teamSize <= 0) {
+      Alert.alert('Error', 'Please enter a valid number of players per team.');
+      return;
+    }
+
+    const shuffled = [...playersList];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+
+    const newTeams: Array<{ id: number; players: string[] }> = [];
+    let currentTeamIndex = 1;
+
+    for (let i = 0; i < shuffled.length; i += teamSize) {
+      const teamPlayers = shuffled.slice(i, i + teamSize);
+      newTeams.push({
+        id: currentTeamIndex++,
+        players: teamPlayers,
+      });
+    }
+
+    try {
+      const gameRef = doc(db, 'games', selectedGame.id);
+      await updateDoc(gameRef, {
+        teamsResult: newTeams,
+        playersPerTeam: teamSize
+      });
+      Alert.alert('Success! 🎲', 'Auto draw completed and teams have been assigned successfully.');
+    } catch (e) {
+      console.error('Error saving team draw:', e);
+      Alert.alert('Error', 'Could not save team draw results.');
+    }
+  };
+
   const handleCreateGame = async () => {
     if (!newTitle.trim() || !newVenue.trim() || !newDesc.trim() || !newSport) {
       Alert.alert('Error', 'Please fill in all required fields.');
@@ -794,6 +894,7 @@ export default function RadarScreen() {
         maxPlayers: parseInt(newMaxPlayers) || 10,
         players: [activeName],
         chat: [],
+        teamsResult: [],
         createdAt: new Date()
       });
 
@@ -988,7 +1089,7 @@ export default function RadarScreen() {
 
         {filteredGames.map((game) => {
           const currentPlayersCount = game.players?.length || 0;
-          const iconName = getSportIcon(game.sport);
+          const { icon, color, bg, border } = getSportIconAndColor(game.sport);
 
           return (
             <Marker 
@@ -996,13 +1097,13 @@ export default function RadarScreen() {
               coordinate={{ latitude: game.latitude, longitude: game.longitude }}
               onPress={() => setSelectedGame(game)}
             >
-              <View style={styles.customMarkerContainer}>
-                <View style={styles.markerIconBox}>
-                  <Ionicons name={iconName as any} size={14} color="#09090B" />
+              <View style={[styles.customMarkerContainer, { backgroundColor: bg, borderColor: border }]}>
+                <View style={[styles.markerIconBox, { backgroundColor: color }]}>
+                  <Ionicons name={icon as any} size={13} color="#09090B" />
                 </View>
                 <View style={styles.markerTextBox}>
                   <Text style={styles.markerTitleText} numberOfLines={1}>{game.title}</Text>
-                  <Text style={styles.markerPlayersText}>👥 {currentPlayersCount}/{game.maxPlayers}</Text>
+                  <Text style={[styles.markerPlayersText, { color }]}>👥 {currentPlayersCount}/{game.maxPlayers}</Text>
                 </View>
               </View>
             </Marker>
@@ -1024,7 +1125,7 @@ export default function RadarScreen() {
       <View style={styles.bottomSheet}>
         <View style={styles.dragHandle} />
         <Text style={styles.sheetTitle}>Nearby Games & Meetups 🏟️</Text>
-        <Text style={styles.sheetSubtitle}>Showing events based on your favorite sports</Text>
+        <Text style={styles.sheetSubtitle}>Showing active events (Auto-removes after 24 hours)</Text>
 
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
           {filteredGames.length === 0 ? (
@@ -1036,25 +1137,33 @@ export default function RadarScreen() {
             filteredGames.map(game => {
               const distance = userCoords ? calculateDistance(userCoords.latitude, userCoords.longitude, game.latitude, game.longitude) : 0;
               const spotsLeft = game.maxPlayers - (game.players?.length || 0);
+              const timeCreatedStr = getTimeAgo(game.createdAt);
+              const timeRemainingStr = getRemainingTime(game.createdAt);
+              const sportStyle = getSportIconAndColor(game.sport);
 
               return (
-                <TouchableOpacity key={game.id} style={styles.gameCard} onPress={() => setSelectedGame(game)}>
+                <TouchableOpacity key={game.id} style={[styles.gameCard, { borderColor: sportStyle.border + '55', backgroundColor: sportStyle.bg + '22' }]} onPress={() => setSelectedGame(game)}>
                   <View style={styles.gameHeaderRow}>
-                    <Text style={styles.sportTag}>🏅 {game.sport}</Text>
+                    <Text style={[styles.sportTag, { color: sportStyle.color }]}>🏅 {game.sport}</Text>
                     <Text style={styles.distanceTag}>📍 {distance} km away</Text>
                   </View>
                   <Text style={styles.gameTitle}>{game.title}</Text>
                   <Text style={styles.venueText}>🏟️ {game.venueName} | ⏰ {game.time} | 👑 Admin: {game.creatorName}</Text>
                   
+                  <View style={styles.gameTimerRow}>
+                    <Text style={styles.timerText}>⏳ Created: {timeCreatedStr}</Text>
+                    <Text style={styles.timerExpiryText}>⌛ Expires in: {timeRemainingStr}</Text>
+                  </View>
+
                   <View style={styles.gameFooterRow}>
                     <Text style={[styles.spotsTag, spotsLeft === 0 && { color: '#EF4444' }]}>
                       {spotsLeft > 0 ? `👥 ${spotsLeft} spots left (${game.players?.length || 0}/${game.maxPlayers})` : '🔴 Full Game'}
                     </Text>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
                       <TouchableOpacity onPress={() => handleShareGame(game.id, game.title, game.sport, game.venueName, game.city, game.time, game.creatorName)} style={{ padding: 4 }}>
-                        <Ionicons name="share-social-outline" size={16} color="#EAB308" />
+                        <Ionicons name="share-social-outline" size={16} color={sportStyle.color} />
                       </TouchableOpacity>
-                      <Text style={styles.detailsLink}>View Details ›</Text>
+                      <Text style={[styles.detailsLink, { color: sportStyle.color }]}>View Details ›</Text>
                     </View>
                   </View>
                 </TouchableOpacity>
@@ -1083,10 +1192,14 @@ export default function RadarScreen() {
 
             {selectedGame && (() => {
               const adminUserObj = allUsersList.find(u => u.name?.toLowerCase() === selectedGame.creatorName?.toLowerCase() || u.uid === selectedGame.creator);
+              const timeCreatedStr = getTimeAgo(selectedGame.createdAt);
+              const timeRemainingStr = getRemainingTime(selectedGame.createdAt);
+              const sportStyle = getSportIconAndColor(selectedGame.sport);
+
               return (
                 <ScrollView showsVerticalScrollIndicator={false}>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text style={styles.detailSportBadge}>{selectedGame.sport}</Text>
+                    <Text style={[styles.detailSportBadge, { backgroundColor: sportStyle.color, color: '#09090B' }]}>{selectedGame.sport}</Text>
                     {isUserAdmin(selectedGame) && (
                       <TouchableOpacity onPress={() => handleDeleteGame(selectedGame.id)} style={styles.deleteGameBtn}>
                         <Ionicons name="trash-outline" size={16} color="#EF4444" />
@@ -1096,13 +1209,19 @@ export default function RadarScreen() {
                   </View>
 
                   <Text style={styles.detailTitle}>{selectedGame.title}</Text>
+                  
+                  <View style={styles.modalTimerBox}>
+                    <Text style={styles.modalTimerText}>⏳ Created {timeCreatedStr}</Text>
+                    <Text style={styles.modalTimerExpiryText}>⌛ {timeRemainingStr} before auto-removal</Text>
+                  </View>
+
                   <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10, gap: 4 }}>
                     <Text style={styles.adminInfoText}>👑 Game Admin:</Text>
-                    <Text style={{ color: '#EAB308', fontSize: 12, fontWeight: 'bold' }}>{selectedGame.creatorName}</Text>
+                    <Text style={{ color: sportStyle.color, fontSize: 12, fontWeight: 'bold' }}>{selectedGame.creatorName}</Text>
                     {adminUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color="#EAB308" />}
                   </View>
                   
-                  <TouchableOpacity style={styles.navigateBtn} onPress={() => openMapsNavigation(selectedGame.venueName, selectedGame.city)}>
+                  <TouchableOpacity style={[styles.navigateBtn, { backgroundColor: sportStyle.color }]} onPress={() => openMapsNavigation(selectedGame.venueName, selectedGame.city)}>
                     <Ionicons name="navigate" size={16} color="#09090B" style={{ marginRight: 6 }} />
                     <Text style={styles.navigateBtnText}>Navigate to Venue 🗺️</Text>
                   </TouchableOpacity>
@@ -1111,13 +1230,48 @@ export default function RadarScreen() {
                   
                   <View style={styles.detailBox}>
                     <Text style={styles.detailLabel}>📊 Team Average Age:</Text>
-                    <Text style={{ color: '#EAB308', fontSize: 14, fontWeight: 'bold' }}>🎂 {teamAverageAge}</Text>
+                    <Text style={{ color: sportStyle.color, fontSize: 14, fontWeight: 'bold' }}>🎂 {teamAverageAge}</Text>
                   </View>
 
                   <View style={styles.detailBox}>
                     <Text style={styles.detailLabel}>Description & Rules:</Text>
                     <Text style={styles.detailText}>{selectedGame.description}</Text>
                   </View>
+
+                  {isUserAdmin(selectedGame) && (
+                    <View style={styles.detailBox}>
+                      <Text style={styles.detailLabel}>🎲 Auto Team Draw (Admin Only):</Text>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                        <Text style={{ color: '#D4D4D8', fontSize: 12 }}>Players per team:</Text>
+                        <TextInput
+                          style={styles.drawInput}
+                          keyboardType="numeric"
+                          value={drawPlayersPerTeam}
+                          onChangeText={setDrawPlayersPerTeam}
+                          placeholder="5"
+                          placeholderTextColor="#52525B"
+                        />
+                        <TouchableOpacity style={[styles.drawBtn, { backgroundColor: sportStyle.color }]} onPress={handleRunAutoDraw}>
+                          <Ionicons name="shuffle" size={14} color="#09090B" style={{ marginRight: 4 }} />
+                          <Text style={styles.drawBtnText}>Run Draw 🚀</Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  )}
+
+                  {selectedGame.teamsResult && selectedGame.teamsResult.length > 0 && (
+                    <View style={styles.detailBox}>
+                      <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14 }]}>🏆 Team Draw Results:</Text>
+                      {selectedGame.teamsResult.map(team => (
+                        <View key={team.id} style={styles.teamResultCard}>
+                          <Text style={styles.teamResultHeader}>Team #{team.id}</Text>
+                          {team.players.map((pName, pIdx) => (
+                            <Text key={pIdx} style={styles.teamResultPlayer}>• {pName}</Text>
+                          ))}
+                        </View>
+                      ))}
+                    </View>
+                  )}
 
                   <View style={styles.detailBox}>
                     <Text style={styles.detailLabel}>👥 Team Members ({selectedGame.players?.length || 0} / {selectedGame.maxPlayers}) - Tap to view profile:</Text>
@@ -1128,10 +1282,10 @@ export default function RadarScreen() {
                         return (
                           <TouchableOpacity 
                             key={index} 
-                            style={[styles.playerChip, isMe && { borderColor: '#EAB308', backgroundColor: '#18181B' }]} 
+                            style={[styles.playerChip, isMe && { borderColor: sportStyle.color, backgroundColor: '#18181B' }]} 
                             onPress={() => openUserProfileById(playerUserObj?.uid, player)}
                           >
-                            <Ionicons name="person" size={12} color="#EAB308" style={{ marginRight: 4 }} />
+                            <Ionicons name="person" size={12} color={sportStyle.color} style={{ marginRight: 4 }} />
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                               <Text style={styles.playerChipText}>
                                 {player} {index === 0 ? '👑' : ''} {isMe ? '(me)' : ''}
@@ -1160,7 +1314,7 @@ export default function RadarScreen() {
                           return (
                             <View key={msg.id} style={styles.chatBubble}>
                               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                                <Text style={styles.chatSender}>{msg.sender}</Text>
+                                <Text style={[styles.chatSender, { color: sportStyle.color }]}>{msg.sender}</Text>
                                 {senderUserObj?.isVip && <Ionicons name="checkmark-circle" size={11} color="#EAB308" />}
                               </View>
                               <Text style={styles.chatText}>{msg.text}</Text>
@@ -1178,7 +1332,7 @@ export default function RadarScreen() {
                         value={chatMessage} 
                         onChangeText={setChatMessage} 
                       />
-                      <TouchableOpacity style={styles.chatSendBtn} onPress={() => handleSendTeamChatMessage(selectedGame.id)}>
+                      <TouchableOpacity style={[styles.chatSendBtn, { backgroundColor: sportStyle.color }]} onPress={() => handleSendTeamChatMessage(selectedGame.id)}>
                         <Ionicons name="send" size={14} color="#09090B" />
                       </TouchableOpacity>
                     </View>
@@ -1189,7 +1343,7 @@ export default function RadarScreen() {
                       <Text style={styles.leaveBtnText}>Leave Game 🚪</Text>
                     </TouchableOpacity>
                   ) : (
-                    <TouchableOpacity style={[styles.modalJoinBtn, selectedGame.players?.length >= selectedGame.maxPlayers && { backgroundColor: '#27272A' }]} onPress={() => handleJoinGame(selectedGame)}>
+                    <TouchableOpacity style={[styles.modalJoinBtn, { backgroundColor: sportStyle.color }, selectedGame.players?.length >= selectedGame.maxPlayers && { backgroundColor: '#27272A' }]} onPress={() => handleJoinGame(selectedGame)}>
                       <Text style={styles.modalJoinBtnText}>{selectedGame.players?.length >= selectedGame.maxPlayers ? 'Game Full 🔴' : 'Join This Game 🤝'}</Text>
                     </TouchableOpacity>
                   )}
@@ -1200,7 +1354,7 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* מודל פרופיל שחקן מותאם אישית */}
+      {/* Player Profile Modal */}
       <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
@@ -1332,7 +1486,6 @@ export default function RadarScreen() {
                         >
                           {isVid ? (
                             <View style={[styles.postThumbnailImage, { backgroundColor: '#000', justifyContent: 'center', alignItems: 'center', position: 'relative' }]}>
-                              <PostVideoPlayer key={`thumb_radar_${post.id}`} uri={post.imageUrl || ''} isStoryOpen={false} />
                               <View style={styles.videoBadgeOverlay}>
                                 <Ionicons name="play" size={14} color="#FAFAFA" />
                               </View>
@@ -1353,7 +1506,7 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* מודל תמונת פרופיל מוגדלת */}
+      {/* Zoomed Avatar Modal */}
       <Modal visible={!!zoomedAvatarUri} transparent={true} animationType="fade" onRequestClose={() => setZoomedAvatarUri(null)}>
         <View style={styles.zoomedAvatarOverlay}>
           <TouchableOpacity 
@@ -1369,7 +1522,7 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* מודל עוקבים / נעקבים */}
+      {/* Followers / Following List Modal */}
       <Modal visible={!!targetActiveModalList} animationType="slide" transparent={true} onRequestClose={() => setTargetActiveModalList(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -1418,7 +1571,7 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* מודל צ'אט */}
+      {/* Chat Modal */}
       <Modal visible={chatModalVisible} animationType="slide" transparent={true} onRequestClose={() => setChatModalVisible(false)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -1474,7 +1627,7 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* מודל פרטי פוסט */}
+      {/* Post Details Modal */}
       <Modal visible={!!selectedPostModal} animationType="slide" transparent={true} onRequestClose={() => setSelectedPostModal(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
@@ -1553,7 +1706,7 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* מודל תגובות */}
+      {/* Comments Modal */}
       <Modal visible={!!commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setCommentsModalPost(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.commentsModalContent}>
@@ -1701,11 +1854,11 @@ const styles = StyleSheet.create({
   friendAvatarText: { color: '#3B82F6', fontWeight: 'bold', fontSize: 14 },
   friendMarkerName: { color: '#FAFAFA', fontSize: 10, fontWeight: 'bold' },
 
-  customMarkerContainer: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#121215', borderRadius: 16, borderWidth: 1, borderColor: '#EAB308', paddingHorizontal: 6, paddingVertical: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 2, elevation: 5 },
-  markerIconBox: { width: 22, height: 22, borderRadius: 11, backgroundColor: '#EAB308', justifyContent: 'center', alignItems: 'center', marginRight: 5 },
+  customMarkerContainer: { flexDirection: 'row', alignItems: 'center', borderRadius: 16, borderWidth: 1.5, paddingHorizontal: 6, paddingVertical: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 2, elevation: 5 },
+  markerIconBox: { width: 22, height: 22, borderRadius: 11, justifyContent: 'center', alignItems: 'center', marginRight: 5 },
   markerTextBox: { maxWidth: 100 },
   markerTitleText: { color: '#FAFAFA', fontSize: 10, fontWeight: 'bold' },
-  markerPlayersText: { color: '#EAB308', fontSize: 9, fontWeight: 'bold' },
+  markerPlayersText: { fontSize: 9, fontWeight: 'bold' },
   
   pickingBanner: { position: 'absolute', top: 110, alignSelf: 'center', backgroundColor: '#EAB308', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, flexDirection: 'row', alignItems: 'center', zIndex: 50 },
   pickingBannerText: { color: '#09090B', fontWeight: 'bold', fontSize: 12 },
@@ -1718,15 +1871,24 @@ const styles = StyleSheet.create({
   emptyBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30 },
   emptyNoticeText: { color: '#71717A', textAlign: 'center', marginTop: 30 },
 
-  gameCard: { backgroundColor: '#09090B', borderRadius: 14, padding: 14, marginBottom: 12, borderWidth: 1, borderColor: '#27272A' },
+  gameCard: { borderRadius: 14, padding: 14, marginBottom: 12, borderWidth: 1 },
   gameHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
-  sportTag: { color: '#EAB308', fontSize: 12, fontWeight: 'bold' },
+  sportTag: { fontSize: 12, fontWeight: 'bold' },
   distanceTag: { color: '#A1A1AA', fontSize: 12 },
   gameTitle: { color: '#FAFAFA', fontSize: 15, fontWeight: 'bold', marginBottom: 2 },
-  venueText: { color: '#D4D4D8', fontSize: 12, marginBottom: 8 },
+  venueText: { color: '#D4D4D8', fontSize: 12, marginBottom: 6 },
+  
+  gameTimerRow: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#18181B', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, marginBottom: 8 },
+  timerText: { color: '#A1A1AA', fontSize: 10, fontWeight: '600' },
+  timerExpiryText: { color: '#EAB308', fontSize: 10, fontWeight: 'bold' },
+
+  modalTimerBox: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#18181B', padding: 8, borderRadius: 8, marginBottom: 10, borderWidth: 1, borderColor: '#27272A' },
+  modalTimerText: { color: '#A1A1AA', fontSize: 11, fontWeight: '600' },
+  modalTimerExpiryText: { color: '#EAB308', fontSize: 11, fontWeight: 'bold' },
+
   gameFooterRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: '#18181B', paddingTop: 8 },
   spotsTag: { color: '#22C55E', fontSize: 11, fontWeight: 'bold' },
-  detailsLink: { color: '#EAB308', fontSize: 12, fontWeight: 'bold' },
+  detailsLink: { fontSize: 12, fontWeight: 'bold' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(9,9,11,0.85)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#121215', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, height: '75%', borderWidth: 1, borderColor: '#27272A' },
@@ -1749,12 +1911,12 @@ const styles = StyleSheet.create({
   publishBtn: { backgroundColor: '#EAB308', borderRadius: 12, height: 46, justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 10, width: '100%' },
   publishBtnText: { color: '#09090B', fontWeight: '900', fontSize: 15 },
 
-  detailSportBadge: { color: '#09090B', backgroundColor: '#EAB308', alignSelf: 'flex-start', fontSize: 11, fontWeight: '900', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, overflow: 'hidden' },
+  detailSportBadge: { alignSelf: 'flex-start', fontSize: 11, fontWeight: '900', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, overflow: 'hidden' },
   deleteGameBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1F1214', borderWidth: 1, borderColor: '#EF4444', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
   detailTitle: { color: '#FAFAFA', fontSize: 20, fontWeight: 'bold', marginTop: 10, marginBottom: 4 },
   adminInfoText: { color: '#A1A1AA', fontSize: 12 },
   
-  navigateBtn: { flexDirection: 'row', backgroundColor: '#EAB308', borderRadius: 10, height: 38, justifyContent: 'center', alignItems: 'center', marginBottom: 10 },
+  navigateBtn: { borderRadius: 10, height: 38, justifyContent: 'center', alignItems: 'center', marginBottom: 10, flexDirection: 'row' },
   navigateBtnText: { color: '#09090B', fontWeight: 'bold', fontSize: 13 },
 
   detailVenue: { color: '#D4D4D8', fontSize: 13, marginBottom: 14 },
@@ -1766,6 +1928,14 @@ const styles = StyleSheet.create({
   playerChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   playerChipText: { color: '#FAFAFA', fontSize: 12, fontWeight: 'bold' },
 
+  drawInput: { backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 8, width: 50, height: 36, color: '#FAFAFA', textAlign: 'center', fontSize: 13 },
+  drawBtn: { flexDirection: 'row', alignItems: 'center', borderRadius: 8, paddingHorizontal: 12, height: 36 },
+  drawBtnText: { color: '#09090B', fontWeight: 'bold', fontSize: 12 },
+
+  teamResultCard: { backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 10, padding: 10, marginTop: 8 },
+  teamResultHeader: { color: '#FAFAFA', fontSize: 13, fontWeight: 'bold', marginBottom: 4 },
+  teamResultPlayer: { color: '#D4D4D8', fontSize: 12, marginBottom: 2 },
+
   listItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#09090B', padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#27272A' },
   listAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
   listName: { color: '#FAFAFA', fontSize: 14, fontWeight: 'bold' },
@@ -1774,13 +1944,13 @@ const styles = StyleSheet.create({
   chatScrollContainer: { maxHeight: 150, backgroundColor: '#09090B', borderRadius: 10, borderWidth: 1, borderColor: '#27272A', paddingHorizontal: 8, marginBottom: 8 },
   noChatText: { color: '#71717A', fontSize: 12, fontStyle: 'italic', textAlign: 'center', paddingVertical: 15 },
   chatBubble: { backgroundColor: '#18181B', padding: 8, borderRadius: 10, marginBottom: 6, borderWidth: 1, borderColor: '#27272A' },
-  chatSender: { color: '#EAB308', fontSize: 11, fontWeight: 'bold' },
+  chatSender: { fontSize: 11, fontWeight: 'bold' },
   chatText: { color: '#FAFAFA', fontSize: 13, marginTop: 2 },
   chatTime: { color: '#A1A1AA', fontSize: 9, alignSelf: 'flex-end', marginTop: 2 },
   chatInputRowGame: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   chatInput: { flex: 1, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 8, height: 36, color: '#FAFAFA', paddingHorizontal: 10, fontSize: 12 },
 
-  modalJoinBtn: { backgroundColor: '#EAB308', borderRadius: 12, height: 46, justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 20 },
+  modalJoinBtn: { borderRadius: 12, height: 46, justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 20 },
   modalJoinBtnText: { color: '#09090B', fontWeight: '900', fontSize: 15 },
   leaveBtn: { backgroundColor: '#1F1214', borderWidth: 1, borderColor: '#EF4444', borderRadius: 12, height: 46, justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 20 },
   leaveBtnText: { color: '#EF4444', fontWeight: '900', fontSize: 15 },
