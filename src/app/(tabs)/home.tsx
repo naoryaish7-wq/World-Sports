@@ -93,6 +93,42 @@ type AppNotification = {
   createdAt?: any;
 };
 
+// פונקציית עזר לשליחת פוש ישיר דרך Expo Push API
+const sendExpoPushNotification = async (targetUserId: string, title: string, body: string, data?: any) => {
+  try {
+    const userDocRef = doc(db, 'users', targetUserId);
+    const userSnap = await getDoc(userDocRef);
+    if (!userSnap.exists()) return;
+
+    const userData = userSnap.data();
+    const pushToken = userData.pushToken;
+
+    if (!pushToken || typeof pushToken !== 'string' || !pushToken.startsWith('ExponentPushToken[')) {
+      return;
+    }
+
+    const message = {
+      to: pushToken,
+      sound: 'default',
+      title: title,
+      body: body,
+      data: data || {},
+    };
+
+    await fetch('https://exp.host/--/api/v2/push/send', {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Accept-encoding': 'gzip, deflate',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(message),
+    });
+  } catch (error) {
+    console.error('Error sending Expo push notification:', error);
+  }
+};
+
 const getTimeAgo = (timestamp: any) => {
   if (!timestamp) return 'Just now';
   try {
@@ -372,12 +408,14 @@ export default function HomeScreen() {
 
           if (sAuthorUid && sAuthorUid !== currentUserId && followingList.includes(sAuthorUid) && sCreatedAt > appLoadTimeRef.current) {
             try {
+              const msg = `${sData.name || 'Someone'} uploaded a new story! 📸`;
               await addDoc(collection(db, 'users', currentUserId, 'notifications'), {
                 senderUid: sAuthorUid,
                 type: 'new_post_story',
-                message: `${sData.name || 'Someone'} uploaded a new story! 📸`,
+                message: msg,
                 createdAt: serverTimestamp()
               });
+              await sendExpoPushNotification(currentUserId, 'World Sports ⚽', msg);
             } catch (e) {
               console.error('Error adding story notification:', e);
             }
@@ -433,12 +471,14 @@ export default function HomeScreen() {
 
           if (pAuthorUid && pAuthorUid !== currentUserId && followingList.includes(pAuthorUid) && pCreatedAt > appLoadTimeRef.current) {
             try {
+              const msg = `${pData.authorName || pData.userName || 'Someone'} published a new post! 🚀`;
               await addDoc(collection(db, 'users', currentUserId, 'notifications'), {
                 senderUid: pAuthorUid,
                 type: 'new_post_story',
-                message: `${pData.authorName || pData.userName || 'Someone'} published a new post! 🚀`,
+                message: msg,
                 createdAt: serverTimestamp()
               });
+              await sendExpoPushNotification(currentUserId, 'World Sports ⚽', msg);
             } catch (e) {
               console.error('Error adding post notification:', e);
             }
@@ -808,6 +848,17 @@ export default function HomeScreen() {
         });
       }
 
+      // שליחת פוש לשולח שהבקשה אושרה
+      const acceptMsg = `${liveName} accepted your follow request. 🎉`;
+      await addDoc(collection(db, 'users', requesterUid, 'notifications'), {
+        senderUid: currentUserId,
+        type: 'follow_request',
+        message: acceptMsg,
+        status: 'accepted',
+        createdAt: serverTimestamp()
+      });
+      await sendExpoPushNotification(requesterUid, 'World Sports ⚽', acceptMsg);
+
       Alert.alert('Success', 'Follow request approved! 🎉');
     } catch (error) {
       console.error('Error accepting request:', error);
@@ -884,13 +935,17 @@ export default function HomeScreen() {
         });
       } else if (isPrivateAccount) {
         await updateDoc(targetRef, { pendingRequests: arrayUnion(currentUserId) });
+        
+        const reqMsg = `${liveName} requested to follow you.`;
         await addDoc(collection(db, 'users', targetProfileUser.uid, 'notifications'), {
           senderUid: currentUserId,
           type: 'follow_request',
-          message: `${liveName} requested to follow you.`,
+          message: reqMsg,
           status: 'pending',
           createdAt: serverTimestamp()
         });
+        // שליחת פוש פיזי למכשיר הפרטי!
+        await sendExpoPushNotification(targetProfileUser.uid, 'World Sports ⚽', reqMsg);
 
         setTargetProfileUser({
           ...targetProfileUser,
@@ -906,13 +961,15 @@ export default function HomeScreen() {
           followers: [...targetFollowers, currentUserId]
         });
 
+        const followMsg = `${liveName} started following you.`;
         await addDoc(collection(db, 'users', targetProfileUser.uid, 'notifications'), {
           senderUid: currentUserId,
           type: 'follow_request',
-          message: `${liveName} started following you.`,
+          message: followMsg,
           status: 'accepted',
           createdAt: serverTimestamp()
         });
+        await sendExpoPushNotification(targetProfileUser.uid, 'World Sports ⚽', followMsg);
       }
     } catch (error) {
       console.error('Error updating follow status / sending follow request notification:', error);
@@ -940,13 +997,15 @@ export default function HomeScreen() {
         createdAt: new Date()
       });
 
+      const msgContent = `${liveName} sent you a message: "${textToSend.substring(0, 25)}..." 💬`;
       await addDoc(collection(db, 'users', chatTargetUser.uid, 'notifications'), {
         senderUid: currentUserId,
         type: 'message',
-        message: `${liveName} sent you a message: "${textToSend.substring(0, 25)}..." 💬`,
+        message: msgContent,
         createdAt: serverTimestamp(),
         status: 'unread'
       });
+      await sendExpoPushNotification(chatTargetUser.uid, 'World Sports ⚽', msgContent);
     } catch (e) {
       console.error('Error sending message:', e);
     }
@@ -1021,13 +1080,15 @@ export default function HomeScreen() {
       });
 
       if (!hasLiked && post.userId && post.userId !== currentUserId) {
+        const likeMsg = `${liveName} liked your post. ❤️`;
         await addDoc(collection(db, 'users', post.userId, 'notifications'), {
           senderUid: currentUserId,
           type: 'like',
-          message: `${liveName} liked your post. ❤️`,
+          message: likeMsg,
           createdAt: serverTimestamp(),
           status: 'unread'
         });
+        await sendExpoPushNotification(post.userId, 'World Sports ⚽', likeMsg);
       }
 
       if (selectedPostModal && selectedPostModal.id === postId) {
@@ -1067,13 +1128,15 @@ export default function HomeScreen() {
       await updateDoc(storyRef, { likesList: updatedLikes });
 
       if (!hasLiked && story.userUid && story.userUid !== currentUserId) {
+        const storyLikeMsg = `${liveName} liked your story. ❤️`;
         await addDoc(collection(db, 'users', story.userUid, 'notifications'), {
           senderUid: currentUserId,
           type: 'like',
-          message: `${liveName} liked your story. ❤️`,
+          message: storyLikeMsg,
           createdAt: serverTimestamp(),
           status: 'unread'
         });
+        await sendExpoPushNotification(story.userUid, 'World Sports ⚽', storyLikeMsg);
       }
     } catch (e) {
       console.error('Error toggling story like:', e);
@@ -1099,13 +1162,15 @@ export default function HomeScreen() {
         await updateDoc(storyRef, { storyComments: updatedStoryComments });
         
         if (story.userUid && story.userUid !== currentUserId) {
+          const replyMsg = `${liveName} replied to your story: "${storyCommentInput.trim()}" 💬`;
           await addDoc(collection(db, 'users', story.userUid, 'notifications'), {
             senderUid: currentUserId,
             type: 'comment',
-            message: `${liveName} replied to your story: "${storyCommentInput.trim()}" 💬`,
+            message: replyMsg,
             createdAt: serverTimestamp(),
             status: 'unread'
           });
+          await sendExpoPushNotification(story.userUid, 'World Sports ⚽', replyMsg);
         }
 
         setStories(prevStories => prevStories.map(st => st.id === storyId ? { ...st, storyComments: updatedStoryComments } : st));
@@ -1322,13 +1387,15 @@ export default function HomeScreen() {
       await updateDoc(postRef, { comments: updatedComments });
 
       if (post.userId && post.userId !== currentUserId) {
+        const commentMsg = `${liveName} commented on your post: "${text.trim()}" 💬`;
         await addDoc(collection(db, 'users', post.userId, 'notifications'), {
           senderUid: currentUserId,
           type: 'comment',
-          message: `${liveName} commented on your post: "${text.trim()}" 💬`,
+          message: commentMsg,
           createdAt: serverTimestamp(),
           status: 'unread'
         });
+        await sendExpoPushNotification(post.userId, 'World Sports ⚽', commentMsg);
       }
 
       if (isModal) {
@@ -2206,7 +2273,7 @@ export default function HomeScreen() {
                         isApprovedFollower && styles.profileFollowingBtnText,
                         hasRequestedFollow && { color: '#FAFAFA' }
                       ]}>
-                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
+                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Request 🤝'}
                       </Text>
                     </TouchableOpacity>
 

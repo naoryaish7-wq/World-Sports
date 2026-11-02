@@ -95,6 +95,16 @@ type GameItem = {
   createdAt?: any;
 };
 
+const ALL_AVAILABLE_SPORTS = [
+  'Football',
+  'Basketball',
+  'Tennis',
+  'Running',
+  'Fitness',
+  'Cycling',
+  'Swimming'
+];
+
 const getSportIconAndColor = (sportName: string) => {
   const sport = (sportName || '').toLowerCase().trim();
 
@@ -255,6 +265,11 @@ export default function RadarScreen() {
   const [allUsersList, setAllUsersList] = useState<UserProfile[]>([]);
   const [allPosts, setAllPosts] = useState<PostItem[]>([]);
 
+  // שדות חיפוש ופילטור חדשים
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedSportFilter, setSelectedSportFilter] = useState('All');
+  const [sportFilterModalVisible, setSportFilterModalVisible] = useState(false);
+
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newSport, setNewSport] = useState('');
@@ -391,17 +406,6 @@ export default function RadarScreen() {
 
               if (data.followers) setFollowersIds(data.followers);
               else setFollowersIds([]);
-
-              if (activeSports.length > 0) {
-                const gamesQuery = query(collection(db, 'games'), where('creator', '==', userId));
-                const gamesSnap = await getDocs(gamesQuery);
-                gamesSnap.forEach(async (gameDoc) => {
-                  const gameData = gameDoc.data() as GameItem;
-                  if (gameData.sport && !activeSports.includes(gameData.sport)) {
-                    await deleteDoc(doc(db, 'games', gameDoc.id));
-                  }
-                });
-              }
             }
           });
           return () => unsubscribeUserDoc();
@@ -412,39 +416,6 @@ export default function RadarScreen() {
     };
     loadUserData();
   }, []);
-
-  const handleUpdateUserSports = async (newSportsList: string[]) => {
-    if (!currentUserId) return;
-
-    try {
-      const userRef = doc(db, 'users', currentUserId);
-      
-      await updateDoc(userRef, {
-        sports: newSportsList,
-        sport: newSportsList[0] || 'Football'
-      });
-
-      setUserSports(newSportsList);
-      setNewSport(newSportsList[0] || 'Football');
-
-      const gamesQuery = query(collection(db, 'games'), where('creator', '==', currentUserId));
-      const gamesSnap = await getDocs(gamesQuery);
-
-      const deletePromises: Promise<void>[] = [];
-      gamesSnap.forEach((gameDocSnap) => {
-        const gameData = gameDocSnap.data() as GameItem;
-        if (gameData.sport && !newSportsList.includes(gameData.sport)) {
-          deletePromises.push(deleteDoc(doc(db, 'games', gameDocSnap.id)));
-        }
-      });
-
-      await Promise.all(deletePromises);
-      Alert.alert('Updated Successfully 🏅', 'Your sports profile was updated and outdated games were cleaned up automatically!');
-    } catch (error) {
-      console.error('Error updating sports and cleaning games:', error);
-      Alert.alert('Error', 'Could not update sports profile.');
-    }
-  };
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'users'), (snapshot) => {
@@ -1162,7 +1133,34 @@ export default function RadarScreen() {
     } catch (e) { console.error(e); }
   };
 
-  const filteredGames = gamesList.filter(game => userSports.length === 0 || userSports.includes(game.sport));
+  // סינון המשחקים לפי פילטר הספורט הנבחר ושורת החיפוש
+  const filteredGames = gamesList.filter(game => {
+    // פילטר לפי ענף ספורט נבחר
+    if (selectedSportFilter !== 'All') {
+      const filterLower = selectedSportFilter.toLowerCase().trim();
+      const gameSportLower = (game.sport || '').toLowerCase().trim();
+      
+      const isMatch = 
+        gameSportLower.includes(filterLower) || 
+        filterLower.includes(gameSportLower) ||
+        (filterLower.includes('football') && (gameSportLower.includes('soccer') || gameSportLower.includes('כדורגל'))) ||
+        (filterLower.includes('fitness') && (gameSportLower.includes('gym') || gameSportLower.includes('כושר')));
+
+      if (!isMatch) return false;
+    }
+
+    // פילטר לפי טקסט חיפוש (כותרת המשחק, שם המגרש או העיר)
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const titleMatch = game.title.toLowerCase().includes(q);
+      const venueMatch = game.venueName.toLowerCase().includes(q);
+      const cityMatch = game.city.toLowerCase().includes(q);
+      if (!titleMatch && !venueMatch && !cityMatch) return false;
+    }
+
+    return true;
+  });
+
   const isUserAdmin = (game: GameItem) => game.creatorName === userName || game.creator === currentUserId;
 
   const nearbyMutualFriends = allUsersList.filter(u => {
@@ -1184,6 +1182,9 @@ export default function RadarScreen() {
   const isPrivateAccount = targetProfileUser?.isPrivate === true;
 
   const canViewPostsContent = isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower;
+
+  // כפתור הפילטר החיצוני מקבל את האייקון של הענף הנבחר
+  const currentFilterSportStyle = getSportIconAndColor(selectedSportFilter);
 
   return (
     <View style={styles.container}>
@@ -1287,14 +1288,51 @@ export default function RadarScreen() {
 
       <View style={styles.bottomSheet}>
         <View style={styles.dragHandle} />
-        <Text style={styles.sheetTitle}>Nearby Games & Meetups 🏟️</Text>
-        <Text style={styles.sheetSubtitle}>Showing active events (Auto-removes after 24 hours)</Text>
+        
+        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Text style={styles.sheetTitle}>Nearby Games & Meetups 🏟️</Text>
+          <Text style={styles.sheetSubtitle}>{filteredGames.length} active</Text>
+        </View>
 
-        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 40 }}>
+        {/* שורת חיפוש וכפתור פילטר עם אייקון ספורט */}
+        <View style={styles.searchAndFilterRow}>
+          <View style={styles.searchBarContainer}>
+            <Ionicons name="search" size={16} color="#A1A1AA" style={{ marginRight: 8 }} />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search game, venue, or city..."
+              placeholderTextColor="#52525B"
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => setSearchQuery('')}>
+                <Ionicons name="close-circle" size={16} color="#A1A1AA" />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <TouchableOpacity 
+            style={[styles.filterButton, selectedSportFilter !== 'All' && { borderColor: currentFilterSportStyle.color, backgroundColor: currentFilterSportStyle.bg + '33' }]} 
+            onPress={() => setSportFilterModalVisible(true)}
+            activeOpacity={0.8}
+          >
+            <Ionicons 
+              name={selectedSportFilter === 'All' ? 'options-outline' : (getSportIconAndColor(selectedSportFilter).icon as any)} 
+              size={15} 
+              color={selectedSportFilter === 'All' ? '#EAB308' : currentFilterSportStyle.color} 
+            />
+            <Text style={[styles.filterButtonText, selectedSportFilter !== 'All' && { color: currentFilterSportStyle.color }]}>
+              {selectedSportFilter === 'All' ? 'Filter' : selectedSportFilter}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 60, paddingTop: 4 }}>
           {filteredGames.length === 0 ? (
             <View style={styles.emptyBox}>
               <Ionicons name="compass-outline" size={36} color="#71717A" />
-              <Text style={styles.emptyNoticeText}>No games found nearby for your selected sports.</Text>
+              <Text style={styles.emptyNoticeText}>No games found matching your search or filters.</Text>
             </View>
           ) : (
             filteredGames.map(game => {
@@ -1335,6 +1373,58 @@ export default function RadarScreen() {
           )}
         </ScrollView>
       </View>
+
+      {/* מודל בחירת ענף ספורט לפילטור עם אייקונים */}
+      <Modal visible={sportFilterModalVisible} transparent={true} animationType="fade" onRequestClose={() => setSportFilterModalVisible(false)}>
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.modalContentCenter}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Filter by Sport 🏅</Text>
+              <TouchableOpacity onPress={() => setSportFilterModalVisible(false)} activeOpacity={0.8}>
+                <Ionicons name="close" size={22} color="#FAFAFA" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 10 }}>
+              <TouchableOpacity 
+                style={[styles.filterOptionItem, selectedSportFilter === 'All' && styles.filterOptionItemActive]}
+                onPress={() => { setSelectedSportFilter('All'); setSportFilterModalVisible(false); }}
+                activeOpacity={0.8}
+              >
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                  <View style={[styles.filterIconCircle, { backgroundColor: '#332E0F' }]}>
+                    <Ionicons name="apps" size={14} color="#EAB308" />
+                  </View>
+                  <Text style={[styles.filterOptionText, selectedSportFilter === 'All' && styles.filterOptionTextActive]}>All Sports (הכל)</Text>
+                </View>
+                {selectedSportFilter === 'All' && <Ionicons name="checkmark" size={18} color="#EAB308" />}
+              </TouchableOpacity>
+
+              {ALL_AVAILABLE_SPORTS.map(sport => {
+                const isSelected = selectedSportFilter.toLowerCase() === sport.toLowerCase();
+                const { icon, color, bg } = getSportIconAndColor(sport);
+
+                return (
+                  <TouchableOpacity 
+                    key={sport} 
+                    style={[styles.filterOptionItem, isSelected && styles.filterOptionItemActive]}
+                    onPress={() => { setSelectedSportFilter(sport); setSportFilterModalVisible(false); }}
+                    activeOpacity={0.8}
+                  >
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                      <View style={[styles.filterIconCircle, { backgroundColor: bg }]}>
+                        <Ionicons name={icon as any} size={14} color={color} />
+                      </View>
+                      <Text style={[styles.filterOptionText, isSelected && styles.filterOptionTextActive]}>{sport}</Text>
+                    </View>
+                    {isSelected && <Ionicons name="checkmark" size={18} color={color} />}
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={!!selectedGame} transparent={true} animationType="slide">
         <View style={styles.modalOverlay}>
@@ -1665,7 +1755,7 @@ export default function RadarScreen() {
                         isApprovedFollower && styles.profileFollowingBtnText,
                         hasRequestedFollow && { color: '#FAFAFA' }
                       ]}>
-                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
+                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Request 🤝'}
                       </Text>
                     </TouchableOpacity>
 
@@ -2095,13 +2185,27 @@ const styles = StyleSheet.create({
   pickingBanner: { position: 'absolute', top: 110, alignSelf: 'center', backgroundColor: '#EAB308', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, flexDirection: 'row', alignItems: 'center', zIndex: 50 },
   pickingBannerText: { color: '#09090B', fontWeight: 'bold', fontSize: 12 },
 
-  bottomSheet: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '50%', backgroundColor: '#121215', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 10, borderWidth: 1, borderColor: '#27272A' },
-  dragHandle: { width: 40, height: 4, backgroundColor: '#3F3F46', borderRadius: 2, alignSelf: 'center', marginBottom: 12 },
-  sheetTitle: { color: '#FAFAFA', fontSize: 18, fontWeight: '900' },
-  sheetSubtitle: { color: '#A1A1AA', fontSize: 12, marginBottom: 15 },
+  bottomSheet: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '52%', backgroundColor: '#121215', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 10, borderWidth: 1, borderColor: '#27272A' },
+  dragHandle: { width: 40, height: 4, backgroundColor: '#3F3F46', borderRadius: 2, alignSelf: 'center', marginBottom: 8 },
+  sheetTitle: { color: '#FAFAFA', fontSize: 17, fontWeight: '900' },
+  sheetSubtitle: { color: '#A1A1AA', fontSize: 11 },
+
+  searchAndFilterRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, marginBottom: 8 },
+  searchBarContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 12, paddingHorizontal: 10, height: 40 },
+  searchInput: { flex: 1, color: '#FAFAFA', fontSize: 12, height: '100%' },
+
+  filterButton: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', paddingHorizontal: 12, height: 40, borderRadius: 12 },
+  filterButtonText: { color: '#EAB308', fontSize: 12, fontWeight: 'bold' },
+
+  filterOptionItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', paddingHorizontal: 14, paddingVertical: 12, borderRadius: 12, marginBottom: 8 },
+  filterOptionItemActive: { backgroundColor: '#18181B', borderColor: '#EAB308' },
+  filterOptionText: { color: '#D4D4D8', fontSize: 13, fontWeight: '600' },
+  filterOptionTextActive: { color: '#EAB308', fontWeight: 'bold' },
+  
+  filterIconCircle: { width: 26, height: 26, borderRadius: 13, justifyContent: 'center', alignItems: 'center' },
 
   emptyBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30 },
-  emptyNoticeText: { color: '#71717A', textAlign: 'center', marginTop: 30 },
+  emptyNoticeText: { color: '#71717A', textAlign: 'center', marginTop: 10 },
 
   gameCard: { borderRadius: 14, padding: 14, marginBottom: 12, borderWidth: 1 },
   gameHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
