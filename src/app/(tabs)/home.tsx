@@ -85,10 +85,11 @@ type GroupedStory = {
 type AppNotification = {
   id: string;
   senderUid: string;
-  type: 'follow_request' | 'like' | 'comment';
+  type: 'follow_request' | 'like' | 'comment' | 'game_join' | 'game_leave' | 'game_deleted' | 'game_update' | 'game_chat' | 'game_created' | 'new_post_story' | 'message';
   message: string;
   isRead?: boolean;
   status?: 'pending' | 'accepted' | 'rejected';
+  gameId?: string;
   createdAt?: any;
 };
 
@@ -265,6 +266,7 @@ export default function HomeScreen() {
   const [liveMeta, setLiveMeta] = useState('Israel, Netanya');
   const [userSports, setUserSports] = useState<string[]>([]);
   const [followingList, setFollowingList] = useState<string[]>([]);
+  const [pendingRequestsList, setPendingRequestsList] = useState<string[]>([]);
   const [currentUserId, setCurrentUserId] = useState('');
   const [allUsersList, setAllUsersList] = useState<any[]>([]);
   const [liveUserData, setLiveUserData] = useState<any>(null);
@@ -274,6 +276,8 @@ export default function HomeScreen() {
 
   const [zoomedAvatarUri, setZoomedAvatarUri] = useState<string | null>(null);
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
+
+  const appLoadTimeRef = useRef<number>(Date.now());
 
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -318,6 +322,9 @@ export default function HomeScreen() {
               if (data.following) {
                 setFollowingList(data.following);
               }
+              if (data.pendingRequests) {
+                setPendingRequestsList(data.pendingRequests);
+              }
             }
           });
           return () => unsubscribe();
@@ -340,6 +347,8 @@ export default function HomeScreen() {
         ...(docSnap.data() as any)
       }));
       setNotificationsList(loadedNotifs);
+    }, (error) => {
+      console.error('Error listening to notifications:', error);
     });
 
     return () => unsubscribeNotifs();
@@ -355,6 +364,27 @@ export default function HomeScreen() {
       const now = new Date().getTime();
       const storiesList: Story[] = [];
 
+      snapshot.docChanges().forEach(async (change: any) => {
+        if (change.type === 'added' && currentUserId) {
+          const sData = change.doc.data();
+          const sAuthorUid = sData.userUid;
+          const sCreatedAt = sData.createdAt?.toMillis ? sData.createdAt.toMillis() : (sData.createdAt?.seconds ? sData.createdAt.seconds * 1000 : Date.now());
+
+          if (sAuthorUid && sAuthorUid !== currentUserId && followingList.includes(sAuthorUid) && sCreatedAt > appLoadTimeRef.current) {
+            try {
+              await addDoc(collection(db, 'users', currentUserId, 'notifications'), {
+                senderUid: sAuthorUid,
+                type: 'new_post_story',
+                message: `${sData.name || 'Someone'} uploaded a new story! 📸`,
+                createdAt: serverTimestamp()
+              });
+            } catch (e) {
+              console.error('Error adding story notification:', e);
+            }
+          }
+        }
+      });
+
       snapshot.docs.forEach((docSnap: any) => {
         const data = docSnap.data();
         const createdAtDate = data.createdAt?.toDate ? data.createdAt.toDate() : new Date(data.createdAt || now);
@@ -364,27 +394,29 @@ export default function HomeScreen() {
           const authorDoc = allUsersList.find(u => u.uid === data.userUid || u.name === data.name);
           const resolvedAvatar = authorDoc?.avatar || data.avatarUrl || '';
 
-          storiesList.push({
-            id: docSnap.id,
-            userUid: data.userUid,
-            name: data.name,
-            imageUrl: data.imageUrl,
-            mediaType: data.mediaType || 'image',
-            avatarUrl: resolvedAvatar,
-            caption: data.caption,
-            captionStyle: data.captionStyle,
-            createdAt: data.createdAt,
-            isMine: data.userUid === currentUserId || data.name === liveName,
-            likesList: data.likesList || [],
-            viewersList: data.viewersList || [],
-            storyComments: data.storyComments || []
-          });
+          if (data.userUid === currentUserId || data.name === liveName || followingList.includes(data.userUid)) {
+            storiesList.push({
+              id: docSnap.id,
+              userUid: data.userUid,
+              name: data.name,
+              imageUrl: data.imageUrl,
+              mediaType: data.mediaType || 'image',
+              avatarUrl: resolvedAvatar,
+              caption: data.caption,
+              captionStyle: data.captionStyle,
+              createdAt: data.createdAt,
+              isMine: data.userUid === currentUserId || data.name === liveName,
+              likesList: data.likesList || [],
+              viewersList: data.viewersList || [],
+              storyComments: data.storyComments || []
+            });
+          }
         }
       });
       setStories(storiesList);
     });
     return () => unsubscribe();
-  }, [currentUserId, liveName, allUsersList]);
+  }, [currentUserId, liveName, allUsersList, followingList]);
 
   useEffect(() => {
     const q = query(
@@ -393,6 +425,27 @@ export default function HomeScreen() {
       limit(15)
     );
     const unsubscribe = onSnapshot(q, (snapshot: any) => {
+      snapshot.docChanges().forEach(async (change: any) => {
+        if (change.type === 'added' && currentUserId) {
+          const pData = change.doc.data();
+          const pAuthorUid = pData.userId;
+          const pCreatedAt = pData.createdAt?.toMillis ? pData.createdAt.toMillis() : (pData.createdAt?.seconds ? pData.createdAt.seconds * 1000 : Date.now());
+
+          if (pAuthorUid && pAuthorUid !== currentUserId && followingList.includes(pAuthorUid) && pCreatedAt > appLoadTimeRef.current) {
+            try {
+              await addDoc(collection(db, 'users', currentUserId, 'notifications'), {
+                senderUid: pAuthorUid,
+                type: 'new_post_story',
+                message: `${pData.authorName || pData.userName || 'Someone'} published a new post! 🚀`,
+                createdAt: serverTimestamp()
+              });
+            } catch (e) {
+              console.error('Error adding post notification:', e);
+            }
+          }
+        }
+      });
+
       const postsList: Post[] = snapshot.docs.map((docSnap: any) => {
         const data = docSnap.data();
         const likesList = data.likesList || [];
@@ -423,7 +476,7 @@ export default function HomeScreen() {
       console.error('Error listening to posts:', error);
     });
     return () => unsubscribe();
-  }, [currentUserId, allUsersList]);
+  }, [currentUserId, allUsersList, followingList]);
 
   const [activeGroupIndex, setActiveGroupIndex] = useState<number | null>(null);
   const [activeStoryInGroupIndex, setActiveStoryInGroupIndex] = useState<number>(0);
@@ -438,7 +491,7 @@ export default function HomeScreen() {
   
   const otherStories = stories.filter(s => {
     if (s.isMine || s.userUid === currentUserId || s.name === liveName) return false;
-    const isFollowed = s.userUid ? followingList.includes(s.userUid) : true;
+    const isFollowed = s.userUid ? followingList.includes(s.userUid) : false;
     return isFollowed;
   });
 
@@ -733,7 +786,8 @@ export default function HomeScreen() {
       const notifRef = doc(db, 'users', currentUserId, 'notifications', notifId);
 
       await updateDoc(myRef, {
-        followers: arrayUnion(requesterUid)
+        followers: arrayUnion(requesterUid),
+        pendingRequests: arrayRemove(requesterUid)
       });
 
       await updateDoc(requesterRef, {
@@ -745,38 +799,73 @@ export default function HomeScreen() {
         message: 'You accepted this follow request.'
       });
 
+      setPendingRequestsList(prev => prev.filter(id => id !== requesterUid));
+      if (targetProfileUser && targetProfileUser.uid === requesterUid) {
+        setTargetProfileUser({
+          ...targetProfileUser,
+          followers: [...(targetProfileUser.followers || []), currentUserId],
+          pendingRequests: targetProfileUser.pendingRequests?.filter((id: string) => id !== currentUserId)
+        });
+      }
+
       Alert.alert('Success', 'Follow request approved! 🎉');
     } catch (error) {
       console.error('Error accepting request:', error);
+      Alert.alert('Error', 'Could not accept the request.');
     }
   };
 
   const handleRejectRequest = async (notifId: string, requesterUid: string) => {
     if (!currentUserId) return;
     try {
+      const myRef = doc(db, 'users', currentUserId);
       const notifRef = doc(db, 'users', currentUserId, 'notifications', notifId);
+
+      await updateDoc(myRef, {
+        pendingRequests: arrayRemove(requesterUid)
+      });
 
       await updateDoc(notifRef, {
         status: 'rejected',
         message: 'You declined this follow request.'
       });
 
+      setPendingRequestsList(prev => prev.filter(id => id !== requesterUid));
+      if (targetProfileUser && targetProfileUser.uid === requesterUid) {
+        setTargetProfileUser({
+          ...targetProfileUser,
+          pendingRequests: targetProfileUser.pendingRequests?.filter((id: string) => id !== currentUserId)
+        });
+      }
+
       Alert.alert('Request Declined', 'The follow request was updated.');
     } catch (error) {
       console.error('Error rejecting request:', error);
+      Alert.alert('Error', 'Could not decline the request.');
     }
   };
 
   const handleToggleFollowTarget = async () => {
-    if (!targetProfileUser || !currentUserId) return;
-    
-    const isApproved = targetProfileUser.followers?.includes(currentUserId);
-    const hasRequested = targetProfileUser.pendingRequests?.includes(currentUserId);
-    const isPrivateAccount = targetProfileUser.isPrivate === true;
+    if (!targetProfileUser || !currentUserId || !targetProfileUser.uid) return;
 
     try {
       const myRef = doc(db, 'users', currentUserId);
       const targetRef = doc(db, 'users', targetProfileUser.uid);
+
+      const [mySnap, targetSnap] = await Promise.all([getDoc(myRef), getDoc(targetRef)]);
+      if (!targetSnap.exists()) {
+        Alert.alert('Error', 'This account could not be found.');
+        return;
+      }
+
+      const myData = mySnap.exists() ? mySnap.data() : {};
+      const targetData = targetSnap.data();
+      const targetFollowers: string[] = targetData.followers || [];
+      const myFollowing: string[] = myData.following || [];
+      const targetPending: string[] = targetData.pendingRequests || [];
+      const isApproved = targetFollowers.includes(currentUserId) || myFollowing.includes(targetProfileUser.uid);
+      const hasRequested = targetPending.includes(currentUserId);
+      const isPrivateAccount = targetData.isPrivate === true;
 
       if (isApproved) {
         await updateDoc(targetRef, { followers: arrayRemove(currentUserId) });
@@ -784,17 +873,17 @@ export default function HomeScreen() {
         setFollowingList(prev => prev.filter(id => id !== targetProfileUser.uid));
         setTargetProfileUser({
           ...targetProfileUser,
-          followers: targetProfileUser.followers?.filter((id: string) => id !== currentUserId)
+          followers: targetFollowers.filter(id => id !== currentUserId),
+          pendingRequests: targetPending
         });
       } else if (hasRequested) {
         await updateDoc(targetRef, { pendingRequests: arrayRemove(currentUserId) });
         setTargetProfileUser({
           ...targetProfileUser,
-          pendingRequests: targetProfileUser.pendingRequests?.filter((id: string) => id !== currentUserId)
+          pendingRequests: targetPending.filter(id => id !== currentUserId)
         });
       } else if (isPrivateAccount) {
         await updateDoc(targetRef, { pendingRequests: arrayUnion(currentUserId) });
-        
         await addDoc(collection(db, 'users', targetProfileUser.uid, 'notifications'), {
           senderUid: currentUserId,
           type: 'follow_request',
@@ -805,19 +894,29 @@ export default function HomeScreen() {
 
         setTargetProfileUser({
           ...targetProfileUser,
-          pendingRequests: [...(targetProfileUser.pendingRequests || []), currentUserId]
+          pendingRequests: [...targetPending, currentUserId]
         });
+        Alert.alert('Request sent', 'Your follow request was sent.');
       } else {
         await updateDoc(targetRef, { followers: arrayUnion(currentUserId) });
         await updateDoc(myRef, { following: arrayUnion(targetProfileUser.uid) });
-        setFollowingList(prev => [...prev, targetProfileUser.uid]);
+        setFollowingList(prev => prev.includes(targetProfileUser.uid) ? prev : [...prev, targetProfileUser.uid]);
         setTargetProfileUser({
           ...targetProfileUser,
-          followers: [...(targetProfileUser.followers || []), currentUserId]
+          followers: [...targetFollowers, currentUserId]
+        });
+
+        await addDoc(collection(db, 'users', targetProfileUser.uid, 'notifications'), {
+          senderUid: currentUserId,
+          type: 'follow_request',
+          message: `${liveName} started following you.`,
+          status: 'accepted',
+          createdAt: serverTimestamp()
         });
       }
     } catch (error) {
-      console.error('Error updating follow status:', error);
+      console.error('Error updating follow status / sending follow request notification:', error);
+      Alert.alert('Error', 'Could not update follow status. Please try again.');
     }
   };
 
@@ -839,6 +938,14 @@ export default function HomeScreen() {
         senderId: currentUserId,
         text: textToSend,
         createdAt: new Date()
+      });
+
+      await addDoc(collection(db, 'users', chatTargetUser.uid, 'notifications'), {
+        senderUid: currentUserId,
+        type: 'message',
+        message: `${liveName} sent you a message: "${textToSend.substring(0, 25)}..." 💬`,
+        createdAt: serverTimestamp(),
+        status: 'unread'
       });
     } catch (e) {
       console.error('Error sending message:', e);
@@ -913,13 +1020,13 @@ export default function HomeScreen() {
         likesList: updatedLikesList
       });
 
-      // יצירת התראה בלייק חדש (אם המשתמש לא עושה לייק לעצמו והוסיף לייק כעת)
       if (!hasLiked && post.userId && post.userId !== currentUserId) {
         await addDoc(collection(db, 'users', post.userId, 'notifications'), {
           senderUid: currentUserId,
           type: 'like',
-          message: `${liveName} liked your post.`,
-          createdAt: serverTimestamp()
+          message: `${liveName} liked your post. ❤️`,
+          createdAt: serverTimestamp(),
+          status: 'unread'
         });
       }
 
@@ -963,8 +1070,9 @@ export default function HomeScreen() {
         await addDoc(collection(db, 'users', story.userUid, 'notifications'), {
           senderUid: currentUserId,
           type: 'like',
-          message: `${liveName} liked your story.`,
-          createdAt: serverTimestamp()
+          message: `${liveName} liked your story. ❤️`,
+          createdAt: serverTimestamp(),
+          status: 'unread'
         });
       }
     } catch (e) {
@@ -994,8 +1102,9 @@ export default function HomeScreen() {
           await addDoc(collection(db, 'users', story.userUid, 'notifications'), {
             senderUid: currentUserId,
             type: 'comment',
-            message: `${liveName} replied to your story: "${storyCommentInput.trim()}"`,
-            createdAt: serverTimestamp()
+            message: `${liveName} replied to your story: "${storyCommentInput.trim()}" 💬`,
+            createdAt: serverTimestamp(),
+            status: 'unread'
           });
         }
 
@@ -1212,13 +1321,13 @@ export default function HomeScreen() {
       const updatedComments = [...post.comments, newComment];
       await updateDoc(postRef, { comments: updatedComments });
 
-      // יצירת התראה על תגובה חדשה (אם המשתמש לא הגיב לפוסט של עצמו)
       if (post.userId && post.userId !== currentUserId) {
         await addDoc(collection(db, 'users', post.userId, 'notifications'), {
           senderUid: currentUserId,
           type: 'comment',
-          message: `${liveName} commented on your post: "${text.trim()}"`,
-          createdAt: serverTimestamp()
+          message: `${liveName} commented on your post: "${text.trim()}" 💬`,
+          createdAt: serverTimestamp(),
+          status: 'unread'
         });
       }
 
@@ -1336,7 +1445,7 @@ export default function HomeScreen() {
                   activeOpacity={0.8}
                 >
                   <Ionicons name="notifications-outline" size={20} color="#EAB308" />
-                  {notificationsList.some(n => n.status === 'pending') && (
+                  {notificationsList.some(n => n.status === 'pending' || !n.isRead) && (
                     <View style={{
                       position: 'absolute',
                       top: -2,
@@ -1546,10 +1655,15 @@ export default function HomeScreen() {
               ) : (
                 notificationsList.map((notif) => {
                   const senderUser = allUsersList.find(u => u.uid === notif.senderUid);
-                  const isPending = notif.status === 'pending';
+                  const isPending = notif.type === 'follow_request' && notif.status === 'pending';
 
                   return (
-                    <View key={notif.id} style={styles.listItem}>
+                    <TouchableOpacity 
+                      key={notif.id} 
+                      style={styles.listItem}
+                      onPress={() => {}}
+                      activeOpacity={0.85}
+                    >
                       <View style={styles.listAvatar}>
                         {senderUser?.avatar ? (
                           <Image source={{ uri: senderUser.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
@@ -1588,7 +1702,7 @@ export default function HomeScreen() {
                           </Text>
                         </View>
                       ) : null}
-                    </View>
+                    </TouchableOpacity>
                   );
                 })
               )}

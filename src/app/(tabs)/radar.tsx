@@ -1,15 +1,15 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, Dimensions, TouchableOpacity, ScrollView, Modal, TextInput, Alert, Linking, Platform, Image, KeyboardAvoidingView, FlatList, Share } from 'react-native';
+import { StyleSheet, Text, View, Dimensions, TouchableOpacity, ScrollView, Modal, TextInput, Alert, Linking, Platform, Image, Share } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import MapView, { Marker, PROVIDER_DEFAULT, MapPressEvent } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { collection, onSnapshot, doc, getDoc, addDoc, setDoc, deleteDoc, arrayUnion, arrayRemove, query, orderBy, updateDoc, where, getDocs } from 'firebase/firestore';
+import { collection, onSnapshot, doc, getDoc, addDoc, setDoc, deleteDoc, arrayUnion, arrayRemove, query, orderBy, updateDoc, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { registerForPushNotificationsAsync, triggerLocalNotification } from '../../services/notificationService';
+import { registerForPushNotificationsAsync } from '../../services/notificationService';
 
-const { width, height } = Dimensions.get('window');
+const { width } = Dimensions.get('window');
 
 type ChatMessage = {
   id: string;
@@ -35,7 +35,9 @@ type UserProfile = {
   longitude?: number;
   followers?: string[];
   following?: string[];
+  pendingRequests?: string[];
   isVip?: boolean;
+  isPrivate?: boolean;
 };
 
 type Comment = {
@@ -249,6 +251,7 @@ export default function RadarScreen() {
   const [userCoords, setUserCoords] = useState<{ latitude: number; longitude: number } | null>(null);
   const [autoCity, setAutoCity] = useState('Netanya');
   const [followingIds, setFollowingIds] = useState<string[]>([]);
+  const [followersIds, setFollowersIds] = useState<string[]>([]);
   const [allUsersList, setAllUsersList] = useState<UserProfile[]>([]);
   const [allPosts, setAllPosts] = useState<PostItem[]>([]);
 
@@ -293,9 +296,6 @@ export default function RadarScreen() {
     latitudeDelta: 0.05,
     longitudeDelta: 0.05,
   });
-
-  const prevFollowersLength = useRef<number>(0);
-  const postsStateRef = useRef<{ [postId: string]: { likes: number; comments: number } }>({});
 
   useEffect(() => {
     const handleDeepLink = async (event: { url: string }) => {
@@ -386,13 +386,12 @@ export default function RadarScreen() {
 
               if (data.name) setUserName(data.name);
               if (data.avatar) setUserAvatar(data.avatar);
-              if (data.following) {
-                setFollowingIds(data.following);
-              } else {
-                setFollowingIds([]);
-              }
+              if (data.following) setFollowingIds(data.following);
+              else setFollowingIds([]);
 
-              // בדיקה ומחיקת משחקים אוטומטית אם המשתמש החליף ענף ספורט פעיל והמשחק אינו שייך עוד לענפים שלו
+              if (data.followers) setFollowersIds(data.followers);
+              else setFollowersIds([]);
+
               if (activeSports.length > 0) {
                 const gamesQuery = query(collection(db, 'games'), where('creator', '==', userId));
                 const gamesSnap = await getDocs(gamesQuery);
@@ -414,115 +413,38 @@ export default function RadarScreen() {
     loadUserData();
   }, []);
 
-  useEffect(() => {
-    if (!currentUser || !currentUserId) return;
+  const handleUpdateUserSports = async (newSportsList: string[]) => {
+    if (!currentUserId) return;
 
-    const userDocRef = doc(db, 'users', currentUserId);
-    const unsubscribeUserNotif = onSnapshot(userDocRef, (docSnap) => {
-      if (!docSnap.exists()) return;
-      const data = docSnap.data();
-      const followers = data.followers || [];
-
-      if (prevFollowersLength.current > 0 && followers.length > prevFollowersLength.current) {
-        triggerLocalNotification('New Follower! 👤', 'Someone new started following your profile!');
-      }
-      prevFollowersLength.current = followers.length;
-    });
-
-    const chatsQuery = query(collection(db, 'chats'), where('participants', 'array-contains', currentUserId));
-    const unsubscribeChatNotif = onSnapshot(chatsQuery, (snapshot) => {
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'modified') {
-          triggerLocalNotification('New Message 💬', 'You received a new private chat message.');
-        }
-      });
-    });
-
-    const postsQuery = collection(db, 'posts');
-    const unsubscribePostsNotif = onSnapshot(postsQuery, (snapshot) => {
-      snapshot.docs.forEach((docSnap) => {
-        const postData = docSnap.data();
-        const postId = docSnap.id;
-        const isMyPost = postData.userId === currentUserId || postData.userName === currentUser.name;
-        
-        const currentLikes = postData.likesList?.length || 0;
-        const currentComments = postData.comments?.length || 0;
-
-        if (isMyPost) {
-          const prevState = postsStateRef.current[postId];
-          if (prevState) {
-            if (currentLikes > prevState.likes) {
-              triggerLocalNotification('New Like! ❤️', `You now have a total of ${currentLikes} likes on your post.`);
-            }
-            if (currentComments > prevState.comments) {
-              triggerLocalNotification('New Comment! 📝', `You now have a total of ${currentComments} comments on your post.`);
-            }
-          }
-          postsStateRef.current[postId] = { likes: currentLikes, comments: currentComments };
-        }
-      });
-    });
-
-    const gamesNotifQuery = collection(db, 'games');
-    const unsubscribeGamesNotif = onSnapshot(gamesNotifQuery, (snapshot) => {
-      snapshot.docChanges().forEach((change) => {
-        if (change.type === 'added') {
-          const gameData = change.doc.data() as GameItem;
-          const userSportsList = currentUser.sports || [currentUser.sport] || [];
-
-          if (userSportsList.includes(gameData.sport) && userCoords) {
-            const distKm = calculateDistance(userCoords.latitude, userCoords.longitude, gameData.latitude, gameData.longitude);
-            if (distKm <= 0.5) {
-              triggerLocalNotification(
-                'New Game Nearby! 🏟️',
-                `A ${gameData.sport} game "${gameData.title}" was created less than 500m from you!`
-              );
-            }
-          }
-        }
-      });
-    });
-
-    return () => {
-      unsubscribeUserNotif();
-      unsubscribeChatNotif();
-      unsubscribePostsNotif();
-      unsubscribeGamesNotif();
-    };
-  }, [currentUser, currentUserId, userCoords]);
-
-  useEffect(() => {
-    if (!selectedGame || !currentUserId) return;
-
-    const gameDocRef = doc(db, 'games', selectedGame.id);
-    const unsubscribeSelectedGame = onSnapshot(gameDocRef, (docSnap) => {
-      if (!docSnap.exists()) {
-        triggerLocalNotification('Game Removed ⚠️', 'The game admin deleted the match.');
-        setSelectedGame(null);
-        return;
-      }
-      const updatedGame = docSnap.data() as GameItem;
+    try {
+      const userRef = doc(db, 'users', currentUserId);
       
-      if (updatedGame.chat && selectedGame.chat && updatedGame.chat.length > selectedGame.chat.length) {
-        const lastMsg = updatedGame.chat[updatedGame.chat.length - 1];
-        if (lastMsg.sender !== userName) {
-          triggerLocalNotification('New Team Message 💬', `${lastMsg.sender}: ${lastMsg.text}`);
+      await updateDoc(userRef, {
+        sports: newSportsList,
+        sport: newSportsList[0] || 'Football'
+      });
+
+      setUserSports(newSportsList);
+      setNewSport(newSportsList[0] || 'Football');
+
+      const gamesQuery = query(collection(db, 'games'), where('creator', '==', currentUserId));
+      const gamesSnap = await getDocs(gamesQuery);
+
+      const deletePromises: Promise<void>[] = [];
+      gamesSnap.forEach((gameDocSnap) => {
+        const gameData = gameDocSnap.data() as GameItem;
+        if (gameData.sport && !newSportsList.includes(gameData.sport)) {
+          deletePromises.push(deleteDoc(doc(db, 'games', gameDocSnap.id)));
         }
-      }
+      });
 
-      if (updatedGame.players && selectedGame.players) {
-        if (updatedGame.players.length > selectedGame.players.length) {
-          triggerLocalNotification('Player Joined! 🤝', 'A new player has joined the squad.');
-        } else if (updatedGame.players.length < selectedGame.players.length) {
-          triggerLocalNotification('Player Left 🚪', 'A player has left the squad.');
-        }
-      }
-
-      setSelectedGame(prev => prev ? { ...prev, ...updatedGame } : null);
-    });
-
-    return () => unsubscribeSelectedGame();
-  }, [selectedGame?.id]);
+      await Promise.all(deletePromises);
+      Alert.alert('Updated Successfully 🏅', 'Your sports profile was updated and outdated games were cleaned up automatically!');
+    } catch (error) {
+      console.error('Error updating sports and cleaning games:', error);
+      Alert.alert('Error', 'Could not update sports profile.');
+    }
+  };
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'users'), (snapshot) => {
@@ -541,6 +463,7 @@ export default function RadarScreen() {
             if (me.name) setUserName(me.name);
             if (me.avatar) setUserAvatar(me.avatar);
             if (me.following) setFollowingIds(me.following);
+            if (me.followers) setFollowersIds(me.followers);
           }
         }
       });
@@ -590,44 +513,12 @@ export default function RadarScreen() {
   }, []);
 
   useEffect(() => {
-    if (!targetProfileUser) {
-      setTargetUserPosts([]);
-      return;
-    }
-
-    const normalize = (value?: string) => (value || '').trim().toLowerCase();
-    const targetUid = normalize(targetProfileUser.uid);
-    const targetName = normalize(targetProfileUser.name);
-    const targetEmail = normalize((targetProfileUser as any).email || (targetProfileUser as any).userEmail);
-    const targetEmailId = targetEmail ? targetEmail.replace(/[^a-z0-9]/g, '_') : '';
-
-    const filtered = allPosts.filter(post => {
-      const postUserId = normalize(post.userId);
-      const postEmail = normalize(post.userEmail);
-      const postUserName = normalize(post.userName);
-      const postAuthorName = normalize(post.authorName);
-      const postEmailId = postEmail ? postEmail.replace(/[^a-z0-9]/g, '_') : '';
-
-      return (
-        (!!targetUid && postUserId === targetUid) ||
-        (!!targetEmail && postEmail === targetEmail) ||
-        (!!targetEmailId && (postUserId === targetEmailId || postEmailId === targetEmailId)) ||
-        (!!targetName && postUserName === targetName) ||
-        (!!targetName && postAuthorName === targetName)
-      );
-    });
-
-    filtered.sort((a, b) => {
-      const getTime = (value: any) => {
-        if (!value) return 0;
-        if (typeof value.toMillis === 'function') return value.toMillis();
-        if (typeof value.toDate === 'function') return value.toDate().getTime();
-        const time = new Date(value).getTime();
-        return Number.isNaN(time) ? 0 : time;
-      };
-      return getTime(b.createdAt) - getTime(a.createdAt);
-    });
-
+    if (!targetProfileUser) return;
+    const filtered = allPosts.filter(p => 
+      p.userId === targetProfileUser.uid || 
+      p.userName === targetProfileUser.name ||
+      p.authorName === targetProfileUser.name
+    );
     setTargetUserPosts(filtered);
   }, [targetProfileUser, allPosts]);
 
@@ -808,22 +699,36 @@ export default function RadarScreen() {
 
   const handleToggleFollowTarget = async () => {
     if (!targetProfileUser || !currentUserId) return;
-    const isFollowing = targetProfileUser.followers?.includes(currentUserId);
+    const isApproved = targetProfileUser.followers?.includes(currentUserId);
+    const hasRequested = targetProfileUser.pendingRequests?.includes(currentUserId);
+    const isPrivateAccount = targetProfileUser.isPrivate === true;
 
     try {
       const myRef = doc(db, 'users', currentUserId);
       const targetRef = doc(db, 'users', targetProfileUser.uid);
 
-      if (isFollowing) {
-        await updateDoc(myRef, { following: arrayRemove(targetProfileUser.uid) });
+      if (isApproved) {
         await updateDoc(targetRef, { followers: arrayRemove(currentUserId) });
+        await updateDoc(myRef, { following: arrayRemove(targetProfileUser.uid) });
         setTargetProfileUser({
           ...targetProfileUser,
           followers: targetProfileUser.followers?.filter(id => id !== currentUserId)
         });
+      } else if (hasRequested) {
+        await updateDoc(targetRef, { pendingRequests: arrayRemove(currentUserId) });
+        setTargetProfileUser({
+          ...targetProfileUser,
+          pendingRequests: targetProfileUser.pendingRequests?.filter(id => id !== currentUserId)
+        });
+      } else if (isPrivateAccount) {
+        await updateDoc(targetRef, { pendingRequests: arrayUnion(currentUserId) });
+        setTargetProfileUser({
+          ...targetProfileUser,
+          pendingRequests: [...(targetProfileUser.pendingRequests || []), currentUserId]
+        });
       } else {
-        await updateDoc(myRef, { following: arrayUnion(targetProfileUser.uid) });
         await updateDoc(targetRef, { followers: arrayUnion(currentUserId) });
+        await updateDoc(myRef, { following: arrayUnion(targetProfileUser.uid) });
         setTargetProfileUser({
           ...targetProfileUser,
           followers: [...(targetProfileUser.followers || []), currentUserId]
@@ -845,24 +750,30 @@ export default function RadarScreen() {
       const chatDocRef = doc(db, 'chats', chatId);
       await setDoc(chatDocRef, {
         participants: [currentUserId, chatTargetUser.uid],
-        lastUpdated: new Date()
+        lastUpdated: serverTimestamp()
       }, { merge: true });
 
       const messagesRef = collection(db, 'chats', chatId, 'messages');
       await addDoc(messagesRef, {
         senderId: currentUserId,
         text: textToSend,
-        createdAt: new Date()
+        createdAt: serverTimestamp()
+      });
+      await addDoc(collection(db, 'users', chatTargetUser.uid, 'notifications'), {
+        senderUid: currentUserId,
+        type: 'message',
+        message: `${userName || 'Player'} sent you a message: "${textToSend.substring(0, 25)}" 💬`,
+        createdAt: serverTimestamp(),
+        status: 'unread'
       });
     } catch (e) {
       console.error('Error sending message:', e);
-      alert('Could not send message. Please try again.');
     }
   };
 
   const toggleLike = async (postId: string) => {
     if (!currentUserId) return;
-    const post = targetUserPosts.find(p => p.id === postId) || selectedPostModal;
+    const post = allPosts.find(p => p.id === postId) || selectedPostModal;
     if (!post) return;
 
     try {
@@ -889,9 +800,9 @@ export default function RadarScreen() {
 
   const handleAddCommentToPost = async (postId: string, isModal: boolean = false) => {
     const text = isModal ? modalCommentInput : '';
-    if (!text.trim()) return;
+    if (!text.trim() || !currentUserId) return;
 
-    const post = targetUserPosts.find(p => p.id === postId) || commentsModalPost || selectedPostModal;
+    const post = allPosts.find(p => p.id === postId) || commentsModalPost || selectedPostModal;
     if (!post) return;
 
     const newComment: Comment = {
@@ -900,7 +811,7 @@ export default function RadarScreen() {
       user: userName,
       avatarUrl: userAvatar || '',
       text: text.trim(),
-      createdAt: new Date()
+      createdAt: serverTimestamp()
     };
 
     try {
@@ -1065,8 +976,28 @@ export default function RadarScreen() {
         chat: [],
         teamsResult: [],
         tournamentMatches: [],
-        createdAt: new Date()
+        createdAt: serverTimestamp()
       });
+
+      const followersQuery = query(
+        collection(db, 'users'),
+        where('followers', 'array-contains', currentUserId)
+      );
+      const followersSnapshot = await getDocs(followersQuery);
+      const followerIds = followersSnapshot.docs
+        .map(profileDoc => profileDoc.id)
+        .filter(uid => !!uid && uid !== currentUserId);
+
+      await Promise.all(followerIds.map(uid =>
+        addDoc(collection(db, 'users', uid, 'notifications'), {
+          senderUid: currentUserId,
+          type: 'game_created',
+          message: `${activeName} you follow created a new game! ⚽`,
+          gameId: newGameRef.id,
+          createdAt: serverTimestamp(),
+          status: 'unread'
+        })
+      ));
 
       setCreateModalVisible(false);
       setPickedLocation(null);
@@ -1097,6 +1028,31 @@ export default function RadarScreen() {
     }
   };
 
+  const notifyGamePlayers = async (
+    playerNames: string[],
+    type: 'game_join' | 'game_leave' | 'game_deleted' | 'game_chat',
+    message: string,
+    gameId: string,
+    senderUid: string = currentUserId
+  ) => {
+    const recipientIds = Array.from(new Set(
+      (playerNames || [])
+        .map(name => allUsersList.find(u => (u.name || '').trim().toLowerCase() === (name || '').trim().toLowerCase())?.uid)
+        .filter((uid): uid is string => !!uid && uid !== senderUid)
+    ));
+
+    await Promise.all(recipientIds.map(uid =>
+      addDoc(collection(db, 'users', uid, 'notifications'), {
+        senderUid,
+        type,
+        message,
+        gameId,
+        createdAt: serverTimestamp(),
+        status: 'unread'
+      })
+    ));
+  };
+
   const handleJoinGame = async (game: GameItem) => {
     const activeName = userName || 'Player';
     if (game.players && game.players.includes(activeName)) {
@@ -1109,15 +1065,28 @@ export default function RadarScreen() {
     }
 
     try {
+      const existingPlayers = game.players || [];
       await setDoc(doc(db, 'games', game.id), { players: arrayUnion(activeName) }, { merge: true });
+      await notifyGamePlayers(
+        existingPlayers,
+        'game_join',
+        `${activeName} joined your game "${game.title}". ⚽`,
+        game.id
+      );
       Alert.alert('Success 🤝', 'You have joined the team!');
-    } catch (e) { console.error(e); }
+    } catch (e) { console.error('Error joining game or sending notifications:', e); }
   };
 
   const handleLeaveGame = async (game: GameItem) => {
     const activeName = userName || 'Player';
     try {
-      const updatedPlayers = game.players.filter(p => p !== activeName);
+      const updatedPlayers = (game.players || []).filter(p => p !== activeName);
+      await notifyGamePlayers(
+        updatedPlayers,
+        'game_leave',
+        `${activeName} left your game "${game.title}".`,
+        game.id
+      );
       if (updatedPlayers.length === 0) {
         await deleteDoc(doc(db, 'games', game.id));
         setSelectedGame(null);
@@ -1148,9 +1117,18 @@ export default function RadarScreen() {
         style: 'destructive', 
         onPress: async () => {
           try {
+            const game = gamesList.find(g => g.id === gameId) || selectedGame;
+            if (game) {
+              await notifyGamePlayers(
+                game.players || [],
+                'game_deleted',
+                `The game "${game.title}" was deleted by its manager.`,
+                game.id
+              );
+            }
             await deleteDoc(doc(db, 'games', gameId));
             setSelectedGame(null);
-          } catch (e) { console.error(e); }
+          } catch (e) { console.error('Error deleting game or notifying players:', e); }
         } 
       }
     ]);
@@ -1167,8 +1145,16 @@ export default function RadarScreen() {
 
     try {
       const gameRef = doc(db, 'games', gameId);
-      const updatedChat = selectedGame ? [...selectedGame.chat, newMessage] : [newMessage];
+      const updatedChat = selectedGame ? [...(selectedGame.chat || []), newMessage] : [newMessage];
       await setDoc(gameRef, { chat: updatedChat }, { merge: true });
+      if (selectedGame) {
+        await notifyGamePlayers(
+          selectedGame.players || [],
+          'game_chat',
+          `${userName || 'A player'} sent a message in "${selectedGame.title}": ${chatMessage.trim().slice(0, 60)}`,
+          gameId
+        );
+      }
       setChatMessage('');
       setTimeout(() => {
         chatScrollRef.current?.scrollToEnd({ animated: true });
@@ -1179,18 +1165,25 @@ export default function RadarScreen() {
   const filteredGames = gamesList.filter(game => userSports.length === 0 || userSports.includes(game.sport));
   const isUserAdmin = (game: GameItem) => game.creatorName === userName || game.creator === currentUserId;
 
-  const nearbyFollowingUsers = allUsersList.filter(u => {
-    if (!followingIds.includes(u.uid)) return false;
+  const nearbyMutualFriends = allUsersList.filter(u => {
+    if (u.uid === currentUserId) return false;
+    const isMutual = followingIds.includes(u.uid) && followersIds.includes(u.uid);
+    if (!isMutual) return false;
     if (!userCoords || !u.latitude || !u.longitude) return false;
     const dist = calculateDistance(userCoords.latitude, userCoords.longitude, u.latitude, u.longitude);
-    return dist <= 5;
+    return dist <= 10;
   });
 
   const targetFollowersList = allUsersList.filter(u => targetProfileUser?.followers?.includes(u.uid));
   const targetFollowingList = allUsersList.filter(u => targetProfileUser?.following?.includes(u.uid));
   const targetSportsList = targetProfileUser?.sports || (targetProfileUser?.sport ? [targetProfileUser.sport] : ['Football']);
-  const isFollowingTarget = targetProfileUser?.followers?.includes(currentUserId || '');
+
   const isViewingMyOwnProfile = targetProfileUser?.uid === currentUserId;
+  const isApprovedFollower = targetProfileUser?.followers?.includes(currentUserId || '');
+  const hasRequestedFollow = targetProfileUser?.pendingRequests?.includes(currentUserId || '');
+  const isPrivateAccount = targetProfileUser?.isPrivate === true;
+
+  const canViewPostsContent = isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower;
 
   return (
     <View style={styles.container}>
@@ -1235,7 +1228,7 @@ export default function RadarScreen() {
           </Marker>
         )}
 
-        {nearbyFollowingUsers.map((friend) => (
+        {nearbyMutualFriends.map((friend) => (
           <Marker
             key={`friend-${friend.uid}`}
             coordinate={{ latitude: friend.latitude!, longitude: friend.longitude! }}
@@ -1573,14 +1566,13 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* Player Profile Modal - מעוצב בדיוק לפי הסגנון של שאר המסכים */}
       <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
             
             <View style={styles.modalHeader}>
               <View>
-                <Text style={styles.homeCategory}>PLAYER PROFILE</Text>
+                <Text style={styles.discoverCategory}>PLAYER PROFILE</Text>
                 <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
               </View>
               <TouchableOpacity 
@@ -1623,6 +1615,7 @@ export default function RadarScreen() {
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
                     <Text style={styles.profileName}>{targetProfileUser.name}</Text>
                     {targetProfileUser.isVip && <Ionicons name="checkmark-circle" size={18} color="#EAB308" />}
+                    {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
                   </View>
                   
                   <View style={styles.sportsTagsRow}>
@@ -1655,15 +1648,24 @@ export default function RadarScreen() {
                   </View>
                 </View>
 
-                {!isViewingMyOwnProfile && currentUserId && (
+                {targetProfileUser.uid !== currentUserId && currentUser && (
                   <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
                     <TouchableOpacity 
-                      style={[styles.profileFollowBtn, isFollowingTarget && styles.profileFollowingBtn, { flex: 1 }]} 
+                      style={[
+                        styles.profileFollowBtn, 
+                        isApprovedFollower && styles.profileFollowingBtn,
+                        hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
+                        { flex: 1 }
+                      ]} 
                       onPress={handleToggleFollowTarget}
                       activeOpacity={0.85}
                     >
-                      <Text style={[styles.profileFollowBtnText, isFollowingTarget && styles.profileFollowingBtnText]}>
-                        {isFollowingTarget ? 'Following ✓' : 'Follow Player 🤝'}
+                      <Text style={[
+                        styles.profileFollowBtnText, 
+                        isApprovedFollower && styles.profileFollowingBtnText,
+                        hasRequestedFollow && { color: '#FAFAFA' }
+                      ]}>
+                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
                       </Text>
                     </TouchableOpacity>
 
@@ -1682,43 +1684,50 @@ export default function RadarScreen() {
                   </View>
                 )}
 
-                <View style={styles.postsSectionHeader}>
-                  <Ionicons name="grid-outline" size={18} color="#EAB308" />
-                  <Text style={styles.sectionTitle}>Player Posts</Text>
-                </View>
+                {canViewPostsContent ? (
+                  <>
+                    <View style={styles.postsSectionHeader}>
+                      <Ionicons name="grid-outline" size={18} color="#EAB308" />
+                      <Text style={styles.sectionTitle}>Player Posts</Text>
+                    </View>
 
-                {targetUserPosts.length === 0 ? (
-                  <View style={styles.emptyPostsBox}>
-                    <Ionicons name="images-outline" size={32} color="#52525B" />
-                    <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
-                  </View>
+                    {targetUserPosts.length === 0 ? (
+                      <View style={styles.emptyPostsBox}>
+                        <Ionicons name="images-outline" size={32} color="#52525B" />
+                        <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
+                      </View>
+                    ) : (
+                      <View style={styles.postsGrid}>
+                        {targetUserPosts.map(post => {
+                          const isVid = post.mediaType === 'video';
+                          return (
+                            <TouchableOpacity 
+                              key={post.id} 
+                              style={styles.postThumbnailBox} 
+                              onPress={() => setSelectedPostModal(post)} 
+                              activeOpacity={0.7}
+                            >
+                              {isVid ? (
+                                <View style={[styles.postThumbnailImage, { backgroundColor: '#000', position: 'relative' }]}>
+                                  {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} /> : null}
+                                  <View style={styles.videoBadgeOverlay}>
+                                    <Ionicons name="play" size={14} color="#FAFAFA" />
+                                  </View>
+                                </View>
+                              ) : (
+                                <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
+                              )}
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </>
                 ) : (
-                  <View style={styles.postsGrid}>
-                    {targetUserPosts.map(post => {
-                      return (
-                        <TouchableOpacity 
-                          key={post.id} 
-                          style={styles.postThumbnailBox} 
-                          onPress={() => setSelectedPostModal(post)} 
-                          activeOpacity={0.7}
-                        >
-                          {post.mediaType === 'video' && post.imageUrl ? (
-                            <View style={[styles.postThumbnailImage, { backgroundColor: '#000', position: 'relative' }]}>
-                              <ProfileVideoThumbnail uri={post.imageUrl} />
-                              <View style={styles.videoBadgeOverlay}>
-                                <Ionicons name="play" size={14} color="#FAFAFA" />
-                              </View>
-                            </View>
-                          ) : post.imageUrl ? (
-                            <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
-                          ) : (
-                            <View style={[styles.postThumbnailImage, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#18181B' }]}>
-                              <Ionicons name="document-text-outline" size={20} color="#EAB308" />
-                            </View>
-                          )}
-                        </TouchableOpacity>
-                      );
-                    })}
+                  <View style={styles.privateAccountBox}>
+                    <Ionicons name="lock-closed" size={40} color="#EAB308" style={{ marginBottom: 8 }} />
+                    <Text style={styles.privateAccountTitle}>This Account is Private 🔒</Text>
+                    <Text style={styles.privateAccountText}>Follow this account to see their photos and videos.</Text>
                   </View>
                 )}
 
@@ -1729,7 +1738,6 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* Zoomed Avatar Modal */}
       <Modal visible={!!zoomedAvatarUri} transparent={true} animationType="fade" onRequestClose={() => setZoomedAvatarUri(null)}>
         <View style={styles.zoomedAvatarOverlay}>
           <TouchableOpacity 
@@ -1745,7 +1753,6 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* Followers / Following List Modal */}
       <Modal visible={!!targetActiveModalList} animationType="slide" transparent={true} onRequestClose={() => setTargetActiveModalList(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -1794,7 +1801,6 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* Chat Modal */}
       <Modal visible={chatModalVisible} animationType="slide" transparent={true} onRequestClose={() => setChatModalVisible(false)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -1850,7 +1856,6 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      {/* Post Details Modal */}
       <Modal visible={!!selectedPostModal} animationType="slide" transparent={true} onRequestClose={() => setSelectedPostModal(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
@@ -1861,75 +1866,78 @@ export default function RadarScreen() {
               </TouchableOpacity>
             </View>
 
-            {selectedPostModal && (
-              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 30 }} nestedScrollEnabled={true}>
-                <View style={styles.postCard}>
-                  <View style={styles.postHeader}>
-                    <TouchableOpacity style={styles.postAvatarBox} onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, selectedPostModal.authorName || selectedPostModal.userName); }} activeOpacity={0.85}>
-                      {selectedPostModal.avatarUrl ? (
-                        <Image source={{ uri: selectedPostModal.avatarUrl }} style={styles.avatarImg} />
-                      ) : (
-                        <View style={styles.avatarPlaceholder}>
-                          <Text style={styles.avatarPlaceholderText}>{selectedPostModal.authorName ? selectedPostModal.authorName[0].toUpperCase() : 'P'}</Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                    
-                    <View style={styles.postUserInfo}>
-                      <TouchableOpacity onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, selectedPostModal.authorName || selectedPostModal.userName); }} activeOpacity={0.85}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                          <Text style={styles.postUserName}>{selectedPostModal.authorName || selectedPostModal.userName}</Text>
-                          {allUsersList.find(u => u.uid === selectedPostModal.userId || u.name === selectedPostModal.authorName)?.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
-                        </View>
+            {selectedPostModal && (() => {
+              const postOwner = allUsersList.find(u => u.uid === selectedPostModal.userId || u.name === selectedPostModal.userName || u.name === selectedPostModal.authorName);
+              const isVid = selectedPostModal.mediaType === 'video';
+
+              return (
+                <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 30 }} nestedScrollEnabled={true}>
+                  <View style={styles.postCard}>
+                    <View style={styles.postHeader}>
+                      <TouchableOpacity style={styles.postAvatarBox} onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, postOwner?.name || selectedPostModal.userName); }} activeOpacity={0.85}>
+                        {postOwner?.avatar || selectedPostModal.avatarUrl ? (
+                          <Image source={{ uri: postOwner?.avatar || selectedPostModal.avatarUrl }} style={styles.avatarImg} />
+                        ) : (
+                          <View style={styles.avatarPlaceholder}>
+                            <Text style={styles.avatarPlaceholderText}>{postOwner?.name ? postOwner.name[0].toUpperCase() : 'P'}</Text>
+                          </View>
+                        )}
                       </TouchableOpacity>
-                      <Text style={styles.postUserMeta}>{selectedPostModal.authorMeta || ''}</Text>
-                    </View>
-
-                    {selectedPostModal.sport && (
-                      <View style={styles.sportBadge}>
-                        <Text style={styles.sportBadgeText}>{selectedPostModal.sport}</Text>
+                      
+                      <View style={styles.postUserInfo}>
+                        <TouchableOpacity onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, postOwner?.name || selectedPostModal.userName); }} activeOpacity={0.85}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                            <Text style={styles.postUserName}>{postOwner?.name || selectedPostModal.userName || selectedPostModal.authorName}</Text>
+                            {postOwner?.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                          </View>
+                        </TouchableOpacity>
                       </View>
-                    )}
-                    <Text style={styles.postTime}>{getTimeAgo(selectedPostModal.createdAt)}</Text>
-                  </View>
 
-                  <Text style={styles.postText}>{selectedPostModal.caption || selectedPostModal.text}</Text>
-                  
-                  {selectedPostModal.imageUrl ? (
-                    <View style={styles.postImageBox}>
-                      {selectedPostModal.mediaType === 'video' ? (
-                        <PostVideoPlayer key={`modal_radar_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isStoryOpen={false} />
-                      ) : (
-                        <Image source={{ uri: selectedPostModal.imageUrl }} style={styles.postImageContent} />
+                      {selectedPostModal.sport && (
+                        <View style={styles.sportBadge}>
+                          <Text style={styles.sportBadgeText}>{selectedPostModal.sport}</Text>
+                        </View>
                       )}
+                      <Text style={styles.postTime}>{getTimeAgo(selectedPostModal.createdAt)}</Text>
                     </View>
-                  ) : null}
 
-                  <View style={styles.postActionsRow}>
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => toggleLike(selectedPostModal.id)} activeOpacity={0.7}>
-                      <Ionicons 
-                        name={selectedPostModal.likesList?.includes(currentUserId) ? "heart" : "heart-outline"} 
-                        size={20} 
-                        color={selectedPostModal.likesList?.includes(currentUserId) ? "#EF4444" : "#A1A1AA"} 
-                      />
-                      <Text style={[styles.actionText, selectedPostModal.likesList?.includes(currentUserId) && { color: '#EF4444', fontWeight: 'bold' }]}>
-                        {selectedPostModal.likesList?.length || 0} Likes
-                      </Text>
-                    </TouchableOpacity>
+                    <Text style={styles.postText}>{selectedPostModal.caption || selectedPostModal.text}</Text>
+                    
+                    {selectedPostModal.imageUrl ? (
+                      <View style={styles.postImageBox}>
+                        {isVid ? (
+                          <PostVideoPlayer key={`modal_radar_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isStoryOpen={false} />
+                        ) : (
+                          <Image source={{ uri: selectedPostModal.imageUrl }} style={styles.postImageContent} />
+                        )}
+                      </View>
+                    ) : null}
 
-                    <TouchableOpacity style={styles.actionBtn} onPress={() => { setSelectedPostModal(null); setCommentsModalPost(selectedPostModal); }} activeOpacity={0.7}>
-                      <Ionicons name="chatbubble-outline" size={18} color="#A1A1AA" />
-                      <Text style={styles.actionText}>{selectedPostModal.comments?.length || 0} Comments</Text>
-                    </TouchableOpacity>
+                    <View style={styles.postActionsRow}>
+                      <TouchableOpacity style={styles.actionBtn} onPress={() => toggleLike(selectedPostModal.id)} activeOpacity={0.7}>
+                        <Ionicons 
+                          name={currentUserId && selectedPostModal.likesList?.includes(currentUserId) ? "heart" : "heart-outline"} 
+                          size={20} 
+                          color={currentUserId && selectedPostModal.likesList?.includes(currentUserId) ? "#EF4444" : "#A1A1AA"} 
+                        />
+                        <Text style={[styles.actionText, currentUserId && selectedPostModal.likesList?.includes(currentUserId) && { color: '#EF4444', fontWeight: 'bold' }]}>
+                          {selectedPostModal.likesList?.length || 0} Likes
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity style={styles.actionBtn} onPress={() => { setSelectedPostModal(null); setCommentsModalPost(selectedPostModal); }} activeOpacity={0.7}>
+                        <Ionicons name="chatbubble-outline" size={18} color="#A1A1AA" />
+                        <Text style={styles.actionText}>{selectedPostModal.comments?.length || 0} Comments</Text>
+                      </TouchableOpacity>
+                    </View>
                   </View>
-                </View>
-              </ScrollView>
-            )}
+                </ScrollView>
+              );
+            })()}
           </View>
         </View>
       </Modal>
 
-      {/* Comments Modal */}
       <Modal visible={!!commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setCommentsModalPost(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.commentsModalContent}>
@@ -2061,6 +2069,7 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#09090B' },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 50, paddingBottom: 12, backgroundColor: '#121215', borderBottomWidth: 1, borderBottomColor: '#27272A' },
   homeCategory: { color: '#EAB308', fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
+  discoverCategory: { color: '#EAB308', fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
   appTitle: { color: '#FAFAFA', fontSize: 22, fontWeight: '900', fontStyle: 'italic' },
   createGameBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EAB308', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16 },
   createGameBtnText: { color: '#09090B', fontWeight: '800', fontSize: 12 },
@@ -2227,6 +2236,10 @@ const styles = StyleSheet.create({
   emptyPostsBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30, backgroundColor: '#18181B', borderRadius: 14, borderWidth: 1, borderColor: '#27272A' },
   emptyPostsText: { color: '#71717A', fontSize: 12, marginTop: 6 },
 
+  privateAccountBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40, paddingHorizontal: 20, backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', marginTop: 10 },
+  privateAccountTitle: { color: '#FAFAFA', fontSize: 16, fontWeight: 'bold', marginBottom: 6 },
+  privateAccountText: { color: '#A1A1AA', fontSize: 12, textAlign: 'center', lineHeight: 18 },
+
   chatHeaderAvatarBox: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
   chatHeaderTitle: { color: '#FAFAFA', fontSize: 15, fontWeight: '700' },
   chatHeaderSubTitle: { color: '#EAB308', fontSize: 11, fontWeight: '600' },
@@ -2250,7 +2263,6 @@ const styles = StyleSheet.create({
   avatarPlaceholderText: { color: '#EAB308', fontSize: 16, fontWeight: 'bold' },
   postUserInfo: { marginLeft: 10, flex: 1 },
   postUserName: { color: '#FAFAFA', fontSize: 14, fontWeight: '700' },
-  postUserMeta: { color: '#A1A1AA', fontSize: 11 },
   sportBadge: { backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A', paddingHorizontal: 10, paddingVertical: 3, borderRadius: 8, marginRight: 8 },
   sportBadgeText: { color: '#EAB308', fontSize: 10, fontWeight: '700' },
   postTime: { color: '#71717A', fontSize: 11 },

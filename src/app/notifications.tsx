@@ -1,18 +1,41 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Image } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, TouchableOpacity, Image, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { collection, query, orderBy, onSnapshot, doc, getDoc } from 'firebase/firestore';
+import { collection, query, orderBy, onSnapshot, doc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { db } from '../firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 type NotificationItem = {
   id: string;
-  type: 'like' | 'comment' | 'follow' | 'post' | 'story' | 'message';
-  senderName: string;
-  senderAvatar?: string;
-  text: string;
-  createdAt: Date;
+  senderUid?: string;
+  type: 'like' | 'comment' | 'follow_request' | 'follow' | 'post' | 'story' | 'message' | 'new_post_story' | 'game_join' | 'game_leave' | 'game_deleted' | 'game_update' | 'game_chat' | 'game_created';
+  message: string;
+  createdAt?: any;
+  status?: 'pending' | 'accepted' | 'rejected';
+  gameId?: string; // מזהה המשחק במידת הרלוונטיות
+};
+
+const getTimeAgo = (timestamp: any) => {
+  if (!timestamp) return 'Just now';
+  try {
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+    const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+    
+    let interval = seconds / 31536000;
+    if (interval > 1) return `${Math.floor(interval)}y ago`;
+    interval = seconds / 2592000;
+    if (interval > 1) return `${Math.floor(interval)}mo ago`;
+    interval = seconds / 86400;
+    if (interval > 1) return `${Math.floor(interval)}d ago`;
+    interval = seconds / 3600;
+    if (interval > 1) return `${Math.floor(interval)}h ago`;
+    interval = seconds / 60;
+    if (interval > 1) return `${Math.floor(interval)}m ago`;
+    return 'Just now';
+  } catch (e) {
+    return 'Recently';
+  }
 };
 
 export default function NotificationsScreen() {
@@ -29,7 +52,6 @@ export default function NotificationsScreen() {
     };
     initUser();
 
-    // שליפת כל המשתמשים כדי למשוך שמות ואווטארים
     const unsubUsers = onSnapshot(collection(db, 'users'), (snapshot) => {
       const users = snapshot.docs.map(docSnap => ({
         uid: docSnap.id,
@@ -43,119 +65,95 @@ export default function NotificationsScreen() {
   useEffect(() => {
     if (!currentUserId) return;
 
-    let allList: NotificationItem[] = [];
+    const notifRef = collection(db, 'users', currentUserId, 'notifications');
+    const q = query(notifRef, orderBy('createdAt', 'desc'));
 
-    // 1. מאזין למשתמש המחובר כדי לזהות עוקבים חדשים ורשימת following
-    const unsubUserDoc = onSnapshot(doc(db, 'users', currentUserId), (userDoc) => {
-      if (!userDoc.exists()) return;
-      const userData = userDoc.data();
-      const followers = userData.followers || [];
-      const following = userData.following || [];
-
-      // עיבוד עוקבים חדשים
-      followers.forEach((followerId: string) => {
-        const followerObj = allUsersList.find(u => u.uid === followerId);
-        if (followerObj) {
-          allList.push({
-            id: `follow_${followerId}`,
-            type: 'follow',
-            senderName: followerObj.name || 'Player',
-            senderAvatar: followerObj.avatar,
-            text: 'started following you 🤝',
-            createdAt: new Date(userData.updatedAt || Date.now())
-          });
-        }
-      });
-
-      // 2. מאזין לפוסטים (גם תגובות, לייקים, וגם פוסטים חדשים ממי שאני עוקב אחריו)
-      const unsubPosts = onSnapshot(query(collection(db, 'posts'), orderBy('createdAt', 'desc')), (postSnap) => {
-        postSnap.docs.forEach(docSnap => {
-          const data = docSnap.data();
-          const postAuthorId = data.userId;
-
-          // א. פוסט חדש ממי שאני עוקב אחריו
-          if (following.includes(postAuthorId)) {
-            const authorObj = allUsersList.find(u => u.uid === postAuthorId);
-            allList.push({
-              id: `post_${docSnap.id}`,
-              type: 'post',
-              senderName: authorObj?.name || data.authorName || 'Player',
-              senderAvatar: authorObj?.avatar || data.avatarUrl,
-              text: 'uploaded a new post 📝',
-              createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date()
-            });
-          }
-
-          // ב. לייקים ותגובות על הפוסטים שלי
-          if (postAuthorId === currentUserId) {
-            // תגובות
-            if (data.comments && Array.isArray(data.comments)) {
-              data.comments.forEach((c: any) => {
-                if (c.userId !== currentUserId) {
-                  const senderObj = allUsersList.find(u => u.uid === c.userId);
-                  allList.push({
-                    id: c.id || Math.random().toString(),
-                    type: 'comment',
-                    senderName: c.user || 'User',
-                    senderAvatar: senderObj?.avatar || c.avatarUrl,
-                    text: `commented: "${c.text}"`,
-                    createdAt: c.createdAt?.toDate ? c.createdAt.toDate() : new Date()
-                  });
-                }
-              });
-            }
-            // לייקים
-            if (data.likesList && Array.isArray(data.likesList)) {
-              data.likesList.forEach((likerId: string) => {
-                if (likerId !== currentUserId) {
-                  const likerObj = allUsersList.find(u => u.uid === likerId);
-                  if (likerObj) {
-                    allList.push({
-                      id: `${docSnap.id}_like_${likerId}`,
-                      type: 'like',
-                      senderName: likerObj.name || 'Player',
-                      senderAvatar: likerObj.avatar,
-                      text: 'liked your post ❤️',
-                      createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date()
-                    });
-                  }
-                }
-              });
-            }
-          }
-        });
-      });
-
-      // 3. מאזין לסטוריז של מי שאני עוקב אחריו
-      const unsubStories = onSnapshot(query(collection(db, 'stories'), orderBy('createdAt', 'desc')), (storySnap) => {
-        storySnap.docs.forEach(docSnap => {
-          const data = docSnap.data();
-          if (following.includes(data.userUid)) {
-            const authorObj = allUsersList.find(u => u.uid === data.userUid);
-            allList.push({
-              id: `story_${docSnap.id}`,
-              type: 'story',
-              senderName: authorObj?.name || data.name || 'Player',
-              senderAvatar: authorObj?.avatar || data.avatarUrl,
-              text: 'added a new story 📸',
-              createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : new Date()
-            });
-          }
-        });
-      });
-
-      // מיון כלל ההתראות מהחדש ישן
-      allList.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
-      setNotifications([...allList]);
-
-      return () => {
-        unsubPosts();
-        unsubStories();
-      };
+    const unsubscribeNotifs = onSnapshot(q, (snapshot) => {
+      const loadedNotifs: NotificationItem[] = snapshot.docs.map(docSnap => ({
+        id: docSnap.id,
+        ...(docSnap.data() as any)
+      }));
+      setNotifications(loadedNotifs);
+    }, (error) => {
+      console.error('Error fetching notifications:', error);
     });
 
-    return () => unsubUserDoc();
-  }, [currentUserId, allUsersList]);
+    return () => unsubscribeNotifs();
+  }, [currentUserId]);
+
+  const getNotificationIcon = (type: string) => {
+    switch (type) {
+      case 'like':
+        return { name: "heart", color: "#EF4444" };
+      case 'follow_request':
+      case 'follow':
+        return { name: "person-add", color: "#EAB308" };
+      case 'comment':
+      case 'message':
+      case 'game_chat':
+        return { name: "chatbubble", color: "#EAB308" };
+      case 'game_join':
+      case 'game_leave':
+      case 'game_deleted':
+      case 'game_update':
+      case 'game_created':
+        return { name: "football", color: "#3B82F6" };
+      case 'story':
+      case 'new_post_story':
+        return { name: "camera", color: "#EAB308" };
+      default:
+        return { name: "notifications", color: "#EAB308" };
+    }
+  };
+
+
+  const handleFollowRequest = async (item: NotificationItem, accept: boolean) => {
+    if (!currentUserId || !item.senderUid) return;
+    try {
+      const myRef = doc(db, 'users', currentUserId);
+      const requesterRef = doc(db, 'users', item.senderUid);
+      const notificationRef = doc(db, 'users', currentUserId, 'notifications', item.id);
+      if (accept) {
+        await updateDoc(myRef, {
+          followers: arrayUnion(item.senderUid),
+          pendingRequests: arrayRemove(item.senderUid)
+        });
+        await updateDoc(requesterRef, { following: arrayUnion(currentUserId) });
+        await updateDoc(notificationRef, { status: 'accepted', message: 'You accepted this follow request.' });
+      } else {
+        await updateDoc(myRef, { pendingRequests: arrayRemove(item.senderUid) });
+        await updateDoc(notificationRef, { status: 'rejected', message: 'You declined this follow request.' });
+      }
+    } catch (error) {
+      console.error('Error handling follow request:', error);
+      Alert.alert('Error', accept ? 'Could not approve the follow request.' : 'Could not decline the follow request.');
+    }
+  };
+
+  // פונקציית ניתוב בלחיצה על התראה ספציפית
+  const handleNotificationPress = (item: NotificationItem) => {
+    if (item.type === 'like' || item.type === 'comment' || item.type === 'follow' || item.type === 'follow_request' || item.type === 'new_post_story') {
+      // מעבר לפרופיל המשתמש שביצע את הפעולה
+      if (item.senderUid) {
+        // ניתן להתאים את הנתיב בהתאם למבנה הניתובים שלך באפליקציה (למשל router.push)
+        router.push({ pathname: '/profile/[id]', params: { id: item.senderUid } } as any);
+      }
+    } else if (item.type === 'message') {
+      // מעבר לצ'אט האישי
+      if (item.senderUid) {
+        router.push({ pathname: '/chat/[id]', params: { id: item.senderUid } } as any);
+      }
+    } else if (item.type === 'game_deleted') {
+      // המשחק כבר נמחק, לכן מחזירים את המשתמש למסך המשחקים.
+      router.push('/(tabs)/radar' as any);
+    } else if (item.type === 'game_join' || item.type === 'game_leave' || item.type === 'game_update' || item.type === 'game_chat' || item.type === 'game_created') {
+      if (item.gameId) {
+        router.push({ pathname: '/game/[id]', params: { id: item.gameId } } as any);
+      } else {
+        router.push('/(tabs)/radar' as any);
+      }
+    }
+  };
 
   return (
     <View style={styles.container}>
@@ -175,32 +173,60 @@ export default function NotificationsScreen() {
             <Text style={styles.emptyText}>No new notifications right now</Text>
           </View>
         ) : (
-          notifications.map((item) => (
-            <View key={item.id} style={styles.notificationCard}>
-              <View style={styles.avatarBox}>
-                {item.senderAvatar ? (
-                  <Image source={{ uri: item.senderAvatar }} style={{ width: '100%', height: '100%' }} />
-                ) : (
-                  <Text style={{ color: '#EAB308', fontWeight: 'bold' }}>{item.senderName ? item.senderName[0].toUpperCase() : 'U'}</Text>
-                )}
+          notifications.map((item) => {
+            const senderUser = allUsersList.find(u => u.uid === item.senderUid);
+            const senderName = senderUser?.name || 'Player';
+            const senderAvatar = senderUser?.avatar;
+            const iconConfig = getNotificationIcon(item.type);
+
+            const isPendingFollowRequest = item.type === 'follow_request' && item.status === 'pending';
+            return (
+              <View key={item.id} style={styles.notificationCard}>
+                <TouchableOpacity
+                  style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }}
+                  onPress={() => handleNotificationPress(item)}
+                  activeOpacity={0.8}
+                >
+                <View style={styles.avatarBox}>
+                  {senderAvatar ? (
+                    <Image source={{ uri: senderAvatar }} style={{ width: '100%', height: '100%' }} />
+                  ) : (
+                    <Text style={{ color: '#EAB308', fontWeight: 'bold' }}>{senderName ? senderName[0].toUpperCase() : 'U'}</Text>
+                  )}
+                </View>
+
+                <View style={{ flex: 1, marginLeft: 10, marginRight: 8 }}>
+                  <Text style={styles.notificationText}>
+                    {item.message || 'You have a new notification.'}
+                  </Text>
+                  <Text style={styles.timeText}>{getTimeAgo(item.createdAt)}</Text>
+                </View>
+
+                <Ionicons
+                  name={iconConfig.name as any}
+                  size={16}
+                  color={iconConfig.color}
+                />
+                </TouchableOpacity>
+                {isPendingFollowRequest ? (
+                  <View style={{ flexDirection: 'row', gap: 6, marginLeft: 8 }}>
+                    <TouchableOpacity
+                      onPress={() => handleFollowRequest(item, true)}
+                      style={{ backgroundColor: '#EAB308', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8 }}
+                    >
+                      <Text style={{ color: '#09090B', fontWeight: 'bold', fontSize: 11 }}>Accept</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      onPress={() => handleFollowRequest(item, false)}
+                      style={{ backgroundColor: '#27272A', paddingHorizontal: 10, paddingVertical: 7, borderRadius: 8 }}
+                    >
+                      <Text style={{ color: '#EF4444', fontWeight: 'bold', fontSize: 11 }}>Reject</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
               </View>
-              <View style={{ flex: 1, marginLeft: 10 }}>
-                <Text style={styles.notificationText}>
-                  <Text style={{ fontWeight: 'bold', color: '#EAB308' }}>{item.senderName} </Text>
-                  {item.text}
-                </Text>
-              </View>
-              <Ionicons 
-                name={
-                  item.type === 'like' ? "heart" :
-                  item.type === 'follow' ? "person-add" :
-                  item.type === 'story' ? "camera" : "chatbubble"
-                } 
-                size={16} 
-                color={item.type === 'like' ? "#EF4444" : "#EAB308"} 
-              />
-            </View>
-          ))
+            );
+          })
         )}
       </ScrollView>
     </View>
@@ -217,5 +243,6 @@ const styles = StyleSheet.create({
   emptyText: { color: '#71717A', fontSize: 13, marginTop: 10 },
   notificationCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', padding: 12, borderRadius: 12, marginBottom: 10 },
   avatarBox: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
-  notificationText: { color: '#E4E4E7', fontSize: 12.5, lineHeight: 18 }
+  notificationText: { color: '#E4E4E7', fontSize: 12.5, lineHeight: 18 },
+  timeText: { color: '#71717A', fontSize: 10, marginTop: 3 }
 });
