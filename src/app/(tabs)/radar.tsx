@@ -1755,7 +1755,7 @@ export default function RadarScreen() {
                         isApprovedFollower && styles.profileFollowingBtnText,
                         hasRequestedFollow && { color: '#FAFAFA' }
                       ]}>
-                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Request 🤝'}
+                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
                       </Text>
                     </TouchableOpacity>
 

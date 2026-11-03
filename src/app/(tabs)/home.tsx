@@ -1047,6 +1047,7 @@ export default function HomeScreen() {
   const [newPostText, setNewPostText] = useState('');
   const [newPostImage, setNewPostImage] = useState<string | null>(null);
   const [newPostMediaType, setNewPostMediaType] = useState<'image' | 'video'>('image');
+  const [selectedPostSport, setSelectedPostSport] = useState<string>(''); // ענף ספורט נבחר לפוסט מתוך ענפי המשתמש
 
   const lastTapRef = useRef<{ [postId: string]: number }>({});
 
@@ -1321,8 +1322,15 @@ export default function HomeScreen() {
   const handleCreatePost = async () => {
     if (!newPostText.trim() && !newPostImage) return;
 
+    // חובה לבחור ענף ספורט מתוך הרשימה של המשתמש לפני הפרסום
+    const availableSportsList = userSports.length > 0 ? userSports : ['Football'];
+    const assignedSport = selectedPostSport || availableSportsList[0];
+
+    if (!selectedPostSport && availableSportsList.length > 0) {
+      setSelectedPostSport(availableSportsList[0]);
+    }
+
     try {
-      const assignedSport = userSports.length > 0 ? userSports[0] : 'Football';
       const savedEmail = await AsyncStorage.getItem('@saved_user_email') || '';
 
       await addDoc(collection(db, 'posts'), {
@@ -1344,6 +1352,7 @@ export default function HomeScreen() {
       setNewPostText('');
       setNewPostImage(null);
       setNewPostMediaType('image');
+      setSelectedPostSport('');
       setCreatePostVisible(false);
       Alert.alert('Success', 'Post published successfully! 🚀');
     } catch (e) {
@@ -2273,7 +2282,7 @@ export default function HomeScreen() {
                         isApprovedFollower && styles.profileFollowingBtnText,
                         hasRequestedFollow && { color: '#FAFAFA' }
                       ]}>
-                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Request 🤝'}
+                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
                       </Text>
                     </TouchableOpacity>
 
@@ -2574,6 +2583,36 @@ export default function HomeScreen() {
               value={newPostText} 
               onChangeText={newText => setNewPostText(newText)} 
             />
+
+            {/* בחירת ענף ספורט מתוך הענפים של המשתמש בלבד */}
+            <Text style={{ color: '#FAFAFA', fontSize: 13, fontWeight: '700', marginBottom: 6 }}>Select Sport Category:</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12, maxHeight: 40 }}>
+              {(userSports.length > 0 ? userSports : ['Football']).map((sp) => {
+                const isSelected = selectedPostSport === sp || (!selectedPostSport && sp === (userSports[0] || 'Football'));
+                return (
+                  <TouchableOpacity
+                    key={sp}
+                    onPress={() => setSelectedPostSport(sp)}
+                    style={{
+                      backgroundColor: isSelected ? '#EAB308' : '#18181B',
+                      paddingHorizontal: 12,
+                      paddingVertical: 8,
+                      borderRadius: 10,
+                      marginRight: 6,
+                      borderWidth: 1,
+                      borderColor: isSelected ? '#EAB308' : '#27272A',
+                      justifyContent: 'center',
+                      alignItems: 'center'
+                    }}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={{ color: isSelected ? '#09090B' : '#FAFAFA', fontSize: 12, fontWeight: 'bold' }}>
+                      🏅 {sp}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
 
             <TouchableOpacity style={styles.pickImageBtn} onPress={pickPostMedia} activeOpacity={0.8}>
               <Ionicons name={newPostMediaType === 'video' ? 'videocam-outline' : 'image-outline'} size={18} color="#EAB308" />
