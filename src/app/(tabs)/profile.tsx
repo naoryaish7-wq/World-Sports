@@ -1,11 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, Alert, TextInput, Image, Dimensions, TouchableWithoutFeedback, Platform, Switch } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, Alert, TextInput, Image, Dimensions, TouchableWithoutFeedback, Platform, Switch, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { doc, collection, onSnapshot, updateDoc, setDoc, getDoc, arrayUnion, arrayRemove, query, where, getDocs, addDoc, orderBy } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import * as Location from 'expo-location';
 import Purchases from 'react-native-purchases';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -218,6 +219,43 @@ export default function ProfileScreen() {
     lastTapRef.current[postId] = now;
   };
 
+  // זיהוי אוטומטי של המיקום ושמירתו באנגלית בלבד
+  const fetchAndSaveAutomaticLocation = async (userId: string) => {
+    try {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') return;
+
+      let location = await Location.getCurrentPositionAsync({});
+      let address = await Location.reverseGeocodeAsync({
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+      });
+
+      if (address && address.length > 0) {
+        let currentCity = address[0].city || address[0].subregion || 'Netanya';
+        let currentCountry = address[0].country || 'Israel';
+
+        // המרה חכמה לאנגלית עבור ערים מרכזיות בישראל ובעולם
+        if (currentCity === 'נתניה') currentCity = 'Netanya';
+        if (currentCity === 'תל אביב-יפו' || currentCity === 'תל אביב') currentCity = 'Tel Aviv';
+        if (currentCity === 'חיפה') currentCity = 'Haifa';
+        if (currentCity === 'ירושלים') currentCity = 'Jerusalem';
+        if (currentCity === 'באר שבע') currentCity = 'Beer Sheva';
+        if (currentCity === 'ראשון לציון') currentCity = 'Rishon LeZion';
+        
+        if (currentCountry === 'ישראל') currentCountry = 'Israel';
+
+        const userRef = doc(db, 'users', userId);
+        await updateDoc(userRef, {
+          city: currentCity,
+          country: currentCountry,
+        });
+      }
+    } catch (error) {
+      console.error('Error auto fetching location:', error);
+    }
+  };
+
   useEffect(() => {
     if (!firebaseUser) return;
 
@@ -252,6 +290,8 @@ export default function ProfileScreen() {
             notifications_storiesPosts: true,
           }, { merge: true });
         }
+
+        fetchAndSaveAutomaticLocation(userId);
 
         const unsubscribeUser = onSnapshot(userRef, (docSnap) => {
           if (docSnap.exists()) {
@@ -454,6 +494,23 @@ export default function ProfileScreen() {
     }
   };
 
+  const handleManageSubscriptions = async () => {
+    const iosUrl = 'https://apps.apple.com/account/subscriptions';
+    const androidUrl = 'https://play.google.com/store/account/subscriptions';
+    const urlToOpen = Platform.OS === 'ios' ? iosUrl : androidUrl;
+
+    try {
+      const supported = await Linking.canOpenURL(urlToOpen);
+      if (supported) {
+        await Linking.openURL(urlToOpen);
+      } else {
+        Alert.alert('Manage Subscriptions', 'Please open your device settings (App Store / Google Play) to manage or cancel your active subscriptions.');
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Could not open subscription management page.');
+    }
+  };
+
   const handlePurchaseProduct = async (productIdentifier: string, upgradeType: 'vip' | 'boost') => {
     if (!currentUser) return;
 
@@ -463,29 +520,40 @@ export default function ProfileScreen() {
       if (Platform.OS === 'web' || isExpoGo) {
         const userRef = doc(db, 'users', currentUser.uid);
         if (upgradeType === 'vip') {
-          await updateDoc(userRef, { isVip: true });
-          Alert.alert('Gold VIP Activated! (Mock) 🌟', 'Welcome to VIP membership!');
+          const newVipState = !currentUser.isVip;
+          await updateDoc(userRef, { isVip: newVipState });
+          Alert.alert(newVipState ? 'Gold VIP Activated! (Mock) 🌟' : 'VIP Status Removed (Mock)');
         } else if (upgradeType === 'boost') {
-          const promotionExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
-          await updateDoc(userRef, { isPromoted: true, promotedUntil: promotionExpiry });
-          Alert.alert('Spotlight Activated! (Mock) 🚀', 'Your profile is now boosted to the top for 24 hours!');
+          const newBoostState = !currentUser.isPromoted;
+          const promotionExpiry = newBoostState ? new Date(Date.now() + 24 * 60 * 60 * 1000) : null;
+          await updateDoc(userRef, { isPromoted: newBoostState, promotedUntil: promotionExpiry });
+          Alert.alert(newBoostState ? 'Spotlight Activated! (Mock) 🚀' : 'Spotlight Boost Removed (Mock)');
         }
         return;
       }
 
-      const { customerInfo } = await Purchases.purchaseProduct(productIdentifier);
-      
-      if (customerInfo) {
-        const userRef = doc(db, 'users', currentUser.uid);
+      const offerings = await Purchases.getOfferings();
+      if (offerings.current && offerings.current.availablePackages.length > 0) {
+        const packageToPurchase = offerings.current.availablePackages.find(
+          pkg => pkg.product.identifier === productIdentifier
+        ) || offerings.current.availablePackages[0];
 
-        if (upgradeType === 'vip') {
-          await updateDoc(userRef, { isVip: true });
-          Alert.alert('Gold VIP Activated! 🌟', 'Welcome to VIP membership!');
-        } else if (upgradeType === 'boost') {
-          const promotionExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
-          await updateDoc(userRef, { isPromoted: true, promotedUntil: promotionExpiry });
-          Alert.alert('Spotlight Activated! 🚀', 'Your profile is now boosted to the top for 24 hours!');
+        const { customerInfo } = await Purchases.purchasePackage(packageToPurchase);
+        
+        if (customerInfo) {
+          const userRef = doc(db, 'users', currentUser.uid);
+
+          if (upgradeType === 'vip') {
+            await updateDoc(userRef, { isVip: true });
+            Alert.alert('Gold VIP Activated! 🌟', 'Welcome to VIP membership!');
+          } else if (upgradeType === 'boost') {
+            const promotionExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000);
+            await updateDoc(userRef, { isPromoted: true, promotedUntil: promotionExpiry });
+            Alert.alert('Spotlight Activated! 🚀', 'Your profile is now boosted to the top for 24 hours!');
+          }
         }
+      } else {
+        Alert.alert('Store Error', 'No active products found in RevenueCat dashboard.');
       }
     } catch (error: any) {
       if (!error.userCancelled) {
@@ -846,7 +914,7 @@ export default function ProfileScreen() {
           </View>
 
           <Text style={styles.profileCity}>
-            📍 {currentUser?.city || 'Netanya'} | 🎂 Age: {currentUser?.age || 20}
+            📍 {currentUser?.city || 'Netanya'}{currentUser?.country ? `, ${currentUser.country}` : ', Israel'} |  Age: {currentUser?.age || 20}
           </Text>
         </View>
 
@@ -918,7 +986,7 @@ export default function ProfileScreen() {
 
       </ScrollView>
 
-      {/* מודל הגדרות */}
+      {/* Settings Modal */}
       <Modal visible={settingsModalVisible} animationType="slide" transparent={true} onRequestClose={() => setSettingsModalVisible(false)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.settingsModalContent}>
@@ -1096,7 +1164,7 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* מודל חנות VIP */}
+      {/* VIP Modal */}
       <Modal visible={vipModalVisible} animationType="slide" transparent={true} onRequestClose={() => setVipModalVisible(false)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -1121,7 +1189,7 @@ export default function ProfileScreen() {
                   activeOpacity={0.85}
                 >
                   <Text style={[styles.hubActionBtnText, currentUser?.isVip && styles.hubActionBtnCancelText]}>
-                    {currentUser?.isVip ? 'Cancel VIP Subscription ❌' : 'Subscribe to VIP 🌟'}
+                    {currentUser?.isVip ? 'Disable VIP (Mock) ❌' : 'Subscribe to VIP 🌟'}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -1139,20 +1207,25 @@ export default function ProfileScreen() {
                   activeOpacity={0.85}
                 >
                   <Text style={[styles.hubActionBtnText, currentUser?.isPromoted && styles.hubActionBtnCancelText]}>
-                    {currentUser?.isPromoted ? 'Remove Spotlight Boost ❌' : 'Activate Spotlight Boost 🚀'}
+                    {currentUser?.isPromoted ? 'Remove Boost (Mock) ❌' : 'Activate Spotlight Boost 🚀'}
                   </Text>
                 </TouchableOpacity>
               </View>
 
+              <TouchableOpacity style={styles.manageStoreSubBtn} onPress={handleManageSubscriptions} activeOpacity={0.85}>
+                <Ionicons name="settings-outline" size={16} color="#FAFAFA" style={{ marginRight: 6 }} />
+                <Text style={styles.manageStoreSubText}>Manage / Cancel Store Subscriptions ⚙️</Text>
+              </TouchableOpacity>
+
               <Text style={styles.billingNotice}>
-                🔒 All purchases and subscriptions are securely processed through your device's app store (Apple App Store / Google Play Billing) and can be managed anytime.
+                🔒 All purchases and subscriptions are securely processed through your device's app store (Apple App Store / Google Play Billing) and can be managed or canceled anytime via your device settings.
               </Text>
             </ScrollView>
           </View>
         </View>
       </Modal>
 
-      {/* מודל עריכת פרופיל */}
+      {/* Edit Profile Modal */}
       <Modal visible={isEditModalVisible} animationType="slide" transparent={true} onRequestClose={() => setIsEditModalVisible(false)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -1195,7 +1268,7 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* מודל עוקבים / נעקבים שלי */}
+      {/* Followers / Following Modal */}
       <Modal visible={!!activeModalList} animationType="slide" transparent={true} onRequestClose={() => setActiveModalList(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -1231,7 +1304,7 @@ export default function ProfileScreen() {
                         <Text style={styles.listName}>{item.name}</Text>
                         {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
                       </View>
-                      <Text style={styles.listCity}>📍 {item.city} | 🎂 Age: {item.age || 'N/A'}</Text>
+                      <Text style={styles.listCity}>📍 {item.city || 'Netanya'}{item.country ? `, ${item.country}` : ', Israel'} |  Age: {item.age || 'N/A'}</Text>
                     </View>
                   </TouchableOpacity>
 
@@ -1251,7 +1324,7 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* מודל עוקבים / נעקבים של משתמש אחר */}
+      {/* Target User Followers / Following Modal */}
       <Modal visible={!!targetActiveModalList} animationType="slide" transparent={true} onRequestClose={() => setTargetActiveModalList(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -1292,7 +1365,7 @@ export default function ProfileScreen() {
                       <Text style={styles.listName}>{item.name}</Text>
                       {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
                     </View>
-                    <Text style={styles.listCity}>📍 {item.city} | 🎂 Age: {item.age || 'N/A'}</Text>
+                    <Text style={styles.listCity}>📍 {item.city || 'Netanya'}{item.country ? `, ${item.country}` : ', Israel'} |  Age: {item.age || 'N/A'}</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color="#71717A" />
                 </TouchableOpacity>
@@ -1302,7 +1375,7 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* מודל פרופיל משתמש אחר */}
+      {/* Target User Profile Modal */}
       <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
@@ -1347,7 +1420,7 @@ export default function ProfileScreen() {
                   </View>
 
                   <Text style={styles.profileCity}>
-                    📍 {targetProfileUser.city || 'Netanya'} | 🎂 Age: {targetProfileUser.age || 20}
+                    📍 {targetProfileUser.city || 'Netanya'}{targetProfileUser.country ? `, ${targetProfileUser.country}` : ', Israel'} |  Age: {targetProfileUser.age || 20}
                   </Text>
                 </View>
 
@@ -1476,7 +1549,7 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* מודל צ'אט */}
+      {/* Chat Modal */}
       <Modal visible={chatModalVisible} animationType="slide" transparent={true} onRequestClose={() => setChatModalVisible(false)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -1529,7 +1602,7 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* מודל פרטי פוסט */}
+      {/* Post Details Modal */}
       <Modal visible={!!selectedPostModal} animationType="slide" transparent={true} onRequestClose={() => setSelectedPostModal(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
@@ -1563,7 +1636,7 @@ export default function ProfileScreen() {
                           </View>
                         </View>
                       </TouchableOpacity>
-                      <Text style={styles.postUserMeta}>{postOwner?.city || 'Netanya'}</Text>
+                      <Text style={styles.postUserMeta}>{postOwner?.city || 'Netanya'}{postOwner?.country ? `, ${postOwner.country}` : ', Israel'}</Text>
                     </View>
 
                     <Text style={styles.postTime}>{getTimeAgo(selectedPostModal.createdAt)}</Text>
@@ -1607,7 +1680,7 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* מודל תגובות */}
+      {/* Comments Modal */}
       <Modal visible={!!commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setCommentsModalPost(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.commentsModalContent}>
@@ -1677,7 +1750,7 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* מודל תמונת פרופיל מוגדלת */}
+      {/* Zoomed Avatar Modal */}
       <Modal visible={!!zoomedAvatarUri} transparent={true} animationType="fade" onRequestClose={() => setZoomedAvatarUri(null)}>
         <View style={styles.zoomedAvatarOverlay}>
           <TouchableOpacity 
@@ -1748,6 +1821,9 @@ const styles = StyleSheet.create({
   hubActionBtnCancel: { backgroundColor: '#271215', borderWidth: 1, borderColor: '#EF4444' },
   hubActionBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
   hubActionBtnCancelText: { color: '#EF4444' },
+
+  manageStoreSubBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#27272A', borderWidth: 1, borderColor: '#3F3F46', borderRadius: 12, height: 46, marginBottom: 14 },
+  manageStoreSubText: { color: '#FAFAFA', fontWeight: 'bold', fontSize: 13 },
 
   billingNotice: { color: '#71717A', fontSize: 11, textAlign: 'center', marginBottom: 20, lineHeight: 16, paddingHorizontal: 10 },
 
@@ -1853,6 +1929,6 @@ const styles = StyleSheet.create({
   commentSendBtn: { backgroundColor: '#EAB308', width: 38, height: 42, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
 
   zoomedAvatarOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center', alignItems: 'center' },
-  closeZoomedBtn: { position: 'absolute', top: 50, right: 20, zIndex: 30, backgroundColor: '#121215', width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#27272A' },
+  closeZoomedBtn: { position: 'absolute', top: Platform.OS === 'ios' ? 50 : 30, right: 20, zIndex: 30, backgroundColor: '#121215', width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#27272A' },
   zoomedAvatarImage: { width: width * 0.9, height: width * 0.9, resizeMode: 'contain', borderRadius: 20 }
 });

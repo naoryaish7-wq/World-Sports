@@ -2236,7 +2236,7 @@ export default function HomeScreen() {
                   </View>
 
                   <Text style={styles.profileCity}>
-                    📍 {targetProfileUser.city || 'Netanya'}, {targetProfileUser.country || 'Israel'} | 🎂 Age: {targetProfileUser.age || 20}
+                    📍 {targetProfileUser.city || 'Netanya'}, {targetProfileUser.country || 'Israel'} |  Age: {targetProfileUser.age || 20}
                   </Text>
                 </View>
 
@@ -2500,7 +2500,7 @@ export default function HomeScreen() {
                       <Text style={styles.listName}>{item.name}</Text>
                       {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
                     </View>
-                    <Text style={styles.listCity}>📍 {item.city} | 🎂 Age: {item.age || 'N/A'}</Text>
+                    <Text style={styles.listCity}>📍 {item.city} |  Age: {item.age || 'N/A'}</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color="#71717A" />
                 </TouchableOpacity>

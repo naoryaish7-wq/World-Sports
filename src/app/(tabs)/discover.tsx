@@ -183,7 +183,7 @@ export default function DiscoverScreen() {
             if (docSnap.exists()) {
               setCurrentUser({ uid: docSnap.id, ...(docSnap.data() as Omit<UserProfile, 'uid'>) });
             } else {
-              setCurrentUser({ uid: userId, name: savedEmail.split('@')[0], email: savedEmail, city: 'Netanya' });
+              setCurrentUser({ uid: userId, name: savedEmail.split('@')[0], email: savedEmail, city: 'Netanya', country: 'Israel' });
             }
           });
           return () => unsubscribe();
@@ -431,6 +431,7 @@ export default function DiscoverScreen() {
     u.uid !== currentUser?.uid && (
       u.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       u.city?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      u.country?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (u.sports && u.sports.some(s => s.toLowerCase().includes(searchQuery.toLowerCase())))
     )
   );
@@ -443,7 +444,6 @@ export default function DiscoverScreen() {
   const hasRequestedFollow = targetProfileUser?.pendingRequests?.includes(currentUser?.uid || '');
   const isPrivateAccount = targetProfileUser?.isPrivate === true;
 
-  // פתוח תמיד אם זה אתה, אם החשבון ציבורי (!isPrivateAccount), או אם אתה עוקב מאושר
   const canViewPostsContent = isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower;
 
   const targetFollowersList = allUsers.filter(u => targetProfileUser?.followers?.includes(u.uid));
@@ -502,7 +502,7 @@ export default function DiscoverScreen() {
                     <Text style={styles.vipFeatureName} numberOfLines={1}>{vipUser.name}</Text>
                     <Ionicons name="checkmark-circle" size={13} color="#EAB308" />
                   </View>
-                  <Text style={styles.vipFeatureCity} numberOfLines={1}>📍 {vipUser.city || 'Netanya'}</Text>
+                  <Text style={styles.vipFeatureCity} numberOfLines={1}>📍 {vipUser.city || 'Netanya'}{vipUser.country ? `, ${vipUser.country}` : ', Israel'}</Text>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -538,7 +538,7 @@ export default function DiscoverScreen() {
                   {user.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
                   {user.isPrivate && <Ionicons name="lock-closed" size={12} color="#EF4444" />}
                 </View>
-                <Text style={styles.userMeta}>📍 {user.city || 'Netanya'} | 🎂 {user.age || 20} yrs</Text>
+                <Text style={styles.userMeta}>📍 {user.city || 'Netanya'}{user.country ? `, ${user.country}` : ', Israel'} |  {user.age || 20} yrs</Text>
               </View>
               <Ionicons name="chevron-forward" size={18} color="#71717A" />
             </TouchableOpacity>
@@ -609,7 +609,7 @@ export default function DiscoverScreen() {
                   </View>
 
                   <Text style={styles.profileCity}>
-                    📍 {targetProfileUser.city || 'Netanya'}, {targetProfileUser.country || 'Israel'} | 🎂 Age: {targetProfileUser.age || 20}
+                    📍 {targetProfileUser.city || 'Netanya'}, {targetProfileUser.country || 'Israel'} |  Age: {targetProfileUser.age || 20}
                   </Text>
                 </View>
 
@@ -667,7 +667,7 @@ export default function DiscoverScreen() {
                   </View>
                 )}
 
-                {/* אזור הפוסטים: פתוח אם החשבון ציבורי או שאושרת, נעול אם החשבון פרטי וטרם אושרת */}
+                {/* אזור הפוסטים: פתוח אם החשבון ציבורי או שאושרת */}
                 {canViewPostsContent ? (
                   <>
                     <View style={styles.postsSectionHeader}>
@@ -777,7 +777,7 @@ export default function DiscoverScreen() {
                       <Text style={styles.listName}>{item.name}</Text>
                       {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
                     </View>
-                    <Text style={styles.listCity}>📍 {item.city} | 🎂 Age: {item.age || 'N/A'}</Text>
+                    <Text style={styles.listCity}>📍 {item.city || 'Netanya'}{item.country ? `, ${item.country}` : ', Israel'} |  Age: {item.age || 'N/A'}</Text>
                   </View>
                   <Ionicons name="chevron-forward" size={18} color="#71717A" />
                 </TouchableOpacity>
