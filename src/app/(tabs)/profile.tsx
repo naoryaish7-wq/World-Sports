@@ -846,7 +846,7 @@ export default function ProfileScreen() {
           </View>
 
           <Text style={styles.profileCity}>
-            📍 {currentUser?.city || 'Netanya'}, {currentUser?.country || 'Israel'} | 🎂 Age: {currentUser?.age || 20}
+            📍 {currentUser?.city || 'Netanya'} | 🎂 Age: {currentUser?.age || 20}
           </Text>
         </View>
 
@@ -1347,11 +1347,10 @@ export default function ProfileScreen() {
                   </View>
 
                   <Text style={styles.profileCity}>
-                    📍 {targetProfileUser.city || 'Netanya'}, {targetProfileUser.country || 'Israel'} | 🎂 Age: {targetProfileUser.age || 20}
+                    📍 {targetProfileUser.city || 'Netanya'} | 🎂 Age: {targetProfileUser.age || 20}
                   </Text>
                 </View>
 
-                {/* שורת הסטטיסטיקה מציגה תמיד את המספרים האמיתיים */}
                 <View style={styles.statsRow}>
                   <TouchableOpacity 
                     style={styles.statBox} 
@@ -1564,7 +1563,7 @@ export default function ProfileScreen() {
                           </View>
                         </View>
                       </TouchableOpacity>
-                      <Text style={styles.postUserMeta}>Israel, {postOwner?.city || 'Netanya'}</Text>
+                      <Text style={styles.postUserMeta}>{postOwner?.city || 'Netanya'}</Text>
                     </View>
 
                     <Text style={styles.postTime}>{getTimeAgo(selectedPostModal.createdAt)}</Text>
