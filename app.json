@@ -1,3 +1,4 @@
+
 {
   "expo": {
     "name": "WorldSport",
@@ -6,9 +7,6 @@
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "worldsport",
-    "splash": {
-      "backgroundColor": "#030703"
-    },
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.naor823.WorldSport",
@@ -24,9 +22,7 @@
         "ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_COARSE_LOCATION",
         "android.permission.ACCESS_FINE_LOCATION"
-      ],
-      "enableProguardInReleaseBuilds": false,
-      "enableShrinkResourcesInReleaseBuilds": false
+      ]
     },
     "plugins": [
       [
@@ -44,7 +40,12 @@
       ],
       "expo-image",
       "expo-router",
-      "expo-splash-screen",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#030703"
+        }
+      ],
       "expo-web-browser",
       "expo-video"
     ],
