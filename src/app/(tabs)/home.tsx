@@ -93,7 +93,6 @@ type AppNotification = {
   createdAt?: any;
 };
 
-// פונקציית עזר לשליחת פוש ישיר דרך Expo Push API
 const sendExpoPushNotification = async (targetUserId: string, title: string, body: string, data?: any) => {
   try {
     const userDocRef = doc(db, 'users', targetUserId);
@@ -848,7 +847,6 @@ export default function HomeScreen() {
         });
       }
 
-      // שליחת פוש לשולח שהבקשה אושרה
       const acceptMsg = `${liveName} accepted your follow request. 🎉`;
       await addDoc(collection(db, 'users', requesterUid, 'notifications'), {
         senderUid: currentUserId,
@@ -944,7 +942,6 @@ export default function HomeScreen() {
           status: 'pending',
           createdAt: serverTimestamp()
         });
-        // שליחת פוש פיזי למכשיר הפרטי!
         await sendExpoPushNotification(targetProfileUser.uid, 'World Sports ⚽', reqMsg);
 
         setTargetProfileUser({
@@ -1011,6 +1008,68 @@ export default function HomeScreen() {
     }
   };
 
+  // --- פונקציית דיווח על פוסט (דרישות גוגל) ---
+  const handleReportPost = async (postId: string) => {
+    Alert.alert(
+      'Report Post',
+      'Are you sure you want to report this post for inappropriate content?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Report', 
+          style: 'destructive', 
+          onPress: async () => {
+            try {
+              if (currentUserId) {
+                await addDoc(collection(db, 'reports'), {
+                  postId: postId,
+                  reporterId: currentUserId,
+                  createdAt: serverTimestamp(),
+                  status: 'pending'
+                });
+              }
+              Alert.alert('Thank You', 'The report has been submitted to administration. We will review it shortly.');
+            } catch (e) {
+              console.error('Error reporting post:', e);
+              Alert.alert('Error', 'Could not submit report.');
+            }
+          } 
+        }
+      ]
+    );
+  };
+
+  // --- פונקציית דיווח על סטורי (דרישות גוגל) ---
+  const handleReportStory = async (storyId: string) => {
+    Alert.alert(
+      'Report Story',
+      'Are you sure you want to report this story for inappropriate content?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { 
+          text: 'Report', 
+          style: 'destructive', 
+          onPress: async () => {
+            try {
+              if (currentUserId) {
+                await addDoc(collection(db, 'reports'), {
+                  storyId: storyId,
+                  reporterId: currentUserId,
+                  createdAt: serverTimestamp(),
+                  status: 'pending'
+                });
+              }
+              Alert.alert('Thank You', 'The report has been submitted to administration. We will review it shortly.');
+            } catch (e) {
+              console.error('Error reporting story:', e);
+              Alert.alert('Error', 'Could not submit report.');
+            }
+          } 
+        }
+      ]
+    );
+  };
+
   const [storyModalVisible, setStoryModalVisible] = useState(false);
   const [selectedStoryUri, setSelectedStoryUri] = useState<string | null>(null);
   const [storyMediaType, setStoryMediaType] = useState<'image' | 'video'>('image');
@@ -1047,7 +1106,7 @@ export default function HomeScreen() {
   const [newPostText, setNewPostText] = useState('');
   const [newPostImage, setNewPostImage] = useState<string | null>(null);
   const [newPostMediaType, setNewPostMediaType] = useState<'image' | 'video'>('image');
-  const [selectedPostSport, setSelectedPostSport] = useState<string>(''); // ענף ספורט נבחר לפוסט מתוך ענפי המשתמש
+  const [selectedPostSport, setSelectedPostSport] = useState<string>('');
 
   const lastTapRef = useRef<{ [postId: string]: number }>({});
 
@@ -1322,7 +1381,6 @@ export default function HomeScreen() {
   const handleCreatePost = async () => {
     if (!newPostText.trim() && !newPostImage) return;
 
-    // חובה לבחור ענף ספורט מתוך הרשימה של המשתמש לפני הפרסום
     const availableSportsList = userSports.length > 0 ? userSports : ['Football'];
     const assignedSport = selectedPostSport || availableSportsList[0];
 
@@ -1660,8 +1718,14 @@ export default function HomeScreen() {
                   </View>
                 )}
 
+                {/* כפתור דיווח פוסט */}
+                <TouchableOpacity onPress={() => handleReportPost(post.id)} style={{ marginLeft: 6, marginRight: 2 }} activeOpacity={0.7}>
+                  <Ionicons name="flag-outline" size={16} color="#A1A1AA" />
+                </TouchableOpacity>
+
+                {/* כפתור מחיקה לבעל הפוסט */}
                 {(post.authorName === liveName || post.userId === currentUserId) && (
-                  <TouchableOpacity onPress={() => handleDeletePost(post.id)} style={{ marginLeft: 8, marginRight: 4 }} activeOpacity={0.7}>
+                  <TouchableOpacity onPress={() => handleDeletePost(post.id)} style={{ marginLeft: 6, marginRight: 4 }} activeOpacity={0.7}>
                     <Ionicons name="trash-outline" size={16} color="#EF4444" />
                   </TouchableOpacity>
                 )}
@@ -2155,6 +2219,18 @@ export default function HomeScreen() {
                       </View>
                     )}
 
+                    {/* כפתור דיווח לסטורי (זמין לכל משתמש שצופה בסטורי של אחר) */}
+                    {!isStoryMine && (
+                      <TouchableOpacity 
+                        style={styles.reportStoryIconBtn} 
+                        onPress={() => handleReportStory(currentStory.id)}
+                        activeOpacity={0.8}
+                      >
+                        <Ionicons name="flag-outline" size={18} color="#A1A1AA" />
+                      </TouchableOpacity>
+                    )}
+
+                    {/* כפתור מחיקה לבעל הסטורי */}
                     {isStoryMine && (
                       <TouchableOpacity 
                         style={styles.deleteStoryIconBtn} 
@@ -2584,7 +2660,6 @@ export default function HomeScreen() {
               onChangeText={newText => setNewPostText(newText)} 
             />
 
-            {/* בחירת ענף ספורט מתוך הענפים של המשתמש בלבד */}
             <Text style={{ color: '#FAFAFA', fontSize: 13, fontWeight: '700', marginBottom: 6 }}>Select Sport Category:</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12, maxHeight: 40 }}>
               {(userSports.length > 0 ? userSports : ['Football']).map((sp) => {
@@ -2758,6 +2833,7 @@ const styles = StyleSheet.create({
   storyCommentSendBtn: { backgroundColor: '#EAB308', width: 36, height: 36, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
 
   deleteStoryIconBtn: { position: 'absolute', top: 52, left: 16, backgroundColor: '#18181B', width: 34, height: 34, borderRadius: 17, justifyContent: 'center', alignItems: 'center', zIndex: 20, borderWidth: 1, borderColor: '#27272A' },
+  reportStoryIconBtn: { position: 'absolute', top: 52, left: 16, backgroundColor: '#18181B', width: 34, height: 34, borderRadius: 17, justifyContent: 'center', alignItems: 'center', zIndex: 20, borderWidth: 1, borderColor: '#27272A' },
 
   storyTapLeft: { position: 'absolute', top: 45, left: 0, width: '40%', height: '85%', zIndex: 10 },
   storyTapRight: { position: 'absolute', top: 45, right: 0, width: '40%', height: '85%', zIndex: 10 },

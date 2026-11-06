@@ -22,7 +22,9 @@ type ChatMessage = {
 
 type UserProfile = {
   uid: string;
-  name: string;
+  name?: string;
+  userName?: string;
+  displayName?: string;
   sport?: string;
   sports?: string[];
   age?: number;
@@ -69,9 +71,13 @@ type PostItem = {
 
 type TournamentMatch = {
   id: number;
+  round: string;
   teamA: string;
   teamB: string;
-  round: string;
+  scoreA?: string;
+  scoreB?: string;
+  status: 'upcoming' | 'live' | 'finished';
+  winner?: string;
 };
 
 type GameItem = {
@@ -87,9 +93,11 @@ type GameItem = {
   creator: string;
   creatorName: string;
   maxPlayers: number;
-  players: string[];
+  players: any[];
+  pendingPlayers?: any[];
+  accessMode?: 'public' | 'private' | 'friends';
   chat: ChatMessage[];
-  teamsResult?: Array<{ id: number; players: string[] }>;
+  teamsResult?: Array<{ id: number; players: any[] }>;
   tournamentMatches?: TournamentMatch[];
   playersPerTeam?: number;
   createdAt?: any;
@@ -148,6 +156,64 @@ const supportsTournamentDraw = (sportName: string) => {
     sport.includes('tennis') ||
     sport.includes('טניס')
   );
+};
+
+const resolvePlayerInfo = (playerEntry: any, allUsersList: UserProfile[]) => {
+  let rawKey = '';
+  if (!playerEntry) {
+    rawKey = 'Player';
+  } else if (typeof playerEntry === 'string') {
+    rawKey = playerEntry.replace(/👑|\(me\)/g, '').trim();
+  } else if (typeof playerEntry === 'object') {
+    rawKey = playerEntry.name || playerEntry.userName || playerEntry.displayName || playerEntry.email || '';
+  } else {
+    rawKey = String(playerEntry);
+  }
+
+  const cleanKey = rawKey.toLowerCase();
+
+  const matchedUser = allUsersList.find(u => {
+    if (!u) return false;
+    const uUid = (u.uid || '').toLowerCase();
+    const uName = (u.name || '').toLowerCase();
+    const uUserName = (u.userName || '').toLowerCase();
+    const uDisplay = (u.displayName || '').toLowerCase();
+    
+    return (
+      (uUid && cleanKey.includes(uUid)) ||
+      (uName && cleanKey === uName) ||
+      (uUserName && cleanKey === uUserName) ||
+      (uDisplay && cleanKey === uDisplay) ||
+      (cleanKey.includes('@') && uUid.includes(cleanKey.split('@')[0]))
+    );
+  });
+
+  if (matchedUser) {
+    const finalName = matchedUser.name || matchedUser.userName || matchedUser.displayName || rawKey.split('@')[0] || 'Player';
+    return {
+      name: finalName.replace(/👑|\(me\)/g, '').trim(),
+      avatar: matchedUser.avatar || '',
+      isVip: !!matchedUser.isVip,
+      uid: matchedUser.uid
+    };
+  }
+
+  if (rawKey.includes('@')) {
+    const emailName = rawKey.split('@')[0];
+    return {
+      name: emailName.charAt(0).toUpperCase() + emailName.slice(1),
+      avatar: '',
+      isVip: false,
+      uid: ''
+    };
+  }
+
+  return {
+    name: rawKey || 'Player',
+    avatar: typeof playerEntry === 'object' ? (playerEntry.avatar || '') : '',
+    isVip: false,
+    uid: ''
+  };
 };
 
 function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boolean }) {
@@ -265,7 +331,6 @@ export default function RadarScreen() {
   const [allUsersList, setAllUsersList] = useState<UserProfile[]>([]);
   const [allPosts, setAllPosts] = useState<PostItem[]>([]);
 
-  // שדות חיפוש ופילטור חדשים
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSportFilter, setSelectedSportFilter] = useState('All');
   const [sportFilterModalVisible, setSportFilterModalVisible] = useState(false);
@@ -277,6 +342,7 @@ export default function RadarScreen() {
   const [newTime, setNewTime] = useState('18:00');
   const [newMaxPlayers, setNewMaxPlayers] = useState('10');
   const [newDesc, setNewDesc] = useState('');
+  const [newAccessMode, setNewAccessMode] = useState<'public' | 'private' | 'friends'>('public');
   
   const [pickedLocation, setPickedLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [isPickingLocation, setIsPickingLocation] = useState(false);
@@ -321,7 +387,19 @@ export default function RadarScreen() {
           try {
             const gameSnap = await getDoc(doc(db, 'games', gameId));
             if (gameSnap.exists()) {
-              setSelectedGame({ id: gameSnap.id, ...(gameSnap.data() as Omit<GameItem, 'id'>) });
+              const gameData = { id: gameSnap.id, ...(gameSnap.data() as Omit<GameItem, 'id'>) };
+              setSelectedGame(gameData);
+
+              if (gameData.accessMode === 'friends' && userName) {
+                const currentPlayers = gameData.players || [];
+                const isAlready = currentPlayers.some(p => resolvePlayerInfo(p, allUsersList).name === userName);
+                if (!isAlready && currentPlayers.length < gameData.maxPlayers) {
+                  await updateDoc(doc(db, 'games', gameId), {
+                    players: arrayUnion(userName)
+                  });
+                  Alert.alert('Joined via Friend Link 🔗', 'You have been automatically added to the game!');
+                }
+              }
             }
           } catch (e) {
             console.error('Error opening shared game link:', e);
@@ -336,7 +414,7 @@ export default function RadarScreen() {
 
     const sub = Linking.addEventListener('url', handleDeepLink);
     return () => sub.remove();
-  }, []);
+  }, [userName, allUsersList]);
 
   useEffect(() => {
     (async () => {
@@ -388,18 +466,16 @@ export default function RadarScreen() {
               const data = userSnap.data() as UserProfile;
               setCurrentUser({ ...data, uid: userSnap.id });
               
-              let activeSports: string[] = [];
               if (data.sports) {
-                activeSports = data.sports;
                 setUserSports(data.sports);
                 setNewSport(data.sports[0]);
               } else if (data.sport) {
-                activeSports = [data.sport];
                 setUserSports([data.sport]);
                 setNewSport(data.sport);
               }
 
-              if (data.name) setUserName(data.name);
+              const resolvedName = data.name || data.userName || data.displayName || 'Player';
+              if (resolvedName) setUserName(resolvedName);
               if (data.avatar) setUserAvatar(data.avatar);
               if (data.following) setFollowingIds(data.following);
               else setFollowingIds([]);
@@ -431,7 +507,8 @@ export default function RadarScreen() {
           const me = users.find(u => u.uid === myId);
           if (me) {
             setCurrentUser(me);
-            if (me.name) setUserName(me.name);
+            const resolvedName = me.name || me.userName || me.displayName;
+            if (resolvedName) setUserName(resolvedName);
             if (me.avatar) setUserAvatar(me.avatar);
             if (me.following) setFollowingIds(me.following);
             if (me.followers) setFollowersIds(me.followers);
@@ -485,10 +562,11 @@ export default function RadarScreen() {
 
   useEffect(() => {
     if (!targetProfileUser) return;
+    const tName = (targetProfileUser.name || targetProfileUser.userName || targetProfileUser.displayName || '').trim().toLowerCase();
     const filtered = allPosts.filter(p => 
       p.userId === targetProfileUser.uid || 
-      p.userName === targetProfileUser.name ||
-      p.authorName === targetProfileUser.name
+      (p.userName && p.userName.trim().toLowerCase() === tName) ||
+      (p.authorName && p.authorName.trim().toLowerCase() === tName)
     );
     setTargetUserPosts(filtered);
   }, [targetProfileUser, allPosts]);
@@ -522,20 +600,23 @@ export default function RadarScreen() {
         let totalAge = 0;
         let countWithAge = 0;
 
-        for (const playerStr of selectedGame.players) {
-          if (!playerStr || typeof playerStr !== 'string') continue;
-          
-          const cleanName = playerStr.replace(/👑|\(me\)/g, '').trim().toLowerCase();
+        for (const playerEntry of selectedGame.players) {
+          const info = resolvePlayerInfo(playerEntry, allUsersList);
+          const cleanName = info.name.toLowerCase();
           if (!cleanName) continue;
 
           let userAge: number | undefined = undefined;
 
-          if (currentUser && currentUser.age && (cleanName === currentUser.name?.toLowerCase().trim() || cleanName === 'me' || cleanName === userName.toLowerCase().trim())) {
+          const myNameStr = (currentUser?.name || currentUser?.userName || currentUser?.displayName || userName || '').trim().toLowerCase();
+          if (currentUser && currentUser.age && (cleanName === myNameStr || cleanName === 'me')) {
             userAge = Number(currentUser.age);
           }
 
           if (!userAge) {
-            const foundUser = allUsersList.find(u => u.name?.toLowerCase().trim() === cleanName);
+            const foundUser = allUsersList.find(u => {
+              const uN = (u.name || u.userName || u.displayName || '').trim().toLowerCase();
+              return uN === cleanName || u.uid === info.uid;
+            });
             if (foundUser && foundUser.age) {
               userAge = Number(foundUser.age);
             }
@@ -657,7 +738,10 @@ export default function RadarScreen() {
         found = allUsersList.find(u => u.uid === userId);
       }
       if (!found && playerName) {
-        found = allUsersList.find(u => u.name?.toLowerCase() === cleanPlayerName);
+        found = allUsersList.find(u => {
+          const uN = (u.name || u.userName || u.displayName || '').trim().toLowerCase();
+          return uN === cleanPlayerName;
+        });
       }
 
       if (found) {
@@ -827,7 +911,7 @@ export default function RadarScreen() {
       [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
     }
 
-    const newTeams: Array<{ id: number; players: string[] }> = [];
+    const newTeams: Array<{ id: number; players: any[] }> = [];
     let currentTeamIndex = 1;
     const effectiveTeamSize = totalPlayers < teamSize ? Math.max(1, Math.floor(totalPlayers / 2)) || 1 : teamSize;
 
@@ -889,20 +973,63 @@ export default function RadarScreen() {
     }
 
     const matches: TournamentMatch[] = [];
-    for (let i = 0; i < teams.length; i += 2) {
-      if (i + 1 < teams.length) {
-        matches.push({
-          id: matches.length + 1,
-          teamA: `Team #${teams[i].id} (${teams[i].players.join(', ')})`,
-          teamB: `Team #${teams[i+1].id} (${teams[i+1].players.join(', ')})`,
-          round: 'Match Fixture'
-        });
+    let matchIdCounter = 1;
+
+    let currentRoundTeams = teams.map(t => {
+      const names = (t.players || []).map(p => resolvePlayerInfo(p, allUsersList).name).join(', ');
+      return `Team #${t.id} (${names})`;
+    });
+
+    let roundName = currentRoundTeams.length > 4 ? 'Quarter-Finals 🏟️' : currentRoundTeams.length > 2 ? 'Semi-Finals ⚔️' : 'Grand Final 🏆';
+
+    if (currentRoundTeams.length % 2 !== 0) {
+      currentRoundTeams.push('Bye (Direct Advance 🚀)');
+    }
+
+    let nextRoundTeams: string[] = [];
+    for (let i = 0; i < currentRoundTeams.length; i += 2) {
+      const teamA = currentRoundTeams[i];
+      const teamB = currentRoundTeams[i+1];
+      
+      matches.push({
+        id: matchIdCounter++,
+        round: roundName,
+        teamA,
+        teamB,
+        status: 'upcoming'
+      });
+
+      if (teamB.includes('Bye')) {
+        nextRoundTeams.push(teamA);
       } else {
+        nextRoundTeams.push(`Winner of Match #${matchIdCounter - 1}`);
+      }
+    }
+
+    if (nextRoundTeams.length > 1) {
+      let subRoundName = nextRoundTeams.length > 2 ? 'Semi-Finals ⚔️' : 'Grand Final 🏆';
+      let finalRoundTeams: string[] = [];
+
+      for (let i = 0; i < nextRoundTeams.length; i += 2) {
+        if (i + 1 < nextRoundTeams.length) {
+          matches.push({
+            id: matchIdCounter++,
+            round: subRoundName,
+            teamA: nextRoundTeams[i],
+            teamB: nextRoundTeams[i+1],
+            status: 'upcoming'
+          });
+          finalRoundTeams.push(`Winner of Match #${matchIdCounter - 1}`);
+        }
+      }
+
+      if (finalRoundTeams.length >= 2) {
         matches.push({
-          id: matches.length + 1,
-          teamA: `Team #${teams[i].id} (${teams[i].players.join(', ')})`,
-          teamB: 'Bye (Direct Advance)',
-          round: 'Preliminary'
+          id: matchIdCounter++,
+          round: 'Grand Final 🏆',
+          teamA: finalRoundTeams[0],
+          teamB: finalRoundTeams[1],
+          status: 'upcoming'
         });
       }
     }
@@ -913,7 +1040,7 @@ export default function RadarScreen() {
         teamsResult: teams,
         tournamentMatches: matches
       });
-      Alert.alert('Tournament Ready! 🏆', 'Dynamic bracket and match fixtures generated successfully!');
+      Alert.alert('Tournament Ready! 🏆', 'Structured knockout tournament brackets generated successfully from start to finish!');
     } catch (e) {
       console.error('Error generating tournament:', e);
       Alert.alert('Error', 'Could not generate tournament bracket.');
@@ -944,6 +1071,8 @@ export default function RadarScreen() {
         creatorName: activeName,
         maxPlayers: parseInt(newMaxPlayers) || 10,
         players: [activeName],
+        pendingPlayers: [],
+        accessMode: newAccessMode,
         chat: [],
         teamsResult: [],
         tournamentMatches: [],
@@ -975,6 +1104,7 @@ export default function RadarScreen() {
       setNewTitle('');
       setNewVenue('');
       setNewDesc('');
+      setNewAccessMode('public');
       
       Alert.alert('Success 📍', 'Game published to the map successfully!', [
         { text: 'OK', onPress: () => {} },
@@ -1000,15 +1130,22 @@ export default function RadarScreen() {
   };
 
   const notifyGamePlayers = async (
-    playerNames: string[],
-    type: 'game_join' | 'game_leave' | 'game_deleted' | 'game_chat',
+    playerNames: any[],
+    type: 'game_join' | 'game_leave' | 'game_deleted' | 'game_chat' | 'game_kick' | 'game_approved',
     message: string,
     gameId: string,
     senderUid: string = currentUserId
   ) => {
     const recipientIds = Array.from(new Set(
       (playerNames || [])
-        .map(name => allUsersList.find(u => (u.name || '').trim().toLowerCase() === (name || '').trim().toLowerCase())?.uid)
+        .map(p => {
+          const info = resolvePlayerInfo(p, allUsersList);
+          const cleanName = info.name.toLowerCase();
+          return allUsersList.find(u => {
+            const uN = (u.name || u.userName || u.displayName || '').trim().toLowerCase();
+            return uN === cleanName || u.uid === info.uid;
+          })?.uid;
+        })
         .filter((uid): uid is string => !!uid && uid !== senderUid)
     ));
 
@@ -1026,20 +1163,76 @@ export default function RadarScreen() {
 
   const handleJoinGame = async (game: GameItem) => {
     const activeName = userName || 'Player';
-    if (game.players && game.players.includes(activeName)) {
+    const playersList = game.players || [];
+    const isAlreadyJoined = playersList.some(p => resolvePlayerInfo(p, allUsersList).name === activeName);
+    
+    if (isAlreadyJoined) {
       Alert.alert('Already Joined', 'You are already registered for this game.');
       return;
     }
-    if (game.players && game.players.length >= game.maxPlayers) {
+
+    const pendingList = game.pendingPlayers || [];
+    const isAlreadyPending = pendingList.some(p => resolvePlayerInfo(p, allUsersList).name === activeName);
+
+    if (isAlreadyPending) {
+      try {
+        const matchingPending = pendingList.find(p => resolvePlayerInfo(p, allUsersList).name === activeName);
+        if (matchingPending) {
+          await updateDoc(doc(db, 'games', game.id), {
+            pendingPlayers: arrayRemove(matchingPending)
+          });
+        }
+        Alert.alert('Request Cancelled ❌', 'Your join request has been cancelled.');
+      } catch (e) {
+        console.error('Error cancelling join request:', e);
+      }
+      return;
+    }
+
+    if (playersList.length >= game.maxPlayers) {
       Alert.alert('Game Full', 'Sorry, this game has reached maximum capacity.');
       return;
     }
 
+    if (game.accessMode === 'friends') {
+      Alert.alert('Friend Game Locked 🔒', 'This game is accessible via direct invite link only.');
+      return;
+    }
+
+    if (game.accessMode === 'private') {
+      try {
+        await updateDoc(doc(db, 'games', game.id), {
+          pendingPlayers: arrayUnion(activeName)
+        });
+
+        const adminUid = allUsersList.find(u => {
+          const uN = (u.name || u.userName || u.displayName || '').trim().toLowerCase();
+          const cN = (game.creatorName || '').trim().toLowerCase();
+          return uN === cN || u.uid === game.creator;
+        })?.uid;
+
+        if (adminUid && adminUid !== currentUserId) {
+          await addDoc(collection(db, 'users', adminUid, 'notifications'), {
+            senderUid: currentUserId,
+            type: 'game_request',
+            message: `${activeName} requested to join your private game "${game.title}". 🔒`,
+            gameId: game.id,
+            createdAt: serverTimestamp(),
+            status: 'unread'
+          });
+        }
+
+        Alert.alert('Request Sent ⏳', 'Your request to join has been sent to the game admin for approval.');
+      } catch (e) {
+        console.error('Error sending request to join:', e);
+      }
+      return;
+    }
+
     try {
-      const existingPlayers = game.players || [];
       await setDoc(doc(db, 'games', game.id), { players: arrayUnion(activeName) }, { merge: true });
       await notifyGamePlayers(
-        existingPlayers,
+        playersList,
         'game_join',
         `${activeName} joined your game "${game.title}". ⚽`,
         game.id
@@ -1048,12 +1241,114 @@ export default function RadarScreen() {
     } catch (e) { console.error('Error joining game or sending notifications:', e); }
   };
 
+  const handleApproveRequest = async (game: GameItem, playerEntry: any) => {
+    try {
+      const info = resolvePlayerInfo(playerEntry, allUsersList);
+      const pName = info.name;
+      const updatedPending = (game.pendingPlayers || []).filter(p => resolvePlayerInfo(p, allUsersList).name !== pName);
+      const updatedPlayers = [...(game.players || []), pName];
+
+      await updateDoc(doc(db, 'games', game.id), {
+        players: updatedPlayers,
+        pendingPlayers: updatedPending
+      });
+
+      const approvedUserObj = allUsersList.find(u => {
+        const uN = (u.name || u.userName || u.displayName || '').trim().toLowerCase();
+        return uN === pName.toLowerCase() || u.uid === info.uid;
+      });
+      if (approvedUserObj) {
+        await addDoc(collection(db, 'users', approvedUserObj.uid, 'notifications'), {
+          senderUid: currentUserId,
+          type: 'game_approved',
+          message: `Your request to join "${game.title}" was approved! 🎉`,
+          gameId: game.id,
+          createdAt: serverTimestamp(),
+          status: 'unread'
+        });
+      }
+
+      Alert.alert('Approved ✓', `${pName} was approved and added to the game!`);
+    } catch (e) {
+      console.error('Error approving player:', e);
+    }
+  };
+
+  const handleRejectRequest = async (game: GameItem, playerEntry: any) => {
+    try {
+      const info = resolvePlayerInfo(playerEntry, allUsersList);
+      const pName = info.name;
+      const updatedPending = (game.pendingPlayers || []).filter(p => resolvePlayerInfo(p, allUsersList).name !== pName);
+      await updateDoc(doc(db, 'games', game.id), {
+        pendingPlayers: updatedPending
+      });
+
+      const rejectedUserObj = allUsersList.find(u => {
+        const uN = (u.name || u.userName || u.displayName || '').trim().toLowerCase();
+        return uN === pName.toLowerCase() || u.uid === info.uid;
+      });
+      if (rejectedUserObj) {
+        await addDoc(collection(db, 'users', rejectedUserObj.uid, 'notifications'), {
+          senderUid: currentUserId,
+          type: 'game_kick',
+          message: `Your request to join "${game.title}" was declined by the manager. ❌`,
+          gameId: game.id,
+          createdAt: serverTimestamp(),
+          status: 'unread'
+        });
+      }
+
+      Alert.alert('Rejected', `Request from ${pName} was declined.`);
+    } catch (e) {
+      console.error('Error rejecting player:', e);
+    }
+  };
+
+  const handleKickPlayer = async (game: GameItem, playerEntry: any) => {
+    const info = resolvePlayerInfo(playerEntry, allUsersList);
+    const pName = info.name;
+    Alert.alert('Kick Player ❌', `Are you sure you want to remove ${pName} from the game?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Kick',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            const updatedPlayers = (game.players || []).filter(p => resolvePlayerInfo(p, allUsersList).name !== pName);
+            await updateDoc(doc(db, 'games', game.id), {
+              players: updatedPlayers
+            });
+
+            const kickedUserObj = allUsersList.find(u => {
+              const uN = (u.name || u.userName || u.displayName || '').trim().toLowerCase();
+              return uN === pName.toLowerCase() || u.uid === info.uid;
+            });
+            if (kickedUserObj) {
+              await addDoc(collection(db, 'users', kickedUserObj.uid, 'notifications'), {
+                senderUid: currentUserId,
+                type: 'game_kick',
+                message: `You were removed from the game "${game.title}" by the manager. ❌`,
+                gameId: game.id,
+                createdAt: serverTimestamp(),
+                status: 'unread'
+              });
+            }
+
+            Alert.alert('Removed', `${pName} has been kicked from the game.`);
+          } catch (e) {
+            console.error('Error kicking player:', e);
+          }
+        }
+      }
+    ]);
+  };
+
   const handleLeaveGame = async (game: GameItem) => {
     const activeName = userName || 'Player';
     try {
-      const updatedPlayers = (game.players || []).filter(p => p !== activeName);
+      const updatedPlayers = (game.players || []).filter(p => resolvePlayerInfo(p, allUsersList).name !== activeName);
       await notifyGamePlayers(
-        updatedPlayers,
+        game.players || [],
         'game_leave',
         `${activeName} left your game "${game.title}".`,
         game.id
@@ -1067,7 +1362,7 @@ export default function RadarScreen() {
 
       let newCreatorName = game.creatorName;
       if (game.creatorName === activeName) {
-        newCreatorName = updatedPlayers[0];
+        newCreatorName = resolvePlayerInfo(updatedPlayers[0], allUsersList).name;
       }
 
       await setDoc(doc(db, 'games', game.id), {
@@ -1093,7 +1388,7 @@ export default function RadarScreen() {
               await notifyGamePlayers(
                 game.players || [],
                 'game_deleted',
-                `The game "${game.title}" was deleted by its manager.`,
+                `The game "${game.title}" was deleted by its manager. 🗑️`,
                 game.id
               );
             }
@@ -1122,7 +1417,7 @@ export default function RadarScreen() {
         await notifyGamePlayers(
           selectedGame.players || [],
           'game_chat',
-          `${userName || 'A player'} sent a message in "${selectedGame.title}": ${chatMessage.trim().slice(0, 60)}`,
+          `${userName || 'A player'} sent a message in "${selectedGame.title}": ${chatMessage.trim().slice(0, 60)} 💬`,
           gameId
         );
       }
@@ -1133,9 +1428,12 @@ export default function RadarScreen() {
     } catch (e) { console.error(e); }
   };
 
-  // סינון המשחקים לפי פילטר הספורט הנבחר ושורת החיפוש
   const filteredGames = gamesList.filter(game => {
-    // פילטר לפי ענף ספורט נבחר
+    if (game.accessMode === 'friends') {
+      const isMyGame = game.creator === currentUserId || (game.players || []).some(p => resolvePlayerInfo(p, allUsersList).name === userName);
+      if (!isMyGame) return false;
+    }
+
     if (selectedSportFilter !== 'All') {
       const filterLower = selectedSportFilter.toLowerCase().trim();
       const gameSportLower = (game.sport || '').toLowerCase().trim();
@@ -1149,7 +1447,6 @@ export default function RadarScreen() {
       if (!isMatch) return false;
     }
 
-    // פילטר לפי טקסט חיפוש (כותרת המשחק, שם המגרש או העיר)
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase().trim();
       const titleMatch = game.title.toLowerCase().includes(q);
@@ -1161,7 +1458,11 @@ export default function RadarScreen() {
     return true;
   });
 
-  const isUserAdmin = (game: GameItem) => game.creatorName === userName || game.creator === currentUserId;
+  const isUserAdmin = (game: GameItem) => {
+    const cName = (game.creatorName || '').trim().toLowerCase();
+    const uName = (userName || '').trim().toLowerCase();
+    return cName === uName || game.creator === currentUserId;
+  };
 
   const nearbyMutualFriends = allUsersList.filter(u => {
     if (u.uid === currentUserId) return false;
@@ -1182,8 +1483,6 @@ export default function RadarScreen() {
   const isPrivateAccount = targetProfileUser?.isPrivate === true;
 
   const canViewPostsContent = isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower;
-
-  // כפתור הפילטר החיצוני מקבל את האייקון של הענף הנבחר
   const currentFilterSportStyle = getSportIconAndColor(selectedSportFilter);
 
   return (
@@ -1211,7 +1510,7 @@ export default function RadarScreen() {
           <Marker 
             coordinate={userCoords} 
             title="You Are Here"
-            onPress={() => openUserProfileById(currentUser.uid, currentUser.name)}
+            onPress={() => openUserProfileById(currentUser.uid, currentUser.name || currentUser.userName || currentUser.displayName)}
           >
             <View style={styles.myLocationMarker}>
               <View style={styles.myLocationAvatarBox}>
@@ -1229,27 +1528,30 @@ export default function RadarScreen() {
           </Marker>
         )}
 
-        {nearbyMutualFriends.map((friend) => (
-          <Marker
-            key={`friend-${friend.uid}`}
-            coordinate={{ latitude: friend.latitude!, longitude: friend.longitude! }}
-            onPress={() => openUserProfileById(friend.uid, friend.name)}
-          >
-            <View style={styles.friendMarkerContainer}>
-              <View style={styles.friendAvatarBox}>
-                {friend.avatar ? (
-                  <Image source={{ uri: friend.avatar }} style={{ width: '100%', height: '100%' }} />
-                ) : (
-                  <Text style={styles.friendAvatarText}>{friend.name ? friend.name[0] : 'F'}</Text>
-                )}
+        {nearbyMutualFriends.map((friend) => {
+          const friendName = friend.name || friend.userName || friend.displayName || 'Friend';
+          return (
+            <Marker
+              key={`friend-${friend.uid}`}
+              coordinate={{ latitude: friend.latitude!, longitude: friend.longitude! }}
+              onPress={() => openUserProfileById(friend.uid, friendName)}
+            >
+              <View style={styles.friendMarkerContainer}>
+                <View style={styles.friendAvatarBox}>
+                  {friend.avatar ? (
+                    <Image source={{ uri: friend.avatar }} style={{ width: '100%', height: '100%' }} />
+                  ) : (
+                    <Text style={styles.friendAvatarText}>{friendName[0]}</Text>
+                  )}
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(9,9,11,0.85)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginTop: 2, gap: 2 }}>
+                  <Text style={styles.friendMarkerName}>{friendName}</Text>
+                  {friend.isVip && <Ionicons name="checkmark-circle" size={10} color="#EAB308" />}
+                </View>
               </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(9,9,11,0.85)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginTop: 2, gap: 2 }}>
-                <Text style={styles.friendMarkerName}>{friend.name}</Text>
-                {friend.isVip && <Ionicons name="checkmark-circle" size={10} color="#EAB308" />}
-              </View>
-            </View>
-          </Marker>
-        ))}
+            </Marker>
+          );
+        })}
 
         {filteredGames.map((game) => {
           const currentPlayersCount = game.players?.length || 0;
@@ -1294,7 +1596,6 @@ export default function RadarScreen() {
           <Text style={styles.sheetSubtitle}>{filteredGames.length} active</Text>
         </View>
 
-        {/* שורת חיפוש וכפתור פילטר עם אייקון ספורט */}
         <View style={styles.searchAndFilterRow}>
           <View style={styles.searchBarContainer}>
             <Ionicons name="search" size={16} color="#A1A1AA" style={{ marginRight: 8 }} />
@@ -1345,7 +1646,7 @@ export default function RadarScreen() {
               return (
                 <TouchableOpacity key={game.id} style={[styles.gameCard, { borderColor: sportStyle.border + '55', backgroundColor: sportStyle.bg + '22' }]} onPress={() => setSelectedGame(game)}>
                   <View style={styles.gameHeaderRow}>
-                    <Text style={[styles.sportTag, { color: sportStyle.color }]}>🏅 {game.sport}</Text>
+                    <Text style={[styles.sportTag, { color: sportStyle.color }]}>🏅 {game.sport} {game.accessMode === 'private' ? '🔒 Private' : game.accessMode === 'friends' ? '🔗 Friends' : ''}</Text>
                     <Text style={styles.distanceTag}>📍 {distance} km away</Text>
                   </View>
                   <Text style={styles.gameTitle}>{game.title}</Text>
@@ -1374,7 +1675,6 @@ export default function RadarScreen() {
         </ScrollView>
       </View>
 
-      {/* מודל בחירת ענף ספורט לפילטור עם אייקונים */}
       <Modal visible={sportFilterModalVisible} transparent={true} animationType="fade" onRequestClose={() => setSportFilterModalVisible(false)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -1444,15 +1744,21 @@ export default function RadarScreen() {
             </View>
 
             {selectedGame && (() => {
-              const adminUserObj = allUsersList.find(u => u.name?.toLowerCase() === selectedGame.creatorName?.toLowerCase() || u.uid === selectedGame.creator);
+              const adminUserObj = allUsersList.find(u => {
+                const uN = (u.name || u.userName || u.displayName || '').trim().toLowerCase();
+                const cN = (selectedGame.creatorName || '').trim().toLowerCase();
+                return uN === cN || u.uid === selectedGame.creator;
+              });
               const timeCreatedStr = getTimeAgo(selectedGame.createdAt);
               const timeRemainingStr = getRemainingTime(selectedGame.createdAt);
               const sportStyle = getSportIconAndColor(selectedGame.sport);
 
+              const isAlreadyPending = (selectedGame.pendingPlayers || []).some(p => resolvePlayerInfo(p, allUsersList).name === userName);
+
               return (
                 <ScrollView showsVerticalScrollIndicator={false}>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text style={[styles.detailSportBadge, { backgroundColor: sportStyle.color, color: '#09090B' }]}>{selectedGame.sport}</Text>
+                    <Text style={[styles.detailSportBadge, { backgroundColor: sportStyle.color, color: '#09090B' }]}>{selectedGame.sport} ({selectedGame.accessMode === 'private' ? '🔒 Private' : selectedGame.accessMode === 'friends' ? '🔗 Friends Only' : '🌍 Public'})</Text>
                     {isUserAdmin(selectedGame) && (
                       <TouchableOpacity onPress={() => handleDeleteGame(selectedGame.id)} style={styles.deleteGameBtn}>
                         <Ionicons name="trash-outline" size={16} color="#EF4444" />
@@ -1491,109 +1797,209 @@ export default function RadarScreen() {
                     <Text style={styles.detailText}>{selectedGame.description}</Text>
                   </View>
 
-                  {isUserAdmin(selectedGame) && supportsTournamentDraw(selectedGame.sport) && (
+                  {isUserAdmin(selectedGame) && selectedGame.accessMode === 'private' && selectedGame.pendingPlayers && selectedGame.pendingPlayers.length > 0 && (
                     <View style={styles.detailBox}>
-                      <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14 }]}>⚡ Dynamic Tournament Hub (Admin)</Text>
+                      <Text style={[styles.detailLabel, { color: '#EAB308', fontSize: 13 }]}>⏳ Pending Join Requests ({selectedGame.pendingPlayers.length}):</Text>
+                      {selectedGame.pendingPlayers.map((reqPlayer, rIdx) => {
+                        const reqInfo = resolvePlayerInfo(reqPlayer, allUsersList);
+                        return (
+                          <View key={rIdx} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#121215', padding: 8, borderRadius: 8, marginTop: 6 }}>
+                            <Text style={{ color: '#FAFAFA', fontWeight: 'bold', fontSize: 12 }}>{reqInfo.name}</Text>
+                            <View style={{ flexDirection: 'row', gap: 6 }}>
+                              <TouchableOpacity style={{ backgroundColor: '#22C55E', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 }} onPress={() => handleApproveRequest(selectedGame, reqPlayer)}>
+                                <Text style={{ color: '#09090B', fontWeight: 'bold', fontSize: 11 }}>Approve ✓</Text>
+                              </TouchableOpacity>
+                              <TouchableOpacity style={{ backgroundColor: '#EF4444', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 }} onPress={() => handleRejectRequest(selectedGame, reqPlayer)}>
+                                <Text style={{ color: '#FAFAFA', fontWeight: 'bold', fontSize: 11 }}>Reject ✕</Text>
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        );
+                      })}
+                    </View>
+                  )}
+
+                  {isUserAdmin(selectedGame) && supportsTournamentDraw(selectedGame.sport) && (
+                    <View style={[styles.detailBox, styles.neonTourneyContainer, { borderColor: sportStyle.color + '66' }]}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+                        <View style={[styles.neonIconBadge, { backgroundColor: sportStyle.color }]}>
+                          <Ionicons name="flash" size={14} color="#09090B" />
+                        </View>
+                        <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 15, marginBottom: 0 }]}>⚡ Dynamic Tournament & Draw Hub</Text>
+                      </View>
                       
                       <View style={styles.adminTabsRow}>
                         <TouchableOpacity 
-                          style={[styles.adminTabBtn, activeManagerTab === 'draw' && { backgroundColor: sportStyle.color }]}
+                          style={[styles.adminTabBtn, activeManagerTab === 'draw' && { backgroundColor: sportStyle.color, shadowColor: sportStyle.color, shadowOpacity: 0.5, shadowRadius: 8, elevation: 6 }]}
                           onPress={() => setActiveManagerTab('draw')}
                         >
-                          <Text style={[styles.adminTabText, activeManagerTab === 'draw' && { color: '#09090B', fontWeight: 'bold' }]}>🎲 Team Draw</Text>
+                          <Text style={[styles.adminTabText, activeManagerTab === 'draw' && { color: '#09090B', fontWeight: '900' }]}>🎲 Team Draw</Text>
                         </TouchableOpacity>
 
                         <TouchableOpacity 
-                          style={[styles.adminTabBtn, activeManagerTab === 'tournament' && { backgroundColor: sportStyle.color }]}
+                          style={[styles.adminTabBtn, activeManagerTab === 'tournament' && { backgroundColor: sportStyle.color, shadowColor: sportStyle.color, shadowOpacity: 0.5, shadowRadius: 8, elevation: 6 }]}
                           onPress={() => setActiveManagerTab('tournament')}
                         >
-                          <Text style={[styles.adminTabText, activeManagerTab === 'tournament' && { color: '#09090B', fontWeight: 'bold' }]}>🏆 Tournament Brackets</Text>
+                          <Text style={[styles.adminTabText, activeManagerTab === 'tournament' && { color: '#09090B', fontWeight: '900' }]}>🏆 Tournament Brackets</Text>
                         </TouchableOpacity>
                       </View>
 
                       {activeManagerTab === 'draw' ? (
-                        <View style={{ marginTop: 6 }}>
-                          <Text style={{ color: '#D4D4D8', fontSize: 12, marginBottom: 8 }}>Shuffle {selectedGame.players?.length || 0} participants into balanced teams:</Text>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-                            <Text style={{ color: '#A1A1AA', fontSize: 12 }}>Players per team:</Text>
+                        <View style={{ marginTop: 8 }}>
+                          <Text style={{ color: '#E4E4E7', fontSize: 12, marginBottom: 10, lineHeight: 18 }}>Shuffle {selectedGame.players?.length || 0} participants into balanced squads instantly:</Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 }}>
+                            <Text style={{ color: '#A1A1AA', fontSize: 12, fontWeight: 'bold' }}>Per Team:</Text>
                             <TextInput
-                              style={styles.drawInput}
+                              style={[styles.drawInput, { borderColor: sportStyle.color + '88' }]}
                               keyboardType="numeric"
                               value={drawPlayersPerTeam}
                               onChangeText={setDrawPlayersPerTeam}
                               placeholder="5"
                               placeholderTextColor="#52525B"
                             />
-                            <TouchableOpacity style={[styles.drawBtn, { backgroundColor: sportStyle.color }]} onPress={handleRunAutoDraw}>
-                              <Ionicons name="shuffle" size={14} color="#09090B" style={{ marginRight: 4 }} />
-                              <Text style={styles.drawBtnText}>Run Draw 🚀</Text>
+                            <TouchableOpacity style={[styles.drawBtn, { backgroundColor: sportStyle.color, flex: 1, justifyContent: 'center' }]} onPress={handleRunAutoDraw}>
+                              <Ionicons name="shuffle" size={16} color="#09090B" style={{ marginRight: 6 }} />
+                              <Text style={[styles.drawBtnText, { fontSize: 13 }]}>Run Smart Shuffle 🚀</Text>
                             </TouchableOpacity>
                           </View>
                         </View>
                       ) : (
-                        <View style={{ marginTop: 6 }}>
-                          <Text style={{ color: '#D4D4D8', fontSize: 12, marginBottom: 8 }}>Generate match fixtures based on active participants:</Text>
-                          <TouchableOpacity style={[styles.drawBtn, { backgroundColor: sportStyle.color, width: '100%', height: 40, justifyContent: 'center' }]} onPress={handleGenerateTournamentBracket}>
-                            <Ionicons name="git-branch" size={14} color="#09090B" style={{ marginRight: 6 }} />
-                            <Text style={[styles.drawBtnText, { fontSize: 14 }]}>Generate Tournament Fixtures 🏆</Text>
+                        <View style={{ marginTop: 8 }}>
+                          <Text style={{ color: '#E4E4E7', fontSize: 12, marginBottom: 10, lineHeight: 18 }}>Generate professional elimination brackets and match fixtures:</Text>
+                          <TouchableOpacity style={[styles.drawBtn, { backgroundColor: sportStyle.color, width: '100%', height: 44, justifyContent: 'center' }]} onPress={handleGenerateTournamentBracket}>
+                            <Ionicons name="git-branch" size={16} color="#09090B" style={{ marginRight: 8 }} />
+                            <Text style={[styles.drawBtnText, { fontSize: 14, fontWeight: '900' }]}>Generate Pro Tournament Brackets 🏆</Text>
                           </TouchableOpacity>
                         </View>
                       )}
                     </View>
                   )}
 
+                  {/* 🏆 צפייה בקבוצות המוגרלות (חלוניות צבעוניות וחיות מותאמות לאורך השם) */}
                   {supportsTournamentDraw(selectedGame.sport) && selectedGame.teamsResult && selectedGame.teamsResult.length > 0 && (
                     <View style={styles.detailBox}>
-                      <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14 }]}>👥 Teams Formed ({selectedGame.teamsResult.length} Teams):</Text>
-                      {selectedGame.teamsResult.map(team => (
-                        <View key={team.id} style={styles.teamResultCard}>
-                          <Text style={styles.teamResultHeader}>Team #{team.id}</Text>
-                          {team.players.map((pName, pIdx) => (
-                            <Text key={pIdx} style={styles.teamResultPlayer}>• {pName}</Text>
-                          ))}
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                        <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14, marginBottom: 0 }]}>🔥 Formed Squads ({selectedGame.teamsResult.length} Teams)</Text>
+                        <View style={{ backgroundColor: sportStyle.color + '22', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: sportStyle.color + '55' }}>
+                          <Text style={{ color: sportStyle.color, fontSize: 10, fontWeight: 'bold' }}>Balanced 🎲</Text>
                         </View>
-                      ))}
+                      </View>
+                      
+                      <View style={styles.teamsGridModern}>
+                        {selectedGame.teamsResult.map(team => {
+                          const teamColors = ['#22C55E', '#F97316', '#3B82F6', '#A855F7', '#EF4444', '#EAB308'];
+                          const accentCol = teamColors[(team.id - 1) % teamColors.length];
+                          return (
+                            <View key={team.id} style={[styles.teamCardModern, { borderLeftColor: accentCol }]}>
+                              <View style={styles.teamCardHeaderModern}>
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                  <View style={[styles.teamBadgeDot, { backgroundColor: accentCol }]} />
+                                  <Text style={styles.teamCardTitleModern}>TEAM #{team.id}</Text>
+                                </View>
+                                <Text style={styles.teamMemberCountBadge}>{team.players.length} Players</Text>
+                              </View>
+                              <View style={styles.teamPlayersGridCompact}>
+                                {team.players.map((playerEntry, pIdx) => {
+                                  const info = resolvePlayerInfo(playerEntry, allUsersList);
+                                  
+                                  return (
+                                    <View key={pIdx} style={[styles.teamPlayerChipCompactGrid, { borderColor: accentCol + '66', backgroundColor: accentCol + '15' }]}>
+                                      <Text style={[styles.teamPlayerNameTextGrid, { color: accentCol }]}>{info.name}</Text>
+                                      {info.isVip && <Ionicons name="checkmark-circle" size={10} color="#EAB308" style={{ marginLeft: 2 }} />}
+                                    </View>
+                                  );
+                                })}
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </View>
                     </View>
                   )}
 
+                  {/* ⚔️ שלבי נוק-אאוט וטורניר */}
                   {supportsTournamentDraw(selectedGame.sport) && selectedGame.tournamentMatches && selectedGame.tournamentMatches.length > 0 && (
                     <View style={styles.detailBox}>
-                      <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14 }]}>⚔️ Tournament Fixtures (Matches):</Text>
-                      {selectedGame.tournamentMatches.map(match => (
-                        <View key={match.id} style={styles.matchFixtureCard}>
-                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 4 }}>
-                            <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>Match #{match.id}</Text>
-                            <Text style={{ color: '#71717A', fontSize: 10 }}>{match.round}</Text>
-                          </View>
-                          <View style={styles.matchTeamsRow}>
-                            <Text style={styles.matchTeamText}>{match.teamA}</Text>
-                            <Text style={{ color: '#EF4444', fontWeight: '900', fontSize: 12 }}>VS</Text>
-                            <Text style={styles.matchTeamText}>{match.teamB}</Text>
-                          </View>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                        <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14, marginBottom: 0 }]}>⚔️ Elimination Stage Brackets</Text>
+                        <View style={{ backgroundColor: '#EAB30822', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: '#EAB30855' }}>
+                          <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>Live Arena 🏟️</Text>
                         </View>
-                      ))}
+                      </View>
+
+                      <View style={{ gap: 8 }}>
+                        {selectedGame.tournamentMatches.map(match => (
+                          <View key={match.id} style={styles.matchCardProContainer}>
+                            <View style={styles.matchCardHeaderPro}>
+                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                                <Ionicons name="trophy" size={12} color="#EAB308" />
+                                <Text style={styles.matchIdBadgeText}>MATCH #{match.id}</Text>
+                              </View>
+                              <Text style={styles.matchRoundBadgeText}>{match.round}</Text>
+                            </View>
+                            
+                            <View style={styles.matchTeamsCombatBox}>
+                              <View style={styles.combatTeamSide}>
+                                <Text style={styles.combatTeamName}>{match.teamA}</Text>
+                              </View>
+                              
+                              <View style={styles.combatVsBadge}>
+                                <Text style={styles.combatVsText}>VS</Text>
+                              </View>
+
+                              <View style={styles.combatTeamSide}>
+                                <Text style={[styles.combatTeamName, match.teamB.includes('Bye') && { color: '#71717A', fontStyle: 'italic' }]}>{match.teamB}</Text>
+                              </View>
+                            </View>
+                          </View>
+                        ))}
+                      </View>
                     </View>
                   )}
 
+                  {/* 👥 רשימת שחקנים רשומים (חלוניות צבעוניות וחיות מותאמות לאורך השם) */}
                   <View style={styles.detailBox}>
-                    <Text style={styles.detailLabel}>👥 Team Members ({selectedGame.players?.length || 0} / {selectedGame.maxPlayers}) - Tap to view profile:</Text>
-                    <View style={styles.playersChipsContainer}>
-                      {selectedGame.players?.map((player, index) => {
-                        const isMe = (player || '').trim().toLowerCase() === (userName || '').trim().toLowerCase();
-                        const playerUserObj = allUsersList.find(u => u.name?.toLowerCase() === player.toLowerCase());
+                    <Text style={styles.detailLabel}>👥 Team Members ({selectedGame.players?.length || 0} / {selectedGame.maxPlayers}) - Tap profile:</Text>
+                    <View style={styles.playersGridContainerSmall}>
+                      {selectedGame.players?.map((playerEntry, index) => {
+                        const info = resolvePlayerInfo(playerEntry, allUsersList);
+                        
+                        const myNameStr = (userName || '').trim().toLowerCase();
+                        const isMe = info.name.toLowerCase() === myNameStr || info.name.toLowerCase() === 'me';
+                        const isCreatorAdmin = index === 0 || info.name.toLowerCase() === (selectedGame.creatorName || '').trim().toLowerCase();
+
                         return (
                           <TouchableOpacity 
-                            key={index} 
-                            style={[styles.playerChip, isMe && { borderColor: sportStyle.color, backgroundColor: '#18181B' }]} 
-                            onPress={() => openUserProfileById(playerUserObj?.uid, player)}
+                            key={`player_${index}`} 
+                            style={[styles.playerChipSmallGrid, { borderColor: sportStyle.color + '66', backgroundColor: sportStyle.bg + '33' }, isMe && { borderColor: '#EAB308', backgroundColor: '#332E0F' }]}
+                            activeOpacity={0.7}
+                            onPress={() => {
+                              if (info.uid) {
+                                openUserProfileById(info.uid, info.name);
+                              } else {
+                                openUserProfileById(undefined, info.name);
+                              }
+                            }}
                           >
-                            <Ionicons name="person" size={12} color={sportStyle.color} style={{ marginRight: 4 }} />
                             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                              <Text style={styles.playerChipText}>
-                                {player} {index === 0 ? '👑' : ''} {isMe ? '(me)' : ''}
+                              <Text style={[styles.playerChipTextSmallGrid, { color: isMe ? '#EAB308' : sportStyle.color }]}>
+                                {info.name} {isCreatorAdmin ? '👑' : ''} {isMe ? '(me)' : ''}
                               </Text>
-                              {playerUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color="#EAB308" />}
+                              {info.isVip && <Ionicons name="checkmark-circle" size={10} color="#EAB308" />}
                             </View>
+
+                            {isUserAdmin(selectedGame) && !isMe && (
+                              <TouchableOpacity 
+                                onPress={(e) => {
+                                  e.stopPropagation();
+                                  handleKickPlayer(selectedGame, playerEntry);
+                                }} 
+                                style={{ padding: 2, marginLeft: 4 }}
+                                activeOpacity={0.7}
+                              >
+                                <Ionicons name="close-circle" size={14} color="#EF4444" />
+                              </TouchableOpacity>
+                            )}
                           </TouchableOpacity>
                         );
                       })}
@@ -1612,7 +2018,10 @@ export default function RadarScreen() {
                         <Text style={styles.noChatText}>No messages yet. Say hello! 👋</Text>
                       ) : (
                         selectedGame.chat.map(msg => {
-                          const senderUserObj = allUsersList.find(u => u.name?.toLowerCase() === msg.sender?.toLowerCase());
+                          const senderUserObj = allUsersList.find(u => {
+                            const uN = (u.name || u.userName || u.displayName || '').trim().toLowerCase();
+                            return uN === (msg.sender || '').trim().toLowerCase();
+                          });
                           return (
                             <View key={msg.id} style={styles.chatBubble}>
                               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
@@ -1640,13 +2049,30 @@ export default function RadarScreen() {
                     </View>
                   </View>
 
-                  {selectedGame.players?.includes(userName) ? (
+                  {((selectedGame.players || []).some(p => resolvePlayerInfo(p, allUsersList).name === userName)) ? (
                     <TouchableOpacity style={styles.leaveBtn} onPress={() => handleLeaveGame(selectedGame)}>
                       <Text style={styles.leaveBtnText}>Leave Game 🚪</Text>
                     </TouchableOpacity>
                   ) : (
-                    <TouchableOpacity style={[styles.modalJoinBtn, { backgroundColor: sportStyle.color }, selectedGame.players?.length >= selectedGame.maxPlayers && { backgroundColor: '#27272A' }]} onPress={() => handleJoinGame(selectedGame)}>
-                      <Text style={styles.modalJoinBtnText}>{selectedGame.players?.length >= selectedGame.maxPlayers ? 'Game Full 🔴' : 'Join This Game 🤝'}</Text>
+                    <TouchableOpacity 
+                      style={[
+                        styles.modalJoinBtn, 
+                        isAlreadyPending ? { backgroundColor: '#1F1214', borderWidth: 1, borderColor: '#EF4444' } : { backgroundColor: sportStyle.color }, 
+                        (selectedGame.players?.length >= selectedGame.maxPlayers || selectedGame.accessMode === 'friends') && !isAlreadyPending && { backgroundColor: '#27272A' }
+                      ]} 
+                      onPress={() => handleJoinGame(selectedGame)}
+                    >
+                      <Text style={[styles.modalJoinBtnText, isAlreadyPending && { color: '#EF4444' }]}>
+                        {selectedGame.accessMode === 'friends' 
+                          ? 'Locked (Invite Link Only) 🔗' 
+                          : isAlreadyPending 
+                          ? 'Cancel Request ❌' 
+                          : selectedGame.accessMode === 'private' 
+                          ? 'Request to Join 🔒' 
+                          : selectedGame.players?.length >= selectedGame.maxPlayers 
+                          ? 'Game Full 🔴' 
+                          : 'Join This Game 🤝'}
+                      </Text>
                     </TouchableOpacity>
                   )}
                 </ScrollView>
@@ -1698,12 +2124,12 @@ export default function RadarScreen() {
                     {targetProfileUser.avatar ? (
                       <Image source={{ uri: targetProfileUser.avatar }} style={styles.avatarImage} />
                     ) : (
-                      <Text style={styles.avatarLargeText}>{targetProfileUser.name ? targetProfileUser.name[0] : 'P'}</Text>
+                      <Text style={styles.avatarLargeText}>{targetProfileUser.name || targetProfileUser.userName || targetProfileUser.displayName ? (targetProfileUser.name || targetProfileUser.userName || targetProfileUser.displayName)?.[0] : 'P'}</Text>
                     )}
                   </TouchableOpacity>
 
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                    <Text style={styles.profileName}>{targetProfileUser.name}</Text>
+                    <Text style={styles.profileName}>{targetProfileUser.name || targetProfileUser.userName || targetProfileUser.displayName}</Text>
                     {targetProfileUser.isVip && <Ionicons name="checkmark-circle" size={18} color="#EAB308" />}
                     {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
                   </View>
@@ -1856,36 +2282,39 @@ export default function RadarScreen() {
             </View>
 
             <ScrollView style={{ maxHeight: 350 }} showsVerticalScrollIndicator={false}>
-              {(targetActiveModalList === 'followers' ? targetFollowersList : targetFollowingList).map((item) => (
-                <TouchableOpacity 
-                  key={item.uid} 
-                  style={styles.listItem} 
-                  onPress={() => {
-                    setTargetActiveModalList(null);
-                    setSelectedUserModalId(null);
-                    setTimeout(() => {
-                      openUserProfileById(item.uid, item.name);
-                    }, 50);
-                  }}
-                  activeOpacity={0.85}
-                >
-                  <View style={styles.listAvatar}>
-                    {item.avatar ? (
-                      <Image source={{ uri: item.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
-                    ) : (
-                      <Text style={{color: '#EAB308', fontWeight: 'bold'}}>{item.name ? item.name[0] : 'P'}</Text>
-                    )}
-                  </View>
-                  <View style={{flex: 1}}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Text style={styles.listName}>{item.name}</Text>
-                      {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+              {(targetActiveModalList === 'followers' ? targetFollowersList : targetFollowingList).map((item) => {
+                const itemName = item.name || item.userName || item.displayName || 'Player';
+                return (
+                  <TouchableOpacity 
+                    key={item.uid} 
+                    style={styles.listItem} 
+                    onPress={() => {
+                      setTargetActiveModalList(null);
+                      setSelectedUserModalId(null);
+                      setTimeout(() => {
+                        openUserProfileById(item.uid, itemName);
+                      }, 50);
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <View style={styles.listAvatar}>
+                      {item.avatar ? (
+                        <Image source={{ uri: item.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
+                      ) : (
+                        <Text style={{color: '#EAB308', fontWeight: 'bold'}}>{itemName[0]}</Text>
+                      )}
                     </View>
-                    <Text style={styles.listCity}>📍 {item.city} |  Age: {item.age || 'N/A'}</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color="#71717A" />
-                </TouchableOpacity>
-              ))}
+                    <View style={{flex: 1}}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <Text style={styles.listName}>{itemName}</Text>
+                        {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                      </View>
+                      <Text style={styles.listCity}>📍 {item.city} |  Age: {item.age || 'N/A'}</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color="#71717A" />
+                  </TouchableOpacity>
+                );
+              })}
             </ScrollView>
           </View>
         </View>
@@ -1900,13 +2329,13 @@ export default function RadarScreen() {
                   {chatTargetUser?.avatar ? (
                     <Image source={{ uri: chatTargetUser.avatar }} style={styles.avatarImg} />
                   ) : (
-                    <Text style={{ color: '#EAB308', fontWeight: 'bold' }}>{chatTargetUser?.name ? chatTargetUser.name[0] : 'P'}</Text>
+                    <Text style={{ color: '#EAB308', fontWeight: 'bold' }}>{chatTargetUser?.name || chatTargetUser?.userName || chatTargetUser?.displayName ? (chatTargetUser.name || chatTargetUser.userName || chatTargetUser.displayName)?.[0] : 'P'}</Text>
                   )}
                 </View>
                 <View>
                   <Text style={styles.chatHeaderTitle}>Chat</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                    <Text style={styles.chatHeaderSubTitle}>{chatTargetUser?.name || 'Player'}</Text>
+                    <Text style={styles.chatHeaderSubTitle}>{chatTargetUser?.name || chatTargetUser?.userName || chatTargetUser?.displayName || 'Player'}</Text>
                     {chatTargetUser?.isVip && <Ionicons name="checkmark-circle" size={13} color="#EAB308" />}
                   </View>
                 </View>
@@ -1957,27 +2386,32 @@ export default function RadarScreen() {
             </View>
 
             {selectedPostModal && (() => {
-              const postOwner = allUsersList.find(u => u.uid === selectedPostModal.userId || u.name === selectedPostModal.userName || u.name === selectedPostModal.authorName);
+              const postOwner = allUsersList.find(u => {
+                const uN = (u.name || u.userName || u.displayName || '').trim().toLowerCase();
+                const pN = (selectedPostModal.userName || selectedPostModal.authorName || '').trim().toLowerCase();
+                return u.uid === selectedPostModal.userId || uN === pN;
+              });
+              const ownerName = postOwner?.name || postOwner?.userName || postOwner?.displayName || selectedPostModal.userName || selectedPostModal.authorName || 'Player';
               const isVid = selectedPostModal.mediaType === 'video';
 
               return (
                 <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 30 }} nestedScrollEnabled={true}>
                   <View style={styles.postCard}>
                     <View style={styles.postHeader}>
-                      <TouchableOpacity style={styles.postAvatarBox} onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, postOwner?.name || selectedPostModal.userName); }} activeOpacity={0.85}>
+                      <TouchableOpacity style={styles.postAvatarBox} onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, ownerName); }} activeOpacity={0.85}>
                         {postOwner?.avatar || selectedPostModal.avatarUrl ? (
                           <Image source={{ uri: postOwner?.avatar || selectedPostModal.avatarUrl }} style={styles.avatarImg} />
                         ) : (
                           <View style={styles.avatarPlaceholder}>
-                            <Text style={styles.avatarPlaceholderText}>{postOwner?.name ? postOwner.name[0].toUpperCase() : 'P'}</Text>
+                            <Text style={styles.avatarPlaceholderText}>{ownerName[0]?.toUpperCase() || 'P'}</Text>
                           </View>
                         )}
                       </TouchableOpacity>
                       
                       <View style={styles.postUserInfo}>
-                        <TouchableOpacity onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, postOwner?.name || selectedPostModal.userName); }} activeOpacity={0.85}>
+                        <TouchableOpacity onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, ownerName); }} activeOpacity={0.85}>
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                            <Text style={styles.postUserName}>{postOwner?.name || selectedPostModal.userName || selectedPostModal.authorName}</Text>
+                            <Text style={styles.postUserName}>{ownerName}</Text>
                             {postOwner?.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
                           </View>
                         </TouchableOpacity>
@@ -2046,23 +2480,27 @@ export default function RadarScreen() {
                   ) : (
                     commentsModalPost.comments?.map(c => {
                       const commentTimeAgo = getTimeAgo(c.createdAt);
-                      const commentUserObj = allUsersList.find(u => u.uid === c.userId || u.name === c.user);
+                      const commentUserObj = allUsersList.find(u => {
+                        const uN = (u.name || u.userName || u.displayName || '').trim().toLowerCase();
+                        return u.uid === c.userId || uN === (c.user || '').trim().toLowerCase();
+                      });
+                      const commentAuthorName = commentUserObj?.name || commentUserObj?.userName || commentUserObj?.displayName || c.user || 'User';
                       return (
                         <View key={c.id} style={styles.commentRow}>
-                          <TouchableOpacity onPress={() => { setCommentsModalPost(null); openUserProfileById(c.userId, c.user); }} activeOpacity={0.85}>
+                          <TouchableOpacity onPress={() => { setCommentsModalPost(null); openUserProfileById(c.userId, commentAuthorName); }} activeOpacity={0.85}>
                             {c.avatarUrl ? (
                               <Image source={{ uri: c.avatarUrl }} style={styles.commentAvatar} />
                             ) : (
                               <View style={styles.commentAvatarPlaceholder}>
-                                <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>{c.user ? c.user[0].toUpperCase() : 'U'}</Text>
+                                <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>{commentAuthorName[0]?.toUpperCase() || 'U'}</Text>
                               </View>
                             )}
                           </TouchableOpacity>
                           <View style={{ flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 10, borderRadius: 12 }}>
                             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-                              <TouchableOpacity onPress={() => { setCommentsModalPost(null); openUserProfileById(c.userId, c.user); }} activeOpacity={0.85}>
+                              <TouchableOpacity onPress={() => { setCommentsModalPost(null); openUserProfileById(c.userId, commentAuthorName); }} activeOpacity={0.85}>
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                                  <Text style={styles.commentUser}>{c.user}</Text>
+                                  <Text style={styles.commentUser}>{commentAuthorName}</Text>
                                   {commentUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color="#EAB308" />}
                                 </View>
                               </TouchableOpacity>
@@ -2116,6 +2554,45 @@ export default function RadarScreen() {
                   </TouchableOpacity>
                 ))}
               </ScrollView>
+
+              <Text style={styles.label}>Game Access Mode *</Text>
+              <View style={styles.accessModesContainer}>
+                <TouchableOpacity 
+                  style={[styles.accessCard, newAccessMode === 'public' && styles.accessCardActive]} 
+                  onPress={() => setNewAccessMode('public')}
+                  activeOpacity={0.85}
+                >
+                  <View style={[styles.accessIconBox, newAccessMode === 'public' && { backgroundColor: '#22C55E22', borderColor: '#22C55E' }]}>
+                    <Ionicons name="globe-outline" size={20} color={newAccessMode === 'public' ? '#22C55E' : '#A1A1AA'} />
+                  </View>
+                  <Text style={[styles.accessCardTitle, newAccessMode === 'public' && { color: '#22C55E' }]}>Public</Text>
+                  <Text style={styles.accessCardDesc}>Everyone can join freely</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={[styles.accessCard, newAccessMode === 'private' && styles.accessCardActive]} 
+                  onPress={() => setNewAccessMode('private')}
+                  activeOpacity={0.85}
+                >
+                  <View style={[styles.accessIconBox, newAccessMode === 'private' && { backgroundColor: '#EAB30822', borderColor: '#EAB308' }]}>
+                    <Ionicons name="lock-closed-outline" size={20} color={newAccessMode === 'private' ? '#EAB308' : '#A1A1AA'} />
+                  </View>
+                  <Text style={[styles.accessCardTitle, newAccessMode === 'private' && { color: '#EAB308' }]}>Private</Text>
+                  <Text style={styles.accessCardDesc}>Requires admin approval</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity 
+                  style={[styles.accessCard, newAccessMode === 'friends' && styles.accessCardActive]} 
+                  onPress={() => setNewAccessMode('friends')}
+                  activeOpacity={0.85}
+                >
+                  <View style={[styles.accessIconBox, newAccessMode === 'friends' && { backgroundColor: '#3B82F622', borderColor: '#3B82F6' }]}>
+                    <Ionicons name="link-outline" size={20} color={newAccessMode === 'friends' ? '#3B82F6' : '#A1A1AA'} />
+                  </View>
+                  <Text style={[styles.accessCardTitle, newAccessMode === 'friends' && { color: '#3B82F6' }]}>Friends Link</Text>
+                  <Text style={styles.accessCardDesc}>Invite link access only</Text>
+                </TouchableOpacity>
+              </View>
 
               <Text style={styles.label}>Court / Venue Name *</Text>
               <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
@@ -2227,7 +2704,7 @@ const styles = StyleSheet.create({
   detailsLink: { fontSize: 12, fontWeight: 'bold' },
 
   modalOverlay: { flex: 1, backgroundColor: 'rgba(9,9,11,0.85)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#121215', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, height: '75%', borderWidth: 1, borderColor: '#27272A' },
+  modalContent: { backgroundColor: '#121215', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, height: '82%', borderWidth: 1, borderColor: '#27272A' },
   modalContentLarge: { backgroundColor: '#121215', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, height: '90%', borderWidth: 1, borderColor: '#27272A' },
   
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, width: '100%' },
@@ -2243,6 +2720,13 @@ const styles = StyleSheet.create({
   sportChipActive: { backgroundColor: '#18181B', borderColor: '#EAB308' },
   sportChipText: { color: '#A1A1AA', fontSize: 12, fontWeight: 'bold' },
   sportChipTextActive: { color: '#EAB308' },
+
+  accessModesContainer: { flexDirection: 'row', gap: 8, marginBottom: 14 },
+  accessCard: { flex: 1, backgroundColor: '#09090B', borderWidth: 1.5, borderColor: '#27272A', borderRadius: 14, padding: 12, alignItems: 'center' },
+  accessCardActive: { backgroundColor: '#18181B', borderColor: '#EAB308' },
+  accessIconBox: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A', justifyContent: 'center', alignItems: 'center', marginBottom: 6 },
+  accessCardTitle: { color: '#FAFAFA', fontSize: 12, fontWeight: 'bold', marginBottom: 2 },
+  accessCardDesc: { color: '#71717A', fontSize: 9, textAlign: 'center', lineHeight: 12 },
 
   publishBtn: { backgroundColor: '#EAB308', borderRadius: 12, height: 46, justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 10, width: '100%' },
   publishBtnText: { color: '#09090B', fontWeight: '900', fontSize: 15 },
@@ -2260,25 +2744,40 @@ const styles = StyleSheet.create({
   detailLabel: { color: '#A1A1AA', fontSize: 12, fontWeight: 'bold', marginBottom: 6 },
   detailText: { color: '#FAFAFA', fontSize: 13 },
 
-  adminTabsRow: { flexDirection: 'row', backgroundColor: '#18181B', borderRadius: 10, padding: 4, marginBottom: 10 },
-  adminTabBtn: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
-  adminTabText: { color: '#A1A1AA', fontSize: 12, fontWeight: '600' },
+  neonTourneyContainer: { backgroundColor: '#121215', borderWidth: 1.5, borderRadius: 16, padding: 14 },
+  neonIconBadge: { width: 24, height: 24, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+
+  adminTabsRow: { flexDirection: 'row', backgroundColor: '#09090B', borderRadius: 10, padding: 4, marginBottom: 12, borderWidth: 1, borderColor: '#27272A' },
+  adminTabBtn: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: 8 },
+  adminTabText: { color: '#A1A1AA', fontSize: 12, fontWeight: '700' },
   
-  playersChipsContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  playerChip: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
-  playerChipText: { color: '#FAFAFA', fontSize: 12, fontWeight: 'bold' },
+  teamsGridModern: { gap: 8 },
+  teamCardModern: { backgroundColor: '#121215', borderRadius: 12, borderWidth: 1, borderColor: '#27272A', borderLeftWidth: 4, padding: 12 },
+  teamCardHeaderModern: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  teamBadgeDot: { width: 8, height: 8, borderRadius: 4 },
+  teamCardTitleModern: { color: '#FAFAFA', fontSize: 12, fontWeight: '900', letterSpacing: 0.5 },
+  teamMemberCountBadge: { color: '#A1A1AA', fontSize: 10, fontWeight: 'bold', backgroundColor: '#18181B', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  teamPlayersGridCompact: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  teamPlayerChipCompactGrid: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, borderWidth: 1.5, alignSelf: 'flex-start' },
+  teamPlayerNameTextGrid: { fontSize: 12, fontWeight: 'bold' },
 
-  drawInput: { backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 8, width: 50, height: 36, color: '#FAFAFA', textAlign: 'center', fontSize: 13 },
-  drawBtn: { flexDirection: 'row', alignItems: 'center', borderRadius: 8, paddingHorizontal: 12, height: 36 },
+  matchCardProContainer: { backgroundColor: '#121215', borderRadius: 12, borderWidth: 1, borderColor: '#27272A', padding: 10 },
+  matchCardHeaderPro: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, borderBottomWidth: 1, borderBottomColor: '#1E1E24', paddingBottom: 6 },
+  matchIdBadgeText: { color: '#EAB308', fontSize: 11, fontWeight: '900', letterSpacing: 0.5 },
+  matchRoundBadgeText: { color: '#71717A', fontSize: 10, fontWeight: 'bold' },
+  matchTeamsCombatBox: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
+  combatTeamSide: { flex: 1, backgroundColor: '#09090B', padding: 8, borderRadius: 8, borderWidth: 1, borderColor: '#1E1E24', alignItems: 'center' },
+  combatTeamName: { color: '#FAFAFA', fontSize: 12, fontWeight: 'bold', textAlign: 'center' },
+  combatVsBadge: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#1F1214', borderWidth: 1, borderColor: '#EF4444', justifyContent: 'center', alignItems: 'center' },
+  combatVsText: { color: '#EF4444', fontSize: 10, fontWeight: '900' },
+
+  playersGridContainerSmall: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
+  playerChipSmallGrid: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, borderWidth: 1.5, alignSelf: 'flex-start' },
+  playerChipTextSmallGrid: { fontSize: 12, fontWeight: 'bold' },
+
+  drawInput: { backgroundColor: '#121215', borderWidth: 1, borderRadius: 8, width: 50, height: 38, color: '#FAFAFA', textAlign: 'center', fontSize: 13, fontWeight: 'bold' },
+  drawBtn: { flexDirection: 'row', alignItems: 'center', borderRadius: 8, paddingHorizontal: 12, height: 38 },
   drawBtnText: { color: '#09090B', fontWeight: 'bold', fontSize: 12 },
-
-  teamResultCard: { backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 10, padding: 10, marginTop: 8 },
-  teamResultHeader: { color: '#FAFAFA', fontSize: 13, fontWeight: 'bold', marginBottom: 4 },
-  teamResultPlayer: { color: '#D4D4D8', fontSize: 12, marginBottom: 2 },
-
-  matchFixtureCard: { backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 10, padding: 10, marginTop: 8 },
-  matchTeamsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
-  matchTeamText: { color: '#FAFAFA', fontSize: 13, fontWeight: 'bold' },
 
   listItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#09090B', padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#27272A' },
   listAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
@@ -2371,7 +2870,7 @@ const styles = StyleSheet.create({
   sportBadgeText: { color: '#EAB308', fontSize: 10, fontWeight: '700' },
   postTime: { color: '#71717A', fontSize: 11 },
   postText: { color: '#E4E4E7', fontSize: 14, marginBottom: 12, lineHeight: 20 },
-  postImageBox: { height: 320, backgroundColor: '#09090B', borderRadius: 14, overflow: 'hidden', marginBottom: 12, borderWidth: 1, borderColor: '#27272A', position: 'relative' },
+  postImageBox: { distinct: true, height: 320, backgroundColor: '#09090B', borderRadius: 14, overflow: 'hidden', marginBottom: 12, borderWidth: 1, borderColor: '#27272A', position: 'relative' },
   postImageContent: { width: '100%', height: '100%' },
   postActionsRow: { flexDirection: 'row', gap: 20, borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 12 },
   actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
