@@ -1,22 +1,24 @@
 
 {
   "expo": {
-    "name": "WorldSport",
-    "slug": "WorldSport",
+    "name": "World Sports",
+    "slug": "World Sports",
     "version": "1.0.3",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
-    "scheme": "worldsport",
+    "scheme": "worldsports",
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.naor823.WorldSport",
+      "icon": "./assets/images/icon.png",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "This app uses GPS to detect your live location.",
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
-      "package": "com.naor823.WorldSport",
+      "package": "com.naor823.WorldSports",
+      "icon": "./assets/images/icon.png",
       "versionCode": 9,
       "permissions": [
         "ACCESS_FINE_LOCATION",
