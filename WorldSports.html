@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>World Sports - Organize Players, Teams & Tournaments Easily</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0b0f19;
+            color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col justify-between">
+
+    <!-- Header / Navbar -->
+    <header class="w-full py-6 px-8 flex justify-between items-center max-w-6xl mx-auto">
+        <div class="flex items-center gap-3">
+            <div class="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center font-black text-2xl text-black">WS</div>
+            <span class="text-xl font-bold tracking-wide">World Sports</span>
+        </div>
+        <nav class="hidden md:flex gap-6 text-sm text-gray-300">
+            <a href="#features" class="hover:text-emerald-400 transition">Features</a>
+            <a href="#download" class="hover:text-emerald-400 transition">Download</a>
+            <a href="#support" class="hover:text-emerald-400 transition">Support</a>
+        </nav>
+    </header>
+
+    <!-- Hero Section -->
+    <main class="max-w-5xl mx-auto px-6 py-12 md:py-20 text-center flex flex-col items-center">
+        <span class="bg-emerald-500/10 text-emerald-400 text-xs font-semibold px-4 py-1.5 rounded-full mb-6 border border-emerald-500/20">
+            Now in Closed Testing on Google Play 🚀
+        </span>
+        <h1 class="text-4xl md:text-6xl font-black tracking-tight mb-6 leading-tight">
+            The smartest way to <br/>
+            <span class="text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-cyan-400">organize sports matches</span>
+        </h1>
+        <p class="text-gray-400 text-lg md:text-xl max-w-2xl mb-10">
+            Organize matches, manage team draws, create tournaments, and coordinate join requests effortlessly right from your mobile device.
+        </p>
+        
+        <div id="download" class="flex flex-col sm:flex-row gap-4 justify-center items-center">
+            <a href="#" class="bg-emerald-500 hover:bg-emerald-400 text-black font-bold px-8 py-4 rounded-xl transition shadow-lg shadow-emerald-500/20 flex items-center gap-3">
+                <span>Download on Google Play</span>
+            </a>
+        </div>
+    </main>
+
+    <!-- Features Section -->
+    <section id="features" class="max-w-6xl mx-auto px-6 py-16 grid grid-cols-1 md:grid-cols-3 gap-8">
+        <div class="bg-gray-900/50 border border-gray-800 p-8 rounded-2xl">
+            <div class="w-12 h-12 bg-emerald-500/10 rounded-xl flex items-center justify-center text-emerald-400 font-bold mb-4 text-xl">⚡</div>
+            <h3 class="text-xl font-bold mb-2">Quick Match Setup</h3>
+            <p class="text-gray-400 text-sm">Create matches and invite players in seconds without any administrative headaches.</p>
+        </div>
+        <div class="bg-gray-900/50 border border-gray-800 p-8 rounded-2xl">
+            <div class="w-12 h-12 bg-cyan-500/10 rounded-xl flex items-center justify-center text-cyan-400 font-bold mb-4 text-xl">👥</div>
+            <h3 class="text-xl font-bold mb-2">Team Management</h3>
+            <p class="text-gray-400 text-sm">Automated and fair player distribution into teams and tournament draws.</p>
+        </div>
+        <div class="bg-gray-900/50 border border-gray-800 p-8 rounded-2xl">
+            <div class="w-12 h-12 bg-indigo-500/10 rounded-xl flex items-center justify-center text-indigo-400 font-bold mb-4 text-xl">📍</div>
+            <h3 class="text-xl font-bold mb-2">Map & Locations</h3>
+            <p class="text-gray-400 text-sm">Discover open fields and nearby matches using an advanced map interface.</p>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer id="support" class="border-t border-gray-800/80 mt-20 py-8 px-6 text-center text-sm text-gray-500">
+        <div class="max-w-6xl mx-auto flex flex-col md:flex-row justify-between items-center gap-4">
+            <p>© 2026 World Sports. All rights reserved.</p>
+            <div class="flex gap-6">
+                <a href="#" class="hover:text-gray-400 transition">Privacy Policy</a>
+                <a href="mailto:support@worldsports.com" class="hover:text-gray-400 transition">Support & Contact</a>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>
