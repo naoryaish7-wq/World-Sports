@@ -3,7 +3,7 @@
   "expo": {
     "name": "World Sports",
     "slug": "World Sports",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "worldsports",
@@ -19,7 +19,7 @@
     "android": {
       "package": "com.naor823.WorldSports",
       "icon": "./assets/images/icon.png",
-      "versionCode": 9,
+      "versionCode": 10,
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
