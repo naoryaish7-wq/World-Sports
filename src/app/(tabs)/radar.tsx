@@ -1646,7 +1646,7 @@ export default function RadarScreen() {
               return (
                 <TouchableOpacity key={game.id} style={[styles.gameCard, { borderColor: sportStyle.border + '55', backgroundColor: sportStyle.bg + '22' }]} onPress={() => setSelectedGame(game)}>
                   <View style={styles.gameHeaderRow}>
-                    <Text style={[styles.sportTag, { color: sportStyle.color }]}>🏅 {game.sport} {game.accessMode === 'private' ? '🔒 Private' : game.accessMode === 'friends' ? '🔗 Friends' : ''}</Text>
+                    <Text style={[styles.sportTag, { color: sportStyle.color }]}> {game.sport} {game.accessMode === 'private' ? '🔒 Private' : game.accessMode === 'friends' ? '🔗 Friends' : ''}</Text>
                     <Text style={styles.distanceTag}>📍 {distance} km away</Text>
                   </View>
                   <Text style={styles.gameTitle}>{game.title}</Text>
@@ -1679,7 +1679,7 @@ export default function RadarScreen() {
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Filter by Sport 🏅</Text>
+              <Text style={styles.modalTitle}>Filter by Sport </Text>
               <TouchableOpacity onPress={() => setSportFilterModalVisible(false)} activeOpacity={0.8}>
                 <Ionicons name="close" size={22} color="#FAFAFA" />
               </TouchableOpacity>
@@ -2137,7 +2137,7 @@ export default function RadarScreen() {
                   <View style={styles.sportsTagsRow}>
                     {targetSportsList.map((sport: string, index: number) => (
                       <View key={index} style={styles.sportTagBadge}>
-                        <Text style={styles.sportTagText}>🏅 {sport}</Text>
+                        <Text style={styles.sportTagText}> {sport}</Text>
                       </View>
                     ))}
                   </View>

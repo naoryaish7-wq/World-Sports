@@ -219,7 +219,6 @@ export default function ProfileScreen() {
     lastTapRef.current[postId] = now;
   };
 
-  // זיהוי אוטומטי של המיקום ושמירתו באנגלית בלבד
   const fetchAndSaveAutomaticLocation = async (userId: string) => {
     try {
       let { status } = await Location.requestForegroundPermissionsAsync();
@@ -235,7 +234,6 @@ export default function ProfileScreen() {
         let currentCity = address[0].city || address[0].subregion || 'Netanya';
         let currentCountry = address[0].country || 'Israel';
 
-        // המרה חכמה לאנגלית עבור ערים מרכזיות בישראל ובעולם
         if (currentCity === 'נתניה') currentCity = 'Netanya';
         if (currentCity === 'תל אביב-יפו' || currentCity === 'תל אביב') currentCity = 'Tel Aviv';
         if (currentCity === 'חיפה') currentCity = 'Haifa';
@@ -908,7 +906,7 @@ export default function ProfileScreen() {
           <View style={styles.sportsTagsRow}>
             {userSportsList.map((sport, index) => (
               <View key={index} style={styles.sportTagBadge}>
-                <Text style={styles.sportTagText}>🏅 {sport}</Text>
+                <Text style={styles.sportTagText}> {sport}</Text>
               </View>
             ))}
           </View>
@@ -1124,10 +1122,26 @@ export default function ProfileScreen() {
 
               <Text style={styles.igSectionHeader}>More info and support</Text>
 
-              <TouchableOpacity style={styles.igSettingItem} onPress={() => Alert.alert('Help & Support', 'For assistance with World Sports, please contact us at support@worldsports.com')} activeOpacity={0.7}>
+              <TouchableOpacity 
+                style={styles.igSettingItem} 
+                onPress={async () => {
+                  const url = 'https://naoryaish7-wq.github.io/World-Sports/'; // החלף בכתובת האתר שלך
+                  try {
+                    const supported = await Linking.canOpenURL(url);
+                    if (supported) {
+                      await Linking.openURL(url);
+                    } else {
+                      Alert.alert('Error', 'Could not open the website link.');
+                    }
+                  } catch (error) {
+                    Alert.alert('Error', 'Could not open the website link.');
+                  }
+                }} 
+                activeOpacity={0.7}
+              >
                 <View style={styles.igSettingLeft}>
                   <Ionicons name="help-circle-outline" size={20} color="#FAFAFA" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>Help & Support</Text>
+                  <Text style={styles.igSettingText}>Help & Support </Text>
                 </View>
                 <Ionicons name="chevron-forward" size={16} color="#71717A" />
               </TouchableOpacity>
@@ -1214,7 +1228,7 @@ export default function ProfileScreen() {
 
               <TouchableOpacity style={styles.manageStoreSubBtn} onPress={handleManageSubscriptions} activeOpacity={0.85}>
                 <Ionicons name="settings-outline" size={16} color="#FAFAFA" style={{ marginRight: 6 }} />
-                <Text style={styles.manageStoreSubText}>Manage / Cancel Store Subscriptions ⚙️</Text>
+                <Text style={styles.manageStoreSubText}>Manage / Cancel Store Subscriptions </Text>
               </TouchableOpacity>
 
               <Text style={styles.billingNotice}>
@@ -1414,7 +1428,7 @@ export default function ProfileScreen() {
                   <View style={styles.sportsTagsRow}>
                     {targetSportsList.map((sport: string, index: number) => (
                       <View key={index} style={styles.sportTagBadge}>
-                        <Text style={styles.sportTagText}>🏅 {sport}</Text>
+                        <Text style={styles.sportTagText}> {sport}</Text>
                       </View>
                     ))}
                   </View>

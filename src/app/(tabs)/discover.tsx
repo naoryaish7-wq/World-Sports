@@ -509,7 +509,7 @@ export default function DiscoverScreen() {
           </View>
         )}
 
-        <Text style={styles.sectionHeading}>Community Players 🏅</Text>
+        <Text style={styles.sectionHeading}>Community Players </Text>
 
         {/* Users List */}
         {filteredUsers.length === 0 ? (
@@ -603,7 +603,7 @@ export default function DiscoverScreen() {
                   <View style={styles.sportsTagsRow}>
                     {targetSportsList.map((sport: string, index: number) => (
                       <View key={index} style={styles.sportTagBadge}>
-                        <Text style={styles.sportTagText}>🏅 {sport}</Text>
+                        <Text style={styles.sportTagText}> {sport}</Text>
                       </View>
                     ))}
                   </View>
