@@ -1,4 +1,3 @@
-
 {
   "expo": {
     "name": "World Sports",
@@ -9,7 +8,8 @@
     "scheme": "worldsports",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.naor823.WorldSport",
+      "bundleIdentifier": "com.naor823.WorldSports",
+      "buildNumber": "1",
       "icon": "./assets/notification-icon.png",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "This app uses GPS to detect your live location.",
