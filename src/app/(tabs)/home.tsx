@@ -302,6 +302,7 @@ export default function HomeScreen() {
   const [userSports, setUserSports] = useState<string[]>([]);
   const [followingList, setFollowingList] = useState<string[]>([]);
   const [pendingRequestsList, setPendingRequestsList] = useState<string[]>([]);
+  const [blockedUsersList, setBlockedUsersList] = useState<string[]>([]);
   const [currentUserId, setCurrentUserId] = useState('');
   const [allUsersList, setAllUsersList] = useState<any[]>([]);
   const [liveUserData, setLiveUserData] = useState<any>(null);
@@ -313,6 +314,22 @@ export default function HomeScreen() {
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
 
   const appLoadTimeRef = useRef<number>(Date.now());
+
+  const isBlockedBidirectional = useCallback((otherUserId?: string, otherUserName?: string): boolean => {
+    const cleanName = (otherUserName || '').trim().toLowerCase();
+    const resolvedOther = allUsersList.find(
+      u => (otherUserId && u.uid === otherUserId) || (cleanName && u.name?.trim().toLowerCase() === cleanName)
+    );
+    const resolvedUid = resolvedOther?.uid || otherUserId;
+    if (!resolvedUid || resolvedUid === currentUserId) return false;
+
+    const iBlockedThem = blockedUsersList.includes(resolvedUid);
+    const theyBlockedMe = Array.isArray(resolvedOther?.blockedUsers) && currentUserId
+      ? resolvedOther.blockedUsers.includes(currentUserId)
+      : false;
+
+    return iBlockedThem || theyBlockedMe;
+  }, [allUsersList, blockedUsersList, currentUserId]);
 
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -334,20 +351,25 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
+    let unsubscribeDoc: (() => void) | undefined;
+
     const fetchLiveUserData = async () => {
       try {
         const savedEmail = await AsyncStorage.getItem('@saved_user_email');
-        if (savedEmail) {
-          const userId = savedEmail.toLowerCase().replace(/[^a-z0-9]/g, '_');
-          setCurrentUserId(userId);
-          const unsubscribe = onSnapshot(doc(db, 'users', userId), (docSnap: any) => {
+        const resolvedId = savedEmail
+          ? savedEmail.toLowerCase().replace(/[^a-z0-9]/g, '_')
+          : (user?.id || '');
+
+        if (resolvedId) {
+          setCurrentUserId(resolvedId);
+          unsubscribeDoc = onSnapshot(doc(db, 'users', resolvedId), (docSnap: any) => {
             if (docSnap.exists()) {
               const data = docSnap.data();
               setLiveUserData({ uid: docSnap.id, ...data });
               if (data.avatar !== undefined) setLiveAvatar(data.avatar);
               if (data.name) setLiveName(data.name);
               if (data.country && data.city) {
-                setLiveMeta(`${data.country}, ${data.city} | ${data.age || 20} yrs old`);
+                setLiveMeta(`${data.country}, ${data.city} `);
               }
               if (data.sports) {
                 setUserSports(data.sports);
@@ -360,16 +382,20 @@ export default function HomeScreen() {
               if (data.pendingRequests) {
                 setPendingRequestsList(data.pendingRequests);
               }
+              setBlockedUsersList(Array.isArray(data.blockedUsers) ? data.blockedUsers : []);
             }
           });
-          return () => unsubscribe();
         }
       } catch (e) {
         console.error('Error fetching live user data in Home', e);
       }
     };
+
     fetchLiveUserData();
-  }, []);
+    return () => {
+      if (unsubscribeDoc) unsubscribeDoc();
+    };
+  }, [user?.id]);
 
   useEffect(() => {
     if (!currentUserId) return;
@@ -405,7 +431,13 @@ export default function HomeScreen() {
           const sAuthorUid = sData.userUid;
           const sCreatedAt = sData.createdAt?.toMillis ? sData.createdAt.toMillis() : (sData.createdAt?.seconds ? sData.createdAt.seconds * 1000 : Date.now());
 
-          if (sAuthorUid && sAuthorUid !== currentUserId && followingList.includes(sAuthorUid) && sCreatedAt > appLoadTimeRef.current) {
+          if (
+            sAuthorUid &&
+            sAuthorUid !== currentUserId &&
+            followingList.includes(sAuthorUid) &&
+            !isBlockedBidirectional(sAuthorUid, sData.name) &&
+            sCreatedAt > appLoadTimeRef.current
+          ) {
             try {
               const msg = `${sData.name || 'Someone'} uploaded a new story! 📸`;
               await addDoc(collection(db, 'users', currentUserId, 'notifications'), {
@@ -430,11 +462,16 @@ export default function HomeScreen() {
         if (diffHours <= 24) {
           const authorDoc = allUsersList.find(u => u.uid === data.userUid || u.name === data.name);
           const resolvedAvatar = authorDoc?.avatar || data.avatarUrl || '';
+          const isMineStory = (!!currentUserId && data.userUid === currentUserId) || (!!liveName && data.name === liveName);
 
-          if (data.userUid === currentUserId || data.name === liveName || followingList.includes(data.userUid)) {
+          if (!isMineStory && isBlockedBidirectional(data.userUid, data.name)) {
+            return;
+          }
+
+          if (isMineStory || followingList.includes(data.userUid)) {
             storiesList.push({
               id: docSnap.id,
-              userUid: data.userUid,
+              userUid: data.userUid || authorDoc?.uid,
               name: data.name,
               imageUrl: data.imageUrl,
               mediaType: data.mediaType || 'image',
@@ -442,7 +479,7 @@ export default function HomeScreen() {
               caption: data.caption,
               captionStyle: data.captionStyle,
               createdAt: data.createdAt,
-              isMine: data.userUid === currentUserId || data.name === liveName,
+              isMine: isMineStory,
               likesList: data.likesList || [],
               viewersList: data.viewersList || [],
               storyComments: data.storyComments || []
@@ -453,7 +490,7 @@ export default function HomeScreen() {
       setStories(storiesList);
     });
     return () => unsubscribe();
-  }, [currentUserId, liveName, allUsersList, followingList]);
+  }, [currentUserId, liveName, allUsersList, followingList, isBlockedBidirectional]);
 
   useEffect(() => {
     const q = query(
@@ -466,11 +503,18 @@ export default function HomeScreen() {
         if (change.type === 'added' && currentUserId) {
           const pData = change.doc.data();
           const pAuthorUid = pData.userId;
+          const pAuthorName = pData.authorName || pData.userName;
           const pCreatedAt = pData.createdAt?.toMillis ? pData.createdAt.toMillis() : (pData.createdAt?.seconds ? pData.createdAt.seconds * 1000 : Date.now());
 
-          if (pAuthorUid && pAuthorUid !== currentUserId && followingList.includes(pAuthorUid) && pCreatedAt > appLoadTimeRef.current) {
+          if (
+            pAuthorUid &&
+            pAuthorUid !== currentUserId &&
+            followingList.includes(pAuthorUid) &&
+            !isBlockedBidirectional(pAuthorUid, pAuthorName) &&
+            pCreatedAt > appLoadTimeRef.current
+          ) {
             try {
-              const msg = `${pData.authorName || pData.userName || 'Someone'} published a new post! 🚀`;
+              const msg = `${pAuthorName || 'Someone'} published a new post! 🚀`;
               await addDoc(collection(db, 'users', currentUserId, 'notifications'), {
                 senderUid: pAuthorUid,
                 type: 'new_post_story',
@@ -494,7 +538,7 @@ export default function HomeScreen() {
 
         return {
           id: docSnap.id,
-          userId: data.userId,
+          userId: data.userId || authorDoc?.uid,
           userEmail: data.userEmail,
           authorName: data.userName || data.authorName || 'Player',
           authorMeta: data.authorMeta || 'Israel, Netanya',
@@ -515,7 +559,7 @@ export default function HomeScreen() {
       console.error('Error listening to posts:', error);
     });
     return () => unsubscribe();
-  }, [currentUserId, allUsersList, followingList]);
+  }, [currentUserId, allUsersList, followingList, isBlockedBidirectional]);
 
   const [activeGroupIndex, setActiveGroupIndex] = useState<number | null>(null);
   const [activeStoryInGroupIndex, setActiveStoryInGroupIndex] = useState<number>(0);
@@ -526,10 +570,11 @@ export default function HomeScreen() {
   const progressValueRef = useRef(0);
 
   const rawGroupedStories: GroupedStory[] = [];
-  const myStories = stories.filter(s => s.isMine || s.userUid === currentUserId || s.name === liveName);
+  const myStories = stories.filter(s => s.isMine || (!!currentUserId && s.userUid === currentUserId) || (!!liveName && s.name === liveName));
   
   const otherStories = stories.filter(s => {
-    if (s.isMine || s.userUid === currentUserId || s.name === liveName) return false;
+    if (s.isMine || (!!currentUserId && s.userUid === currentUserId) || (!!liveName && s.name === liveName)) return false;
+    if (isBlockedBidirectional(s.userUid, s.name)) return false;
     const isFollowed = s.userUid ? followingList.includes(s.userUid) : false;
     return isFollowed;
   });
@@ -695,42 +740,48 @@ export default function HomeScreen() {
     }
   }, [isScreenFocused]);
 
-  const openUserProfileById = (userId?: string, playerName?: string) => {
+  const openUserProfileById = useCallback((userId?: string, playerName?: string) => {
+    const cleanUserId = (userId || '').trim();
     const cleanPlayerName = (playerName || '').trim().toLowerCase();
     const myCurrentName = (liveName || '').trim().toLowerCase();
 
-    if (
-      (userId && currentUserId && userId === currentUserId) ||
-      (cleanPlayerName && myCurrentName && cleanPlayerName === myCurrentName)
-    ) {
-      return; 
+    if (cleanUserId && currentUserId && cleanUserId === currentUserId) {
+      return;
+    }
+
+    let foundUser = cleanUserId
+      ? allUsersList.find(u => u.uid === cleanUserId)
+      : undefined;
+
+    if (!foundUser && cleanPlayerName) {
+      foundUser = allUsersList.find(u => (u.name || '').trim().toLowerCase() === cleanPlayerName);
+    }
+
+    const resolvedTargetId = foundUser?.uid || cleanUserId;
+    if (!resolvedTargetId) {
+      return;
+    }
+
+    if (currentUserId && resolvedTargetId === currentUserId) {
+      return;
+    }
+
+    if (!cleanUserId && cleanPlayerName && myCurrentName && cleanPlayerName === myCurrentName) {
+      return;
     }
 
     stopAllVideos();
-
+    setActiveGroupIndex(null);
     setTargetActiveModalList(null);
-    setSelectedUserModalId(null);
     setSelectedPostModal(null);
     setCommentsModalPost(null);
+    setNotificationsModalVisible(false);
 
-    setTimeout(() => {
-      let found: any | undefined = undefined;
-      if (userId) {
-        found = allUsersList.find(u => u.uid === userId);
-      }
-      if (!found && playerName) {
-        found = allUsersList.find(u => u.name?.toLowerCase() === cleanPlayerName);
-      }
-
-      if (found) {
-        setActiveGroupIndex(null);
-        setSelectedUserModalId(found.uid);
-      } else if (userId) {
-        setActiveGroupIndex(null);
-        setSelectedUserModalId(userId);
-      }
-    }, 50);
-  };
+    if (foundUser) {
+      setTargetProfileUser(foundUser);
+    }
+    setSelectedUserModalId(resolvedTargetId);
+  }, [allUsersList, currentUserId, liveName]);
 
   useEffect(() => {
     if (!selectedUserModalId) {
@@ -739,21 +790,117 @@ export default function HomeScreen() {
       return;
     }
 
-    const fetchTargetUser = async () => {
-      try {
-        const userSnap = await getDoc(doc(db, 'users', selectedUserModalId));
-        if (userSnap.exists()) {
-          setTargetProfileUser({ uid: userSnap.id, ...(userSnap.data() as any) });
+    const unsubscribe = onSnapshot(doc(db, 'users', selectedUserModalId), (userSnap: any) => {
+      if (userSnap.exists()) {
+        setTargetProfileUser({ uid: userSnap.id, ...(userSnap.data() as any) });
+      } else {
+        const cached = allUsersList.find(u => u.uid === selectedUserModalId);
+        if (cached) {
+          setTargetProfileUser(cached);
         }
-      } catch (e) {
-        console.error('Error fetching target user:', e);
       }
-    };
-    fetchTargetUser();
-  }, [selectedUserModalId]);
+    }, (e) => {
+      console.error('Error fetching target user:', e);
+    });
+
+    return () => unsubscribe();
+  }, [selectedUserModalId, allUsersList]);
+
+  useEffect(() => {
+    if (!chatModalVisible || !currentUserId || !chatTargetUser?.uid) {
+      setChatMessages([]);
+      return;
+    }
+
+    const chatId = [currentUserId, chatTargetUser.uid].sort().join('_');
+    const q = query(collection(db, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc'));
+    const unsub = onSnapshot(q, (snapshot) => {
+      const msgs = snapshot.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
+      setChatMessages(msgs);
+    }, (err) => {
+      console.error('Error listening to chat messages:', err);
+    });
+
+    return () => unsub();
+  }, [chatModalVisible, currentUserId, chatTargetUser]);
+
+  const handleToggleBlockTargetUser = async () => {
+    if (!targetProfileUser || !currentUserId || !targetProfileUser.uid || targetProfileUser.uid === currentUserId) {
+      return;
+    }
+
+    const targetUid = targetProfileUser.uid;
+    const alreadyBlocked = blockedUsersList.includes(targetUid);
+
+    if (alreadyBlocked) {
+      Alert.alert(
+        'Unblock User',
+        `Are you sure you want to unblock ${targetProfileUser.name || 'this user'}?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Unblock',
+            onPress: async () => {
+              try {
+                await updateDoc(doc(db, 'users', currentUserId), {
+                  blockedUsers: arrayRemove(targetUid),
+                });
+                setBlockedUsersList(prev => prev.filter(id => id !== targetUid));
+                Alert.alert('User Unblocked', 'You can now see and interact with this user again.');
+              } catch (e) {
+                console.error('Error unblocking user:', e);
+                Alert.alert('Error', 'Could not unblock user.');
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Block User',
+      `Block ${targetProfileUser.name || 'this user'}? You won't see each other's content or communicate with each other.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Block',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await updateDoc(doc(db, 'users', currentUserId), {
+                blockedUsers: arrayUnion(targetUid),
+                following: arrayRemove(targetUid),
+                followers: arrayRemove(targetUid),
+                pendingRequests: arrayRemove(targetUid),
+              });
+
+              await updateDoc(doc(db, 'users', targetUid), {
+                following: arrayRemove(currentUserId),
+                followers: arrayRemove(currentUserId),
+                pendingRequests: arrayRemove(currentUserId),
+              });
+
+              setBlockedUsersList(prev => (prev.includes(targetUid) ? prev : [...prev, targetUid]));
+              setFollowingList(prev => prev.filter(id => id !== targetUid));
+              Alert.alert('User Blocked', 'This user has been blocked and hidden.');
+            } catch (e) {
+              console.error('Error blocking user:', e);
+              Alert.alert('Error', 'Could not block user.');
+            }
+          },
+        },
+      ]
+    );
+  };
 
   useEffect(() => {
     if (!targetProfileUser) {
+      setTargetUserPosts([]);
+      return;
+    }
+
+    if (isBlockedBidirectional(targetProfileUser.uid, targetProfileUser.name)) {
       setTargetUserPosts([]);
       return;
     }
@@ -815,10 +962,14 @@ export default function HomeScreen() {
     });
 
     return () => unsubscribe();
-  }, [targetProfileUser, currentUserId]);
+  }, [targetProfileUser, currentUserId, isBlockedBidirectional]);
 
   const handleAcceptRequest = async (notifId: string, requesterUid: string) => {
     if (!currentUserId) return;
+    if (isBlockedBidirectional(requesterUid)) {
+      Alert.alert('Blocked', 'You cannot accept requests from a blocked user.');
+      return;
+    }
     try {
       const myRef = doc(db, 'users', currentUserId);
       const requesterRef = doc(db, 'users', requesterUid);
@@ -896,6 +1047,11 @@ export default function HomeScreen() {
 
   const handleToggleFollowTarget = async () => {
     if (!targetProfileUser || !currentUserId || !targetProfileUser.uid) return;
+
+    if (isBlockedBidirectional(targetProfileUser.uid, targetProfileUser.name)) {
+      Alert.alert('Unavailable', 'You cannot follow this user because a block is active.');
+      return;
+    }
 
     try {
       const myRef = doc(db, 'users', currentUserId);
@@ -976,6 +1132,12 @@ export default function HomeScreen() {
 
   const handleSendMessage = async () => {
     if (!messageInput.trim() || !currentUserId || !chatTargetUser) return;
+
+    if (isBlockedBidirectional(chatTargetUser.uid, chatTargetUser.name)) {
+      Alert.alert('Messaging Blocked', 'You cannot send messages to this user because one of you blocked the other.');
+      return;
+    }
+
     const chatId = [currentUserId, chatTargetUser.uid].sort().join('_');
     const textToSend = messageInput.trim();
     setMessageInput('');
@@ -1008,7 +1170,6 @@ export default function HomeScreen() {
     }
   };
 
-  // --- פונקציית דיווח על פוסט (דרישות גוגל) ---
   const handleReportPost = async (postId: string) => {
     Alert.alert(
       'Report Post',
@@ -1039,7 +1200,6 @@ export default function HomeScreen() {
     );
   };
 
-  // --- פונקציית דיווח על סטורי (דרישות גוגל) ---
   const handleReportStory = async (storyId: string) => {
     Alert.alert(
       'Report Story',
@@ -1125,6 +1285,7 @@ export default function HomeScreen() {
     if (!currentUserId) return;
     const post = posts.find(p => p.id === postId);
     if (!post) return;
+    if (isBlockedBidirectional(post.userId, post.authorName)) return;
 
     try {
       const postRef = doc(db, 'posts', postId);
@@ -1176,6 +1337,7 @@ export default function HomeScreen() {
     if (!currentUserId) return;
     const story = stories.find(s => s.id === storyId);
     if (!story) return;
+    if (isBlockedBidirectional(story.userUid, story.name)) return;
 
     try {
       const storyRef = doc(db, 'stories', storyId);
@@ -1217,6 +1379,10 @@ export default function HomeScreen() {
       const storyRef = doc(db, 'stories', storyId);
       const story = stories.find(s => s.id === storyId);
       if (story) {
+        if (isBlockedBidirectional(story.userUid, story.name)) {
+          Alert.alert('Blocked', 'You cannot reply to this story because a block is active.');
+          return;
+        }
         const currentComments = story.storyComments || [];
         const updatedStoryComments = [...currentComments, newComment];
         await updateDoc(storyRef, { storyComments: updatedStoryComments });
@@ -1439,6 +1605,11 @@ export default function HomeScreen() {
     const post = posts.find(p => p.id === postId) || (commentsModalPost?.id === postId ? commentsModalPost : null);
     if (!post) return;
 
+    if (isBlockedBidirectional(post.userId, post.authorName)) {
+      Alert.alert('Blocked', 'You cannot comment on posts from this user because a block is active.');
+      return;
+    }
+
     const newComment: Comment = {
       id: Date.now().toString(),
       userId: currentUserId,
@@ -1484,8 +1655,10 @@ export default function HomeScreen() {
     const matchesSport = userSports.length === 0 || (post.sport && userSports.includes(post.sport)) || !post.sport;
     if (!matchesSport) return false;
 
-    const isMine = post.userId === currentUserId || post.authorName === liveName;
+    const isMine = (!!currentUserId && post.userId === currentUserId) || (!!liveName && post.authorName === liveName);
     if (isMine) return true;
+
+    if (isBlockedBidirectional(post.userId, post.authorName)) return false;
 
     const postAuthor = allUsersList.find(u => u.uid === post.userId || u.name === post.authorName);
     if (!postAuthor || !postAuthor.isPrivate) return true;
@@ -1521,12 +1694,18 @@ export default function HomeScreen() {
   const targetFollowingList = allUsersList.filter(u => targetProfileUser?.following?.includes(u.uid));
   const targetSportsList = targetProfileUser?.sports || (targetProfileUser?.sport ? [targetProfileUser.sport] : ['Football']);
   
-  const isViewingMyOwnProfile = targetProfileUser?.uid === currentUserId;
+  const isViewingMyOwnProfile = !!currentUserId && targetProfileUser?.uid === currentUserId;
+  const isTargetBlockedByMe = targetProfileUser?.uid ? blockedUsersList.includes(targetProfileUser.uid) : false;
+  const isTargetBlockingMe = Array.isArray(targetProfileUser?.blockedUsers) && currentUserId
+    ? targetProfileUser.blockedUsers.includes(currentUserId)
+    : false;
+  const isAnyBlockBetweenUs = !isViewingMyOwnProfile && (isTargetBlockedByMe || isTargetBlockingMe);
+
   const isApprovedFollower = targetProfileUser?.followers?.includes(currentUserId || '');
   const hasRequestedFollow = targetProfileUser?.pendingRequests?.includes(currentUserId || '');
   const isPrivateAccount = targetProfileUser?.isPrivate === true;
 
-  const canViewFullProfile = isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower;
+  const canViewFullProfile = !isAnyBlockBetweenUs && (isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower);
 
   const isAnyModalOpen = activeGroupIndex !== null || !!selectedUserModalId || !!selectedPostModal || !!commentsModalPost || notificationsModalVisible;
 
@@ -1657,7 +1836,8 @@ export default function HomeScreen() {
                           openUserProfileById(group.userUid, group.name);
                         }
                       }}
-                      activeOpacity={group.isMine ? 1 : 0.8}
+                      hitSlop={{ top: 8, bottom: 8, left: 6, right: 6 }}
+                      activeOpacity={group.isMine ? 1 : 0.7}
                       style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 6 }}
                     >
                       <Text style={styles.storyName} numberOfLines={1}>{group.isMine ? 'Your Story' : group.name}</Text>
@@ -1691,7 +1871,12 @@ export default function HomeScreen() {
             <View key={post.id} style={[styles.postCard, isPostPromoted && { borderColor: '#3B82F6', borderWidth: 1.5 }]}>
               
               <View style={styles.postHeader}>
-                <TouchableOpacity style={styles.postAvatarBox} onPress={() => openUserProfileById(post.userId, post.authorName)} activeOpacity={0.85}>
+                <TouchableOpacity
+                  style={styles.postAvatarBox}
+                  onPress={() => openUserProfileById(post.userId, post.authorName)}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  activeOpacity={0.75}
+                >
                   {post.avatarUrl ? (
                     <Image source={{ uri: post.avatarUrl }} style={styles.avatarImg} />
                   ) : (
@@ -1702,7 +1887,11 @@ export default function HomeScreen() {
                 </TouchableOpacity>
                 
                 <View style={styles.postUserInfo}>
-                  <TouchableOpacity onPress={() => openUserProfileById(post.userId, post.authorName)} activeOpacity={0.85}>
+                  <TouchableOpacity
+                    onPress={() => openUserProfileById(post.userId, post.authorName)}
+                    hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
+                    activeOpacity={0.75}
+                  >
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                       <Text style={styles.postUserName}>{post.authorName}</Text>
                       {authorUserObj?.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
@@ -1718,12 +1907,10 @@ export default function HomeScreen() {
                   </View>
                 )}
 
-                {/* כפתור דיווח פוסט */}
                 <TouchableOpacity onPress={() => handleReportPost(post.id)} style={{ marginLeft: 6, marginRight: 2 }} activeOpacity={0.7}>
                   <Ionicons name="flag-outline" size={16} color="#A1A1AA" />
                 </TouchableOpacity>
 
-                {/* כפתור מחיקה לבעל הפוסט */}
                 {(post.authorName === liveName || post.userId === currentUserId) && (
                   <TouchableOpacity onPress={() => handleDeletePost(post.id)} style={{ marginLeft: 6, marginRight: 4 }} activeOpacity={0.7}>
                     <Ionicons name="trash-outline" size={16} color="#EF4444" />
@@ -1801,7 +1988,7 @@ export default function HomeScreen() {
                     <TouchableOpacity 
                       key={notif.id} 
                       style={styles.listItem}
-                      onPress={() => {}}
+                      onPress={() => openUserProfileById(notif.senderUid, senderUser?.name)}
                       activeOpacity={0.85}
                     >
                       <View style={styles.listAvatar}>
@@ -1867,12 +2054,18 @@ export default function HomeScreen() {
                   {commentsModalPost.comments.length === 0 ? (
                     <Text style={{ color: '#71717A', textAlign: 'center', marginVertical: 30, fontSize: 13 }}>No comments yet. Be the first to comment!</Text>
                   ) : (
-                    commentsModalPost.comments.map(c => {
+                    commentsModalPost.comments
+                      .filter(c => !isBlockedBidirectional(c.userId, c.user))
+                      .map(c => {
                       const commentTimeAgo = getTimeAgo(c.createdAt);
                       const commentUserObj = allUsersList.find(u => u.uid === c.userId || u.name === c.user);
                       return (
                         <View key={c.id} style={styles.commentRow}>
-                          <TouchableOpacity onPress={() => { setCommentsModalPost(null); openUserProfileById(c.userId, c.user); }} activeOpacity={0.85}>
+                          <TouchableOpacity
+                            onPress={() => openUserProfileById(c.userId, c.user)}
+                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                            activeOpacity={0.75}
+                          >
                             {c.avatarUrl ? (
                               <Image source={{ uri: c.avatarUrl }} style={styles.commentAvatar} />
                             ) : (
@@ -1883,7 +2076,11 @@ export default function HomeScreen() {
                           </TouchableOpacity>
                           <View style={{ flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 10, borderRadius: 12 }}>
                             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-                              <TouchableOpacity onPress={() => { setCommentsModalPost(null); openUserProfileById(c.userId, c.user); }} activeOpacity={0.85}>
+                              <TouchableOpacity
+                                onPress={() => openUserProfileById(c.userId, c.user)}
+                                hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
+                                activeOpacity={0.75}
+                              >
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                                   <Text style={styles.commentUser}>{c.user}</Text>
                                   {commentUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color="#EAB308" />}
@@ -2086,14 +2283,9 @@ export default function HomeScreen() {
                     <View style={styles.storyHeaderUserRow}>
                       <TouchableOpacity 
                         style={styles.storyHeaderUserBtn}
-                        onPress={() => {
-                          const sName = currentGroup.name;
-                          const sUid = currentGroup.userUid;
-                          setActiveGroupIndex(null);
-                          setStoryCommentInput('');
-                          openUserProfileById(sUid, sName);
-                        }}
-                        activeOpacity={0.8}
+                        onPress={() => openUserProfileById(currentGroup.userUid, currentGroup.name)}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        activeOpacity={0.75}
                       >
                         <View style={styles.storyHeaderAvatar}>
                           {currentGroup.avatarUrl ? (
@@ -2162,10 +2354,7 @@ export default function HomeScreen() {
                                 <TouchableOpacity 
                                   key={viewerUid} 
                                   style={styles.viewerItemRow}
-                                  onPress={() => {
-                                    setActiveGroupIndex(null);
-                                    openUserProfileById(viewerUser.uid, viewerUser.name);
-                                  }}
+                                  onPress={() => openUserProfileById(viewerUser.uid, viewerUser.name)}
                                   activeOpacity={0.8}
                                 >
                                   {viewerUser.avatar ? (
@@ -2219,7 +2408,6 @@ export default function HomeScreen() {
                       </View>
                     )}
 
-                    {/* כפתור דיווח לסטורי (זמין לכל משתמש שצופה בסטורי של אחר) */}
                     {!isStoryMine && (
                       <TouchableOpacity 
                         style={styles.reportStoryIconBtn} 
@@ -2230,7 +2418,6 @@ export default function HomeScreen() {
                       </TouchableOpacity>
                     )}
 
-                    {/* כפתור מחיקה לבעל הסטורי */}
                     {isStoryMine && (
                       <TouchableOpacity 
                         style={styles.deleteStoryIconBtn} 
@@ -2284,13 +2471,13 @@ export default function HomeScreen() {
                   <TouchableOpacity 
                     style={styles.avatarLarge} 
                     onPress={() => {
-                      if (targetProfileUser.avatar) {
+                      if (targetProfileUser.avatar && !isAnyBlockBetweenUs) {
                         setZoomedAvatarUri(targetProfileUser.avatar);
                       }
                     }}
                     activeOpacity={0.7}
                   >
-                    {targetProfileUser.avatar ? (
+                    {targetProfileUser.avatar && !isAnyBlockBetweenUs ? (
                       <Image source={{ uri: targetProfileUser.avatar }} style={styles.avatarImage} />
                     ) : (
                       <Text style={styles.avatarLargeText}>{targetProfileUser.name ? targetProfileUser.name[0] : 'P'}</Text>
@@ -2303,82 +2490,129 @@ export default function HomeScreen() {
                     {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
                   </View>
                   
-                  <View style={styles.sportsTagsRow}>
-                    {targetSportsList.map((sport: string, index: number) => (
-                      <View key={index} style={styles.sportTagBadge}>
-                        <Text style={styles.sportTagText}>🏅 {sport}</Text>
+                  {!isAnyBlockBetweenUs && (
+                    <>
+                      <View style={styles.sportsTagsRow}>
+                        {targetSportsList.map((sport: string, index: number) => (
+                          <View key={index} style={styles.sportTagBadge}>
+                            <Text style={styles.sportTagText}> {sport}</Text>
+                          </View>
+                        ))}
                       </View>
-                    ))}
-                  </View>
 
-                  <Text style={styles.profileCity}>
-                    📍 {targetProfileUser.city || 'Netanya'}, {targetProfileUser.country || 'Israel'} |  Age: {targetProfileUser.age || 20}
-                  </Text>
-                </View>
-
-                <View style={styles.statsRow}>
-                  <TouchableOpacity 
-                    style={styles.statBox} 
-                    onPress={() => setTargetActiveModalList('followers')} 
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.statNumber}>{targetProfileUser.followers?.length || 0}</Text>
-                    <Text style={styles.statLabel}>Followers</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity 
-                    style={styles.statBox} 
-                    onPress={() => setTargetActiveModalList('following')} 
-                    activeOpacity={0.8}
-                  >
-                    <Text style={styles.statNumber}>{targetProfileUser.following?.length || 0}</Text>
-                    <Text style={styles.statLabel}>Following</Text>
-                  </TouchableOpacity>
-
-                  <View style={styles.statBox}>
-                    <Text style={styles.statNumber}>{targetUserPosts.length}</Text>
-                    <Text style={styles.statLabel}>Posts</Text>
-                  </View>
-                </View>
-
-                {!isViewingMyOwnProfile && currentUserId && (
-                  <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
-                    <TouchableOpacity 
-                      style={[
-                        styles.profileFollowBtn, 
-                        isApprovedFollower && styles.profileFollowingBtn,
-                        hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
-                        { flex: 1 }
-                      ]} 
-                      onPress={handleToggleFollowTarget}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={[
-                        styles.profileFollowBtnText, 
-                        isApprovedFollower && styles.profileFollowingBtnText,
-                        hasRequestedFollow && { color: '#FAFAFA' }
-                      ]}>
-                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
+                      <Text style={styles.profileCity}>
+                        📍 {targetProfileUser.city || 'Netanya'}, {targetProfileUser.country || 'Israel'} |  Age: {targetProfileUser.age || 20}
                       </Text>
+                    </>
+                  )}
+                </View>
+
+                {!isAnyBlockBetweenUs && (
+                  <View style={styles.statsRow}>
+                    <TouchableOpacity 
+                      style={styles.statBox} 
+                      onPress={() => setTargetActiveModalList('followers')} 
+                      activeOpacity={0.8}
+                    >
+                      <Text style={styles.statNumber}>{targetProfileUser.followers?.length || 0}</Text>
+                      <Text style={styles.statLabel}>Followers</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity 
-                      style={styles.chatOpenBtn} 
-                      onPress={() => {
-                        stopAllVideos();
-                        setChatTargetUser(targetProfileUser);
-                        setSelectedUserModalId(null);
-                        setChatModalVisible(true);
-                      }}
-                      activeOpacity={0.85}
+                      style={styles.statBox} 
+                      onPress={() => setTargetActiveModalList('following')} 
+                      activeOpacity={0.8}
                     >
-                      <Ionicons name="chatbubbles-outline" size={18} color="#09090B" />
-                      <Text style={styles.chatOpenBtnText}>Message 💬</Text>
+                      <Text style={styles.statNumber}>{targetProfileUser.following?.length || 0}</Text>
+                      <Text style={styles.statLabel}>Following</Text>
                     </TouchableOpacity>
+
+                    <View style={styles.statBox}>
+                      <Text style={styles.statNumber}>{targetUserPosts.length}</Text>
+                      <Text style={styles.statLabel}>Posts</Text>
+                    </View>
                   </View>
                 )}
 
-                {canViewFullProfile ? (
+                {!isViewingMyOwnProfile && (
+                  <View style={{ marginBottom: 16, gap: 10 }}>
+                    {!isAnyBlockBetweenUs && currentUserId && (
+                      <View style={{ flexDirection: 'row', gap: 10 }}>
+                        <TouchableOpacity 
+                          style={[
+                            styles.profileFollowBtn, 
+                            isApprovedFollower && styles.profileFollowingBtn,
+                            hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
+                            { flex: 1 }
+                          ]} 
+                          onPress={handleToggleFollowTarget}
+                          activeOpacity={0.85}
+                        >
+                          <Text style={[
+                            styles.profileFollowBtnText, 
+                            isApprovedFollower && styles.profileFollowingBtnText,
+                            hasRequestedFollow && { color: '#FAFAFA' }
+                          ]}>
+                            {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity 
+                          style={styles.chatOpenBtn} 
+                          onPress={() => {
+                            stopAllVideos();
+                            setChatTargetUser(targetProfileUser);
+                            setSelectedUserModalId(null);
+                            setChatModalVisible(true);
+                          }}
+                          activeOpacity={0.85}
+                        >
+                          <Ionicons name="chatbubbles-outline" size={18} color="#09090B" />
+                          <Text style={styles.chatOpenBtnText}>Message 💬</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {!isTargetBlockingMe && currentUserId && (
+                      <TouchableOpacity
+                        style={[
+                          styles.blockProfileBtn,
+                          isTargetBlockedByMe && styles.unblockProfileBtn,
+                        ]}
+                        onPress={handleToggleBlockTargetUser}
+                        activeOpacity={0.85}
+                      >
+                        <Ionicons
+                          name={isTargetBlockedByMe ? 'person-add-outline' : 'ban-outline'}
+                          size={12}
+                          color={isTargetBlockedByMe ? '#FAFAFA' : '#EF4444'}
+                        />
+                        <Text
+                          style={[
+                            styles.blockProfileBtnText,
+                            isTargetBlockedByMe && styles.unblockProfileBtnText,
+                          ]}
+                        >
+                          {isTargetBlockedByMe ? 'Unblock' : 'Block'}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+
+                {isAnyBlockBetweenUs ? (
+                  <View style={styles.privateAccountBox}>
+                    <Ionicons name="ban" size={40} color="#EF4444" style={{ marginBottom: 8 }} />
+                    <Text style={styles.privateAccountTitle}>
+                      {isTargetBlockedByMe ? 'You Blocked This User' : 'Content Unavailable'}
+                    </Text>
+                    <Text style={styles.privateAccountText}>
+                      {isTargetBlockedByMe
+                        ? 'Unblock this user to view their profile, posts, or send messages.'
+                        : 'You cannot view this profile or communicate with this user.'}
+                    </Text>
+                  </View>
+                ) : canViewFullProfile ? (
                   <>
                     <View style={styles.postsSectionHeader}>
                       <Ionicons name="grid-outline" size={18} color="#EAB308" />
@@ -2456,7 +2690,12 @@ export default function HomeScreen() {
               <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 30 }} nestedScrollEnabled={true}>
                 <View style={styles.postCard}>
                   <View style={styles.postHeader}>
-                    <TouchableOpacity style={styles.postAvatarBox} onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, selectedPostModal.authorName); }} activeOpacity={0.85}>
+                    <TouchableOpacity
+                      style={styles.postAvatarBox}
+                      onPress={() => openUserProfileById(selectedPostModal.userId, selectedPostModal.authorName)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                      activeOpacity={0.75}
+                    >
                       {selectedPostModal.avatarUrl ? (
                         <Image source={{ uri: selectedPostModal.avatarUrl }} style={styles.avatarImg} />
                       ) : (
@@ -2467,7 +2706,11 @@ export default function HomeScreen() {
                     </TouchableOpacity>
                     
                     <View style={styles.postUserInfo}>
-                      <TouchableOpacity onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, selectedPostModal.authorName); }} activeOpacity={0.85}>
+                      <TouchableOpacity
+                        onPress={() => openUserProfileById(selectedPostModal.userId, selectedPostModal.authorName)}
+                        hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
+                        activeOpacity={0.75}
+                      >
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                           <Text style={styles.postUserName}>{selectedPostModal.authorName}</Text>
                           {allUsersList.find(u => u.uid === selectedPostModal.userId || u.name === selectedPostModal.authorName)?.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
@@ -2551,17 +2794,13 @@ export default function HomeScreen() {
             </View>
 
             <ScrollView style={{ maxHeight: 350 }} showsVerticalScrollIndicator={false}>
-              {(targetActiveModalList === 'followers' ? targetFollowersList : targetFollowingList).map((item: any) => (
+              {(targetActiveModalList === 'followers' ? targetFollowersList : targetFollowingList)
+                .filter((item: any) => !isBlockedBidirectional(item.uid, item.name))
+                .map((item: any) => (
                 <TouchableOpacity 
                   key={item.uid} 
                   style={styles.listItem} 
-                  onPress={() => {
-                    setTargetActiveModalList(null);
-                    setSelectedUserModalId(null);
-                    setTimeout(() => {
-                      openUserProfileById(item.uid, item.name);
-                    }, 50);
-                  }}
+                  onPress={() => openUserProfileById(item.uid, item.name)}
                   activeOpacity={0.85}
                 >
                   <View style={styles.listAvatar}>
@@ -2611,32 +2850,44 @@ export default function HomeScreen() {
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ padding: 6 }} showsVerticalScrollIndicator={false}>
-              {chatMessages.map(item => {
-                const isMe = item.senderId === currentUserId;
-                return (
-                  <View key={item.id} style={[styles.chatBubbleRow, isMe ? styles.chatBubbleRowRight : styles.chatBubbleRowLeft]}>
-                    <View style={[styles.chatBubbleMsg, isMe ? styles.chatBubbleMe : styles.chatBubbleOther]}>
-                      <Text style={[styles.chatBubbleText, isMe && { color: '#09090B' }]}>{item.text}</Text>
-                      <Text style={[styles.chatBubbleTime, isMe && { color: '#3F3F46' }]}>{getTimeAgo(item.createdAt)}</Text>
-                    </View>
-                  </View>
-                );
-              })}
-            </ScrollView>
+            {isBlockedBidirectional(chatTargetUser?.uid, chatTargetUser?.name) ? (
+              <View style={{ paddingVertical: 30, alignItems: 'center' }}>
+                <Ionicons name="ban" size={32} color="#EF4444" />
+                <Text style={{ color: '#FAFAFA', fontWeight: '700', marginTop: 10 }}>Messaging Unavailable</Text>
+                <Text style={{ color: '#A1A1AA', fontSize: 12, textAlign: 'center', marginTop: 4 }}>
+                  You cannot send or receive messages with this user while a block is active.
+                </Text>
+              </View>
+            ) : (
+              <>
+                <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ padding: 6 }} showsVerticalScrollIndicator={false}>
+                  {chatMessages.map(item => {
+                    const isMe = item.senderId === currentUserId;
+                    return (
+                      <View key={item.id} style={[styles.chatBubbleRow, isMe ? styles.chatBubbleRowRight : styles.chatBubbleRowLeft]}>
+                        <View style={[styles.chatBubbleMsg, isMe ? styles.chatBubbleMe : styles.chatBubbleOther]}>
+                          <Text style={[styles.chatBubbleText, isMe && { color: '#09090B' }]}>{item.text}</Text>
+                          <Text style={[styles.chatBubbleTime, isMe && { color: '#3F3F46' }]}>{getTimeAgo(item.createdAt)}</Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
 
-            <View style={styles.chatInputRow}>
-              <TextInput 
-                style={styles.chatInputField}
-                placeholder="Type a message..."
-                placeholderTextColor="#52525B"
-                value={messageInput}
-                onChangeText={setMessageInput}
-              />
-              <TouchableOpacity style={styles.chatSendBtn} onPress={handleSendMessage} activeOpacity={0.85}>
-                <Ionicons name="send" size={16} color="#09090B" />
-              </TouchableOpacity>
-            </View>
+                <View style={styles.chatInputRow}>
+                  <TextInput 
+                    style={styles.chatInputField}
+                    placeholder="Type a message..."
+                    placeholderTextColor="#52525B"
+                    value={messageInput}
+                    onChangeText={setMessageInput}
+                  />
+                  <TouchableOpacity style={styles.chatSendBtn} onPress={handleSendMessage} activeOpacity={0.85}>
+                    <Ionicons name="send" size={16} color="#09090B" />
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
           </View>
         </View>
       </Modal>
@@ -2682,7 +2933,7 @@ export default function HomeScreen() {
                     activeOpacity={0.8}
                   >
                     <Text style={{ color: isSelected ? '#09090B' : '#FAFAFA', fontSize: 12, fontWeight: 'bold' }}>
-                      🏅 {sp}
+                       {sp}
                     </Text>
                   </TouchableOpacity>
                 );
@@ -2813,8 +3064,8 @@ const styles = StyleSheet.create({
   fullStoryVideo: { width: '100%', height: '100%' },
   fullStoryName: { color: '#FAFAFA', fontSize: 14, fontWeight: '700' },
   
-  storyHeaderUserRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', paddingHorizontal: 16, paddingVertical: 8 },
-  storyHeaderUserBtn: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  storyHeaderUserRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', paddingHorizontal: 16, paddingVertical: 8, zIndex: 25 },
+  storyHeaderUserBtn: { flexDirection: 'row', alignItems: 'center', gap: 10, zIndex: 25 },
   storyHeaderAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
 
   storyProgressBarsRow: { flexDirection: 'row', width: '92%', height: 3, backgroundColor: '#27272A', marginTop: 8, gap: 4, borderRadius: 2, overflow: 'hidden' },
@@ -2835,8 +3086,8 @@ const styles = StyleSheet.create({
   deleteStoryIconBtn: { position: 'absolute', top: 52, left: 16, backgroundColor: '#18181B', width: 34, height: 34, borderRadius: 17, justifyContent: 'center', alignItems: 'center', zIndex: 20, borderWidth: 1, borderColor: '#27272A' },
   reportStoryIconBtn: { position: 'absolute', top: 52, left: 16, backgroundColor: '#18181B', width: 34, height: 34, borderRadius: 17, justifyContent: 'center', alignItems: 'center', zIndex: 20, borderWidth: 1, borderColor: '#27272A' },
 
-  storyTapLeft: { position: 'absolute', top: 45, left: 0, width: '40%', height: '85%', zIndex: 10 },
-  storyTapRight: { position: 'absolute', top: 45, right: 0, width: '40%', height: '85%', zIndex: 10 },
+  storyTapLeft: { position: 'absolute', top: 90, left: 0, width: '35%', height: '65%', zIndex: 10 },
+  storyTapRight: { position: 'absolute', top: 90, right: 0, width: '35%', height: '65%', zIndex: 10 },
 
   captionOverlayBox: { position: 'absolute', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, maxWidth: '85%', alignSelf: 'center' },
   captionViewerBox: { position: 'absolute', top: 200, paddingHorizontal: 16, paddingVertical: 8, borderRadius: 8, maxWidth: '85%', alignSelf: 'center', zIndex: 5 },
@@ -2881,6 +3132,11 @@ const styles = StyleSheet.create({
   profileFollowBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
   profileFollowingBtn: { backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308' },
   profileFollowingBtnText: { color: '#EAB308' },
+
+  blockProfileBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', gap: 4, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EF4444', borderRadius: 8, height: 26, paddingHorizontal: 10 },
+  blockProfileBtnText: { color: '#EF4444', fontWeight: '700', fontSize: 10 },
+  unblockProfileBtn: { backgroundColor: '#27272A', borderColor: '#52525B' },
+  unblockProfileBtnText: { color: '#FAFAFA' },
 
   chatOpenBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#EAB308', borderRadius: 12, height: 44, paddingHorizontal: 16 },
   chatOpenBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },

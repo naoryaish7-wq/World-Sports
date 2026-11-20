@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TextInput, ScrollView, Image, TouchableOpacity, Modal, Dimensions, KeyboardAvoidingView, Platform, FlatList } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { StyleSheet, Text, View, TextInput, ScrollView, Image, TouchableOpacity, Modal, Dimensions, Alert } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { collection, onSnapshot, doc, updateDoc, arrayUnion, arrayRemove, getDoc, setDoc, addDoc, query, orderBy } from 'firebase/firestore';
+import { collection, onSnapshot, doc, updateDoc, arrayUnion, arrayRemove, setDoc, addDoc, query, orderBy } from 'firebase/firestore';
 import { db } from '../../firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -22,6 +22,7 @@ type UserProfile = {
   followers?: string[];
   following?: string[];
   pendingRequests?: string[];
+  blockedUsers?: string[];
   isVip?: boolean;
   isPrivate?: boolean;
 };
@@ -172,6 +173,25 @@ export default function DiscoverScreen() {
   const [modalCommentInput, setModalCommentInput] = useState('');
   const [zoomedAvatarUri, setZoomedAvatarUri] = useState<string | null>(null);
 
+  const currentUserId = currentUser?.uid || '';
+  const blockedUsersList = Array.isArray(currentUser?.blockedUsers) ? currentUser.blockedUsers : [];
+
+  const isBlockedBidirectional = useCallback((otherUserId?: string, otherUserName?: string): boolean => {
+    const cleanName = (otherUserName || '').trim().toLowerCase();
+    const resolvedOther = allUsers.find(
+      u => (otherUserId && u.uid === otherUserId) || (cleanName && (u.name || '').trim().toLowerCase() === cleanName)
+    );
+    const resolvedUid = resolvedOther?.uid || otherUserId;
+    if (!resolvedUid || resolvedUid === currentUserId) return false;
+
+    const iBlockedThem = blockedUsersList.includes(resolvedUid);
+    const theyBlockedMe = Array.isArray(resolvedOther?.blockedUsers) && currentUserId
+      ? resolvedOther.blockedUsers.includes(currentUserId)
+      : false;
+
+    return iBlockedThem || theyBlockedMe;
+  }, [allUsers, blockedUsersList, currentUserId]);
+
   useEffect(() => {
     const loadCurrentUser = async () => {
       try {
@@ -183,7 +203,7 @@ export default function DiscoverScreen() {
             if (docSnap.exists()) {
               setCurrentUser({ uid: docSnap.id, ...(docSnap.data() as Omit<UserProfile, 'uid'>) });
             } else {
-              setCurrentUser({ uid: userId, name: savedEmail.split('@')[0], email: savedEmail, city: 'Netanya', country: 'Israel' });
+              setCurrentUser({ uid: userId, name: savedEmail.split('@')[0], email: savedEmail, city: 'Netanya', country: 'Israel', blockedUsers: [] });
             }
           });
           return () => unsubscribe();
@@ -225,29 +245,34 @@ export default function DiscoverScreen() {
       return;
     }
 
-    const fetchTargetUser = async () => {
-      try {
-        const userSnap = await getDoc(doc(db, 'users', selectedUserModalId));
+    const unsubscribe = onSnapshot(
+      doc(db, 'users', selectedUserModalId),
+      (userSnap) => {
         if (userSnap.exists()) {
           setTargetProfileUser({ uid: userSnap.id, ...(userSnap.data() as Omit<UserProfile, 'uid'>) });
         }
-      } catch (e) {
+      },
+      (e) => {
         console.error('Error fetching target user in Discover:', e);
       }
-    };
+    );
 
-    fetchTargetUser();
+    return () => unsubscribe();
   }, [selectedUserModalId]);
 
   useEffect(() => {
     if (!targetProfileUser) return;
+    if (isBlockedBidirectional(targetProfileUser.uid, targetProfileUser.name)) {
+      setTargetUserPosts([]);
+      return;
+    }
     const filtered = allPosts.filter(p => 
       p.userId === targetProfileUser.uid || 
       p.userName === targetProfileUser.name ||
       p.authorName === targetProfileUser.name
     );
     setTargetUserPosts(filtered);
-  }, [targetProfileUser, allPosts]);
+  }, [targetProfileUser, allPosts, isBlockedBidirectional]);
 
   useEffect(() => {
     if (!currentUser || !chatTargetUser || !chatModalVisible) return;
@@ -302,6 +327,10 @@ export default function DiscoverScreen() {
 
   const handleSendMessage = async () => {
     if (!messageInput.trim() || !currentUser || !chatTargetUser) return;
+    if (isBlockedBidirectional(chatTargetUser.uid, chatTargetUser.name)) {
+      Alert.alert('Messaging Blocked', 'You cannot send messages to this user because one of you blocked the other.');
+      return;
+    }
 
     const chatId = [currentUser.uid, chatTargetUser.uid].sort().join('_');
     const textToSend = messageInput.trim();
@@ -327,6 +356,11 @@ export default function DiscoverScreen() {
 
   const handleToggleFollowTarget = async () => {
     if (!targetProfileUser || !currentUser) return;
+    if (isBlockedBidirectional(targetProfileUser.uid, targetProfileUser.name)) {
+      Alert.alert('Unavailable', 'You cannot follow this user because a block is active.');
+      return;
+    }
+
     const isApproved = targetProfileUser.followers?.includes(currentUser.uid);
     const hasRequested = targetProfileUser.pendingRequests?.includes(currentUser.uid);
     const isPrivateAccount = targetProfileUser.isPrivate === true;
@@ -367,10 +401,79 @@ export default function DiscoverScreen() {
     }
   };
 
+  const handleToggleBlockTargetUser = async () => {
+    if (!targetProfileUser || !currentUser || !targetProfileUser.uid || targetProfileUser.uid === currentUser.uid) {
+      return;
+    }
+
+    const targetUid = targetProfileUser.uid;
+    const targetDisplayName = targetProfileUser.name || 'this user';
+    const alreadyBlocked = blockedUsersList.includes(targetUid);
+
+    if (alreadyBlocked) {
+      Alert.alert(
+        'Unblock User',
+        `Are you sure you want to unblock ${targetDisplayName}?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Unblock',
+            onPress: async () => {
+              try {
+                await updateDoc(doc(db, 'users', currentUser.uid), {
+                  blockedUsers: arrayRemove(targetUid),
+                });
+                Alert.alert('User Unblocked', 'You can now see and interact with this user again.');
+              } catch (e) {
+                console.error('Error unblocking user:', e);
+                Alert.alert('Error', 'Could not unblock user.');
+              }
+            },
+          },
+        ]
+      );
+      return;
+    }
+
+    Alert.alert(
+      'Block User',
+      `Block ${targetDisplayName}? You won't see each other's content or communicate with each other.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Block',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await updateDoc(doc(db, 'users', currentUser.uid), {
+                blockedUsers: arrayUnion(targetUid),
+                following: arrayRemove(targetUid),
+                followers: arrayRemove(targetUid),
+                pendingRequests: arrayRemove(targetUid),
+              });
+
+              await updateDoc(doc(db, 'users', targetUid), {
+                following: arrayRemove(currentUser.uid),
+                followers: arrayRemove(currentUser.uid),
+                pendingRequests: arrayRemove(currentUser.uid),
+              });
+
+              Alert.alert('User Blocked', 'This user has been blocked and hidden.');
+            } catch (e) {
+              console.error('Error blocking user:', e);
+              Alert.alert('Error', 'Could not block user.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const toggleLike = async (postId: string) => {
     if (!currentUser) return;
     const post = allPosts.find(p => p.id === postId) || selectedPostModal;
     if (!post) return;
+    if (isBlockedBidirectional(post.userId, post.userName || post.authorName)) return;
 
     try {
       const postRef = doc(db, 'posts', postId);
@@ -400,6 +503,10 @@ export default function DiscoverScreen() {
 
     const post = allPosts.find(p => p.id === postId) || commentsModalPost || selectedPostModal;
     if (!post) return;
+    if (isBlockedBidirectional(post.userId, post.userName || post.authorName)) {
+      Alert.alert('Blocked', 'You cannot comment on posts from this user because a block is active.');
+      return;
+    }
 
     const newComment: Comment = {
       id: Date.now().toString(),
@@ -428,7 +535,8 @@ export default function DiscoverScreen() {
   };
 
   const filteredUsers = allUsers.filter(u => 
-    u.uid !== currentUser?.uid && (
+    u.uid !== currentUser?.uid &&
+    !isBlockedBidirectional(u.uid, u.name) && (
       u.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       u.city?.toLowerCase().includes(searchQuery.toLowerCase()) ||
       u.country?.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -436,15 +544,21 @@ export default function DiscoverScreen() {
     )
   );
 
-  const vipAthletes = allUsers.filter(u => u.isVip && u.uid !== currentUser?.uid);
+  const vipAthletes = allUsers.filter(u => u.isVip && u.uid !== currentUser?.uid && !isBlockedBidirectional(u.uid, u.name));
   const targetSportsList = targetProfileUser?.sports || (targetProfileUser?.sport ? [targetProfileUser.sport] : ['Football']);
   
-  const isViewingMyOwnProfile = targetProfileUser?.uid === currentUser?.uid;
+  const isViewingMyOwnProfile = !!currentUser?.uid && targetProfileUser?.uid === currentUser.uid;
+  const isTargetBlockedByMe = targetProfileUser?.uid ? blockedUsersList.includes(targetProfileUser.uid) : false;
+  const isTargetBlockingMe = Array.isArray(targetProfileUser?.blockedUsers) && currentUser?.uid
+    ? targetProfileUser.blockedUsers.includes(currentUser.uid)
+    : false;
+  const isAnyBlockBetweenUs = !isViewingMyOwnProfile && (isTargetBlockedByMe || isTargetBlockingMe);
+
   const isApprovedFollower = targetProfileUser?.followers?.includes(currentUser?.uid || '');
   const hasRequestedFollow = targetProfileUser?.pendingRequests?.includes(currentUser?.uid || '');
   const isPrivateAccount = targetProfileUser?.isPrivate === true;
 
-  const canViewPostsContent = isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower;
+  const canViewPostsContent = !isAnyBlockBetweenUs && (isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower);
 
   const targetFollowersList = allUsers.filter(u => targetProfileUser?.followers?.includes(u.uid));
   const targetFollowingList = allUsers.filter(u => targetProfileUser?.following?.includes(u.uid));
@@ -453,13 +567,11 @@ export default function DiscoverScreen() {
     <View style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         
-        {/* Header */}
         <View style={styles.headerRow}>
           <Text style={styles.discoverCategory}>DISCOVER</Text>
           <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
         </View>
 
-        {/* Search Bar */}
         <View style={styles.searchBox}>
           <Ionicons name="search" size={18} color="#71717A" style={{ marginRight: 8 }} />
           <TextInput 
@@ -476,7 +588,6 @@ export default function DiscoverScreen() {
           )}
         </View>
 
-        {/* Featured VIP Athletes */}
         {vipAthletes.length > 0 && searchQuery === '' && (
           <View style={styles.vipFeaturedContainer}>
             <View style={styles.vipFeaturedHeader}>
@@ -511,7 +622,6 @@ export default function DiscoverScreen() {
 
         <Text style={styles.sectionHeading}>Community Players </Text>
 
-        {/* Users List */}
         {filteredUsers.length === 0 ? (
           <View style={styles.emptyBox}>
             <Ionicons name="people-outline" size={40} color="#52525B" />
@@ -547,7 +657,6 @@ export default function DiscoverScreen() {
 
       </ScrollView>
 
-      {/* מודל פרופיל שחקן במבנה אינסטגרם */}
       <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
@@ -581,13 +690,13 @@ export default function DiscoverScreen() {
                   <TouchableOpacity 
                     style={styles.avatarLarge} 
                     onPress={() => {
-                      if (targetProfileUser.avatar) {
+                      if (targetProfileUser.avatar && !isAnyBlockBetweenUs) {
                         setZoomedAvatarUri(targetProfileUser.avatar);
                       }
                     }}
                     activeOpacity={0.7}
                   >
-                    {targetProfileUser.avatar ? (
+                    {targetProfileUser.avatar && !isAnyBlockBetweenUs ? (
                       <Image source={{ uri: targetProfileUser.avatar }} style={styles.avatarImage} />
                     ) : (
                       <Text style={styles.avatarLargeText}>{targetProfileUser.name ? targetProfileUser.name[0] : 'P'}</Text>
@@ -600,75 +709,120 @@ export default function DiscoverScreen() {
                     {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
                   </View>
                   
-                  <View style={styles.sportsTagsRow}>
-                    {targetSportsList.map((sport: string, index: number) => (
-                      <View key={index} style={styles.sportTagBadge}>
-                        <Text style={styles.sportTagText}> {sport}</Text>
+                  {!isAnyBlockBetweenUs && (
+                    <>
+                      <View style={styles.sportsTagsRow}>
+                        {targetSportsList.map((sport: string, index: number) => (
+                          <View key={index} style={styles.sportTagBadge}>
+                            <Text style={styles.sportTagText}> {sport}</Text>
+                          </View>
+                        ))}
                       </View>
-                    ))}
-                  </View>
 
-                  <Text style={styles.profileCity}>
-                    📍 {targetProfileUser.city || 'Netanya'}, {targetProfileUser.country || 'Israel'} |  Age: {targetProfileUser.age || 20}
-                  </Text>
-                </View>
-
-                {/* סטטיסטיקות תמיד גלויות כמו באינסטגרם */}
-                <View style={styles.statsRow}>
-                  <TouchableOpacity style={styles.statBox} onPress={() => setTargetActiveModalList('followers')} activeOpacity={0.8}>
-                    <Text style={styles.statNumber}>{targetProfileUser.followers?.length || 0}</Text>
-                    <Text style={styles.statLabel}>Followers</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity style={styles.statBox} onPress={() => setTargetActiveModalList('following')} activeOpacity={0.8}>
-                    <Text style={styles.statNumber}>{targetProfileUser.following?.length || 0}</Text>
-                    <Text style={styles.statLabel}>Following</Text>
-                  </TouchableOpacity>
-
-                  <View style={styles.statBox}>
-                    <Text style={styles.statNumber}>{targetUserPosts.length}</Text>
-                    <Text style={styles.statLabel}>Posts</Text>
-                  </View>
-                </View>
-
-                {targetProfileUser.uid !== currentUser?.uid && currentUser && (
-                  <View style={{ flexDirection: 'row', gap: 10, marginBottom: 16 }}>
-                    <TouchableOpacity 
-                      style={[
-                        styles.profileFollowBtn, 
-                        isApprovedFollower && styles.profileFollowingBtn,
-                        hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
-                        { flex: 1 }
-                      ]} 
-                      onPress={handleToggleFollowTarget}
-                      activeOpacity={0.85}
-                    >
-                      <Text style={[
-                        styles.profileFollowBtnText, 
-                        isApprovedFollower && styles.profileFollowingBtnText,
-                        hasRequestedFollow && { color: '#FAFAFA' }
-                      ]}>
-                        {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
+                      <Text style={styles.profileCity}>
+                        📍 {targetProfileUser.city || 'Netanya'}, {targetProfileUser.country || 'Israel'} |  Age: {targetProfileUser.age || 20}
                       </Text>
+                    </>
+                  )}
+                </View>
+
+                {!isAnyBlockBetweenUs && (
+                  <View style={styles.statsRow}>
+                    <TouchableOpacity style={styles.statBox} onPress={() => setTargetActiveModalList('followers')} activeOpacity={0.8}>
+                      <Text style={styles.statNumber}>{targetProfileUser.followers?.length || 0}</Text>
+                      <Text style={styles.statLabel}>Followers</Text>
                     </TouchableOpacity>
 
-                    <TouchableOpacity 
-                      style={styles.chatOpenBtn} 
-                      onPress={() => {
-                        setChatTargetUser(targetProfileUser);
-                        setSelectedUserModalId(null);
-                        setChatModalVisible(true);
-                      }}
-                      activeOpacity={0.85}
-                    >
-                      <Ionicons name="chatbubbles-outline" size={18} color="#09090B" />
-                      <Text style={styles.chatOpenBtnText}>Message 💬</Text>
+                    <TouchableOpacity style={styles.statBox} onPress={() => setTargetActiveModalList('following')} activeOpacity={0.8}>
+                      <Text style={styles.statNumber}>{targetProfileUser.following?.length || 0}</Text>
+                      <Text style={styles.statLabel}>Following</Text>
                     </TouchableOpacity>
+
+                    <View style={styles.statBox}>
+                      <Text style={styles.statNumber}>{targetUserPosts.length}</Text>
+                      <Text style={styles.statLabel}>Posts</Text>
+                    </View>
                   </View>
                 )}
 
-                {/* אזור הפוסטים: פתוח אם החשבון ציבורי או שאושרת */}
-                {canViewPostsContent ? (
+                {targetProfileUser.uid !== currentUser?.uid && currentUser && (
+                  <View style={{ marginBottom: 16, gap: 10 }}>
+                    {!isAnyBlockBetweenUs && (
+                      <View style={{ flexDirection: 'row', gap: 10 }}>
+                        <TouchableOpacity 
+                          style={[
+                            styles.profileFollowBtn, 
+                            isApprovedFollower && styles.profileFollowingBtn,
+                            hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
+                            { flex: 1 }
+                          ]} 
+                          onPress={handleToggleFollowTarget}
+                          activeOpacity={0.85}
+                        >
+                          <Text style={[
+                            styles.profileFollowBtnText, 
+                            isApprovedFollower && styles.profileFollowingBtnText,
+                            hasRequestedFollow && { color: '#FAFAFA' }
+                          ]}>
+                            {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity 
+                          style={styles.chatOpenBtn} 
+                          onPress={() => {
+                            setChatTargetUser(targetProfileUser);
+                            setSelectedUserModalId(null);
+                            setChatModalVisible(true);
+                          }}
+                          activeOpacity={0.85}
+                        >
+                          <Ionicons name="chatbubbles-outline" size={18} color="#09090B" />
+                          <Text style={styles.chatOpenBtnText}>Message 💬</Text>
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {!isTargetBlockingMe && (
+                      <TouchableOpacity
+                        style={[
+                          styles.blockProfileBtn,
+                          isTargetBlockedByMe && styles.unblockProfileBtn,
+                        ]}
+                        onPress={handleToggleBlockTargetUser}
+                        activeOpacity={0.85}
+                      >
+                        <Ionicons
+                          name={isTargetBlockedByMe ? 'person-add-outline' : 'ban-outline'}
+                          size={12}
+                          color={isTargetBlockedByMe ? '#FAFAFA' : '#EF4444'}
+                        />
+                        <Text
+                          style={[
+                            styles.blockProfileBtnText,
+                            isTargetBlockedByMe && styles.unblockProfileBtnText,
+                          ]}
+                        >
+                          {isTargetBlockedByMe ? 'Unblock' : 'Block'}
+                        </Text>
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                )}
+
+                {isAnyBlockBetweenUs ? (
+                  <View style={styles.privateAccountBox}>
+                    <Ionicons name="ban" size={40} color="#EF4444" style={{ marginBottom: 8 }} />
+                    <Text style={styles.privateAccountTitle}>
+                      {isTargetBlockedByMe ? 'You Blocked This User' : 'Content Unavailable'}
+                    </Text>
+                    <Text style={styles.privateAccountText}>
+                      {isTargetBlockedByMe
+                        ? 'Unblock this user to view their profile, posts, or send messages.'
+                        : 'You cannot view this profile or communicate with this user.'}
+                    </Text>
+                  </View>
+                ) : canViewPostsContent ? (
                   <>
                     <View style={styles.postsSectionHeader}>
                       <Ionicons name="grid-outline" size={18} color="#EAB308" />
@@ -722,7 +876,6 @@ export default function DiscoverScreen() {
         </View>
       </Modal>
 
-      {/* מודל תמונת פרופיל מוגדלת */}
       <Modal visible={!!zoomedAvatarUri} transparent={true} animationType="fade" onRequestClose={() => setZoomedAvatarUri(null)}>
         <View style={styles.zoomedAvatarOverlay}>
           <TouchableOpacity 
@@ -738,7 +891,6 @@ export default function DiscoverScreen() {
         </View>
       </Modal>
 
-      {/* Followers / Following List Modal */}
       <Modal visible={!!targetActiveModalList} animationType="slide" transparent={true} onRequestClose={() => setTargetActiveModalList(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -752,7 +904,9 @@ export default function DiscoverScreen() {
             </View>
 
             <ScrollView style={{ maxHeight: 350 }} showsVerticalScrollIndicator={false}>
-              {(targetActiveModalList === 'followers' ? targetFollowersList : targetFollowingList).map((item) => (
+              {(targetActiveModalList === 'followers' ? targetFollowersList : targetFollowingList)
+                .filter((item) => !isBlockedBidirectional(item.uid, item.name))
+                .map((item) => (
                 <TouchableOpacity 
                   key={item.uid} 
                   style={styles.listItem} 
@@ -787,7 +941,6 @@ export default function DiscoverScreen() {
         </View>
       </Modal>
 
-      {/* Chat Modal */}
       <Modal visible={chatModalVisible} animationType="slide" transparent={true} onRequestClose={() => setChatModalVisible(false)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentCenter}>
@@ -813,37 +966,48 @@ export default function DiscoverScreen() {
               </TouchableOpacity>
             </View>
 
-            <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ padding: 6 }} showsVerticalScrollIndicator={false}>
-              {chatMessages.map(item => {
-                const isMe = item.senderId === currentUser?.uid;
-                return (
-                  <View key={item.id} style={[styles.chatBubbleRow, isMe ? styles.chatBubbleRowRight : styles.chatBubbleRowLeft]}>
-                    <View style={[styles.chatBubbleMsg, isMe ? styles.chatBubbleMe : styles.chatBubbleOther]}>
-                      <Text style={[styles.chatBubbleText, isMe && { color: '#09090B' }]}>{item.text}</Text>
-                      <Text style={[styles.chatBubbleTime, isMe && { color: '#3F3F46' }]}>{getTimeAgo(item.createdAt)}</Text>
-                    </View>
-                  </View>
-                );
-              })}
-            </ScrollView>
+            {isBlockedBidirectional(chatTargetUser?.uid, chatTargetUser?.name) ? (
+              <View style={{ paddingVertical: 30, alignItems: 'center' }}>
+                <Ionicons name="ban" size={32} color="#EF4444" />
+                <Text style={{ color: '#FAFAFA', fontWeight: '700', marginTop: 10 }}>Messaging Unavailable</Text>
+                <Text style={{ color: '#A1A1AA', fontSize: 12, textAlign: 'center', marginTop: 4 }}>
+                  You cannot send or receive messages with this user while a block is active.
+                </Text>
+              </View>
+            ) : (
+              <>
+                <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ padding: 6 }} showsVerticalScrollIndicator={false}>
+                  {chatMessages.map(item => {
+                    const isMe = item.senderId === currentUser?.uid;
+                    return (
+                      <View key={item.id} style={[styles.chatBubbleRow, isMe ? styles.chatBubbleRowRight : styles.chatBubbleRowLeft]}>
+                        <View style={[styles.chatBubbleMsg, isMe ? styles.chatBubbleMe : styles.chatBubbleOther]}>
+                          <Text style={[styles.chatBubbleText, isMe && { color: '#09090B' }]}>{item.text}</Text>
+                          <Text style={[styles.chatBubbleTime, isMe && { color: '#3F3F46' }]}>{getTimeAgo(item.createdAt)}</Text>
+                        </View>
+                      </View>
+                    );
+                  })}
+                </ScrollView>
 
-            <View style={styles.chatInputRow}>
-              <TextInput 
-                style={styles.chatInputField}
-                placeholder="Type a message..."
-                placeholderTextColor="#52525B"
-                value={messageInput}
-                onChangeText={setMessageInput}
-              />
-              <TouchableOpacity style={styles.chatSendBtn} onPress={handleSendMessage} activeOpacity={0.85}>
-                <Ionicons name="send" size={16} color="#09090B" />
-              </TouchableOpacity>
-            </View>
+                <View style={styles.chatInputRow}>
+                  <TextInput 
+                    style={styles.chatInputField}
+                    placeholder="Type a message..."
+                    placeholderTextColor="#52525B"
+                    value={messageInput}
+                    onChangeText={setMessageInput}
+                  />
+                  <TouchableOpacity style={styles.chatSendBtn} onPress={handleSendMessage} activeOpacity={0.85}>
+                    <Ionicons name="send" size={16} color="#09090B" />
+                  </TouchableOpacity>
+                </View>
+              </>
+            )}
           </View>
         </View>
       </Modal>
 
-      {/* Post Details Modal */}
       <Modal visible={!!selectedPostModal} animationType="slide" transparent={true} onRequestClose={() => setSelectedPostModal(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
@@ -926,7 +1090,6 @@ export default function DiscoverScreen() {
         </View>
       </Modal>
 
-      {/* מודל תגובות */}
       <Modal visible={!!commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setCommentsModalPost(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.commentsModalContent}>
@@ -943,7 +1106,9 @@ export default function DiscoverScreen() {
                   {commentsModalPost.comments?.length === 0 ? (
                     <Text style={{ color: '#71717A', textAlign: 'center', marginVertical: 30, fontSize: 13 }}>No comments yet. Be the first to comment!</Text>
                   ) : (
-                    commentsModalPost.comments?.map(c => {
+                    commentsModalPost.comments
+                      ?.filter(c => !isBlockedBidirectional(c.userId, c.user))
+                      .map(c => {
                       const commentTimeAgo = getTimeAgo(c.createdAt);
                       const commentUserObj = allUsers.find(u => u.uid === c.userId || u.name === c.user);
                       return (
@@ -1070,6 +1235,11 @@ const styles = StyleSheet.create({
   profileFollowBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
   profileFollowingBtn: { backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308' },
   profileFollowingBtnText: { color: '#EAB308' },
+
+  blockProfileBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', gap: 4, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EF4444', borderRadius: 8, height: 26, paddingHorizontal: 10 },
+  blockProfileBtnText: { color: '#EF4444', fontWeight: '700', fontSize: 10 },
+  unblockProfileBtn: { backgroundColor: '#27272A', borderColor: '#52525B' },
+  unblockProfileBtnText: { color: '#FAFAFA' },
 
   chatOpenBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#EAB308', borderRadius: 12, height: 44, paddingHorizontal: 16 },
   chatOpenBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
