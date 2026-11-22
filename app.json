@@ -17,7 +17,7 @@
       }
     },
     "android": {
-      "package": "com.naor823.WorldSports",
+      "package": "com.naor823.WorldSport",
       "icon": "./assets/notification-icon.png",
       "versionCode": 12,
       "permissions": [
