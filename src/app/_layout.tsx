@@ -19,9 +19,9 @@ export default function RootLayout() {
     Purchases.setDebugLogsEnabled(true);
 
     if (Platform.OS === 'ios') {
-      Purchases.configure({ apiKey: 'test_eEmfPazutPANPxEVorKLObvelQe' });
+      Purchases.configure({ apiKey: 'appl_bFyjVtWGzsscPHWvvvujcGOoCBA' });
     } else if (Platform.OS === 'android') {
-      Purchases.configure({ apiKey: 'test_eEmfPazutPANPxEVorKLObvelQe' });
+      Purchases.configure({ apiKey: 'goog_LWkMmHnhQfLUngiNzbBXkbjooDJ' });
     }
   }, []);
 
