@@ -1,11 +1,18 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, KeyboardAvoidingView, Platform, Modal, FlatList, Dimensions } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, KeyboardAvoidingView, Platform, Modal, FlatList, Dimensions, ActivityIndicator } from 'react-native';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
-import { sendEmailVerification, signOut } from 'firebase/auth';
+import { sendEmailVerification, signOut, GoogleAuthProvider, signInWithCredential } from 'firebase/auth';
 import { db, auth } from '../firebase';
 import { router } from 'expo-router';
 import { Ionicons, FontAwesome } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
+import * as Google from 'expo-auth-session/providers/google';
+import * as WebBrowser from 'expo-web-browser';
+
+WebBrowser.maybeCompleteAuthSession();
+
+const IOS_CLIENT_ID = '562029576530-hafa1usttf58rlflt06uohkruev7t3a5.apps.googleusercontent.com';
+const WEB_CLIENT_ID = '562029576530-1rqebmfjovhqlius30ntb9krpfk8g77a.apps.googleusercontent.com';
 
 const { width } = Dimensions.get('window');
 const SPORTS_LIST = ['Football ⚽', 'Basketball 🏀', 'Tennis 🎾', 'Running 🏃‍♂️', 'Fitness 💪', 'Cycling 🚴‍♂️', 'Swimming 🏊‍♂️'];
@@ -35,7 +42,7 @@ const calculateAge = (birthDateString: string) => {
 };
 
 export default function LoginScreen() {
-  const { login, register } = useAuth();
+  const { login, register, user, loading: authLoading } = useAuth();
 
   const [isLoginMode, setIsLoginMode] = useState(false); 
   const [name, setName] = useState('');
@@ -45,6 +52,19 @@ export default function LoginScreen() {
   
   const [selectedSports, setSelectedSports] = useState<string[]>([]);
   const [isSportModalVisible, setIsSportModalVisible] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+
+  const [request, , promptAsync] = Google.useAuthRequest({
+    iosClientId: IOS_CLIENT_ID,
+    webClientId: WEB_CLIENT_ID,
+  });
+
+  // כניסה אוטומטית למסך הבית ברגע שהמשתמש כבר מחובר ונטען
+  useEffect(() => {
+    if (!authLoading && user) {
+      router.replace('/(tabs)/home');
+    }
+  }, [user, authLoading]);
 
   const handleSwitchMode = async (loginMode: boolean) => {
     setIsLoginMode(loginMode);
@@ -95,7 +115,6 @@ export default function LoginScreen() {
         await login(cleanEmail, password);
         const currentUser = auth.currentUser;
 
-        // בדיקה קריטית: האם האימייל אומת?
         if (currentUser && !currentUser.emailVerified) {
           await signOut(auth);
           
@@ -117,7 +136,7 @@ export default function LoginScreen() {
               }
             ]
           );
-          return; // עצירה מוחלטת של המעבר לדף הבית
+          return;
         }
 
         if (selectedSports.length > 0) {
@@ -158,7 +177,6 @@ export default function LoginScreen() {
       }
 
       try {
-        // מתבצעת הרשמה + שליחת מייל + ניתוק אוטומטי מתוך ה-AuthContext
         await register(cleanEmail, password, trimmedName);
 
         await setDoc(doc(db, 'users', userId), {
@@ -182,8 +200,51 @@ export default function LoginScreen() {
     }
   };
 
-  const handleGoogleLogin = () => {
-    Alert.alert('Google Sign-In', 'Connecting with Google...');
+  const handleGoogleLogin = async () => {
+    try {
+      setIsGoogleLoading(true);
+      const result = await promptAsync();
+
+      if (result.type === 'success') {
+        const idToken = result.authentication?.idToken || result.params?.id_token;
+        if (!idToken) {
+          throw new Error('No ID token received from Google.');
+        }
+
+        const credential = GoogleAuthProvider.credential(idToken);
+        const userCred = await signInWithCredential(auth, credential);
+        const fbUser = userCred.user;
+
+        const userId = fbUser.email
+          ? fbUser.email.toLowerCase().replace(/[^a-z0-9]/g, '_')
+          : fbUser.uid;
+
+        const userRef = doc(db, 'users', userId);
+        const userSnap = await getDoc(userRef);
+
+        if (!userSnap.exists()) {
+          await setDoc(userRef, {
+            uid: userId,
+            email: fbUser.email,
+            name: fbUser.displayName || 'Player',
+            createdAt: new Date(),
+            isVip: false,
+            followers: [],
+            following: [],
+            sports: selectedSports.length > 0 ? selectedSports : ['Football ⚽'],
+          }, { merge: true });
+        } else if (selectedSports.length > 0) {
+          await setDoc(userRef, { sports: selectedSports }, { merge: true });
+        }
+
+        router.replace('/(tabs)/home');
+      }
+    } catch (error: any) {
+      console.error('Google Sign-In error:', error);
+      Alert.alert('Google Sign-In Error', error?.message || 'Could not sign in with Google.');
+    } finally {
+      setIsGoogleLoading(false);
+    }
   };
 
   return (
@@ -310,9 +371,20 @@ export default function LoginScreen() {
             <View style={styles.line} />
           </View>
 
-          <TouchableOpacity style={styles.googleBtn} onPress={handleGoogleLogin} activeOpacity={0.85}>
-            <FontAwesome name="google" size={18} color="#FAFAFA" style={{ marginRight: 10 }} />
-            <Text style={styles.googleBtnText}>Continue with Google</Text>
+          <TouchableOpacity 
+            style={[styles.googleBtn, (isGoogleLoading || !request) && { opacity: 0.6 }]} 
+            onPress={handleGoogleLogin} 
+            disabled={isGoogleLoading || !request}
+            activeOpacity={0.85}
+          >
+            {isGoogleLoading ? (
+              <ActivityIndicator size="small" color="#FAFAFA" />
+            ) : (
+              <>
+                <FontAwesome name="google" size={18} color="#FAFAFA" style={{ marginRight: 10 }} />
+                <Text style={styles.googleBtnText}>Continue with Google</Text>
+              </>
+            )}
           </TouchableOpacity>
         </View>
 

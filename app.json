@@ -9,22 +9,27 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.naor823.WorldSports",
-      "buildNumber": "4",
+      "buildNumber": "6",
       "icon": "./assets/notification-icon.png",
       "infoPlist": {
         "NSLocationWhenInUseUsageDescription": "This app uses GPS to detect your live location.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "CFBundleURLTypes": [
+          {
+            "CFBundleURLSchemes": [
+              "com.googleusercontent.apps.562029576530-hafa1usttf58rlflt06uohkruev7t3a5"
+            ]
+          }
+        ]
       }
     },
     "android": {
       "package": "com.naor823.WorldSport",
       "icon": "./assets/notification-icon.png",
-      "versionCode": 14,
+      "versionCode": 15,
       "permissions": [
         "ACCESS_FINE_LOCATION",
-        "ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_COARSE_LOCATION",
-        "android.permission.ACCESS_FINE_LOCATION"
+        "ACCESS_COARSE_LOCATION"
       ]
     },
     "plugins": [

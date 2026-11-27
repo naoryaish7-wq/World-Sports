@@ -11,6 +11,10 @@ import { registerForPushNotificationsAsync } from '../../services/notificationSe
 
 const { width } = Dimensions.get('window');
 
+// אם יש לך דומיין מוגדר עם Universal Links (apple-app-site-association), הזן אותו כאן (למשל 'https://worldsports.app')
+// כל עוד אין דומיין, השאר מחרוזת ריקה '' והמערכת תשתמש אוטומטית ב-worldsports://
+const UNIVERSAL_LINK_DOMAIN = '';
+
 type ChatMessage = {
   id: string;
   senderId?: string;
@@ -396,33 +400,83 @@ export default function RadarScreen() {
     return iBlockedThem || theyBlockedMe;
   }, [allUsersList, blockedUsersList, currentUserId]);
 
-  useEffect(() => {
-    const handleDeepLink = async (event: { url: string }) => {
-      const data = event.url;
-      if (data && data.includes('game/')) {
-        const gameId = data.split('game/')[1]?.split('?')[0];
-        if (gameId) {
-          try {
-            const gameSnap = await getDoc(doc(db, 'games', gameId));
-            if (gameSnap.exists()) {
-              const gameData = { id: gameSnap.id, ...(gameSnap.data() as Omit<GameItem, 'id'>) };
-              setSelectedGame(gameData);
+  const buildGameInviteLink = (gameId: string) => {
+    const cleanDomain = UNIVERSAL_LINK_DOMAIN.trim().replace(/\/+$/, '');
+    if (cleanDomain) {
+      return `${cleanDomain}/game/${gameId}`;
+    }
+    return `worldsports://game/${gameId}`;
+  };
 
-              if (gameData.accessMode === 'friends' && userName) {
-                const currentPlayers = gameData.players || [];
-                const isAlready = currentPlayers.some(p => resolvePlayerInfo(p, allUsersList).name === userName);
-                if (!isAlready && currentPlayers.length < gameData.maxPlayers) {
-                  await updateDoc(doc(db, 'games', gameId), {
-                    players: arrayUnion(userName)
-                  });
-                  Alert.alert('Joined via Friend Link 🔗', 'You have been automatically added to the game!');
-                }
-              }
-            }
-          } catch (e) {
-            console.error('Error opening shared game link:', e);
+  useEffect(() => {
+    const extractGameIdFromUrl = (rawUrl?: string | null) => {
+      if (!rawUrl) return null;
+      const match = rawUrl.match(/game\/([^/?#&]+)/i);
+      return match ? match[1] : null;
+    };
+
+    const resolveActivePlayerName = async () => {
+      if (userName && userName !== 'Player') return userName;
+      try {
+        const savedEmail = await AsyncStorage.getItem('@saved_user_email');
+        if (savedEmail) {
+          const uid = savedEmail.toLowerCase().replace(/[^a-z0-9]/g, '_');
+          const snap = await getDoc(doc(db, 'users', uid));
+          if (snap.exists()) {
+            const d = snap.data() as UserProfile;
+            return d.name || d.userName || d.displayName || savedEmail.split('@')[0] || 'Player';
+          }
+          return savedEmail.split('@')[0] || 'Player';
+        }
+      } catch (e) {
+        console.error('Error resolving active player name for deep link:', e);
+      }
+      return userName || 'Player';
+    };
+
+    const handleDeepLink = async (event: { url: string }) => {
+      const gameId = extractGameIdFromUrl(event.url);
+      if (!gameId) return;
+
+      try {
+        const gameRef = doc(db, 'games', gameId);
+        const gameSnap = await getDoc(gameRef);
+        if (!gameSnap.exists()) {
+          Alert.alert('Game Not Found', 'This game link may have expired or been removed.');
+          return;
+        }
+
+        let gameData: GameItem = { id: gameSnap.id, ...(gameSnap.data() as Omit<GameItem, 'id'>) };
+        const activePlayerName = await resolveActivePlayerName();
+
+        if (gameData.accessMode === 'friends' && activePlayerName) {
+          const currentPlayers = gameData.players || [];
+          const isAlready = currentPlayers.some(
+            p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() === activePlayerName.trim().toLowerCase()
+          );
+
+          if (!isAlready && currentPlayers.length < gameData.maxPlayers) {
+            await updateDoc(gameRef, {
+              players: arrayUnion(activePlayerName)
+            });
+            gameData = {
+              ...gameData,
+              players: [...currentPlayers, activePlayerName]
+            };
+            Alert.alert('Joined via Friend Link 🔗', `You joined "${gameData.title}" automatically!`);
           }
         }
+
+        setSelectedGame(gameData);
+        if (gameData.latitude && gameData.longitude) {
+          setMapRegion(prev => ({
+            ...prev,
+            latitude: gameData.latitude,
+            longitude: gameData.longitude,
+          }));
+        }
+      } catch (e) {
+        console.error('Error opening shared game link:', e);
       }
     };
 
@@ -692,7 +746,7 @@ export default function RadarScreen() {
       setSelectedGame(prev => {
         if (!prev) return null;
         const updated = markers.find(g => g.id === prev.id);
-        return updated || null;
+        return updated || prev;
       });
     });
     return () => unsubscribe();
@@ -723,12 +777,28 @@ export default function RadarScreen() {
     Linking.openURL(url);
   };
 
-  const handleShareGame = async (gameId: string, gameTitle: string, gameSport: string, venueName: string, city: string, time: string, creatorName: string) => {
-    const gameDeepLink = `findgames://game/${gameId}`;
+  const handleShareGame = async (
+    gameId: string,
+    gameTitle: string,
+    gameSport: string,
+    venueName: string,
+    city: string,
+    time: string,
+    creatorName: string
+  ) => {
+    const gameDeepLink = buildGameInviteLink(gameId);
+    const messageBody =
+      `⚽ ${gameTitle} (${gameSport})\n` +
+      `📍 ${venueName}, ${city} | ⏰ ${time}\n` +
+      `👑 ${creatorName}\n\n` +
+      `${gameDeepLink}`;
+
     try {
-      await Share.share({
-        message: `⚽ Join the game "${gameTitle}" (${gameSport})!\n📍 Venue: ${venueName}, ${city}\n⏰ Time: ${time}\n👑 Admin: ${creatorName}\n\nClick the link to open and join directly in the app:\n${gameDeepLink}`,
-      });
+      await Share.share(
+        Platform.OS === 'ios'
+          ? { message: messageBody, url: gameDeepLink }
+          : { message: messageBody }
+      );
     } catch (error: any) {
       Alert.alert('Error', error.message);
     }
@@ -1183,13 +1253,17 @@ export default function RadarScreen() {
       const gameLat = pickedLocation ? pickedLocation.latitude : (userCoords ? userCoords.latitude : 32.3215);
       const gameLon = pickedLocation ? pickedLocation.longitude : (userCoords ? userCoords.longitude : 34.8532);
       const activeName = userName || 'Player';
+      const titleToSave = newTitle.trim();
+      const sportToSave = newSport;
+      const venueToSave = newVenue.trim();
+      const timeToSave = newTime.trim();
 
       const newGameRef = await addDoc(collection(db, 'games'), {
-        title: newTitle.trim(),
-        sport: newSport,
-        venueName: newVenue.trim(),
+        title: titleToSave,
+        sport: sportToSave,
+        venueName: venueToSave,
         city: autoCity,
-        time: newTime.trim(),
+        time: timeToSave,
         latitude: gameLat,
         longitude: gameLon,
         description: newDesc.trim(),
@@ -1239,11 +1313,11 @@ export default function RadarScreen() {
           onPress: () => {
             handleShareGame(
               newGameRef.id,
-              newTitle.trim(),
-              newSport,
-              newVenue.trim(),
+              titleToSave,
+              sportToSave,
+              venueToSave,
               autoCity,
-              newTime.trim(),
+              timeToSave,
               activeName
             );
           } 
@@ -1558,7 +1632,9 @@ export default function RadarScreen() {
     if (isBlockedBidirectional(game.creator, game.creatorName)) return false;
 
     if (game.accessMode === 'friends') {
-      const isMyGame = game.creator === currentUserId || (game.players || []).some(p => resolvePlayerInfo(p, allUsersList).name === userName);
+      const isMyGame =
+        game.creator === currentUserId ||
+        (game.players || []).some(p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() === (userName || '').trim().toLowerCase());
       if (!isMyGame) return false;
     }
 
@@ -2245,7 +2321,6 @@ export default function RadarScreen() {
       <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
         <View style={styles.modalOverlayCenter}>
           <View style={styles.modalContentHomeStyle}>
-            
             <View style={styles.modalHeader}>
               <View>
                 <Text style={styles.discoverCategory}>PLAYER PROFILE</Text>
@@ -2270,7 +2345,6 @@ export default function RadarScreen() {
                 showsVerticalScrollIndicator={false}
                 nestedScrollEnabled={true}
               >
-                
                 <View style={styles.headerProfile}>
                   <TouchableOpacity 
                     style={styles.avatarLarge} 
@@ -2453,10 +2527,8 @@ export default function RadarScreen() {
                     <Text style={styles.privateAccountText}>Follow this account to see their photos and videos.</Text>
                   </View>
                 )}
-
               </ScrollView>
             )}
-
           </View>
         </View>
       </Modal>
