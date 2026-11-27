@@ -23,6 +23,7 @@ import Constants, { ExecutionEnvironment } from 'expo-constants';
 import {
   collection,
   doc,
+  getDoc,
   onSnapshot,
   setDoc,
   addDoc,
@@ -80,6 +81,7 @@ type UserProfile = {
   isVip?: boolean;
   isPrivate?: boolean;
   blockedUsers?: string[];
+  themeMode?: 'dark' | 'light';
   notifications_chat?: boolean;
   notifications_likes?: boolean;
   notifications_follows?: boolean;
@@ -147,14 +149,13 @@ type PaymentResult = {
 const MAX_PINNED_GROUPS = 3;
 
 const SPORT_OPTIONS = [
-  'Football',
-  'Basketball',
-  'Tennis',
-  'Padel',
-  'Volleyball',
-  'Running',
-  'Gym',
-  'Swimming',
+  'Football⚽',
+  'Basketball🏀',
+  'Tennis🎾',
+  'Cycling🚴',
+  'Running🏃',
+  'Fitness💪',
+  'Swimming🏊',
 ];
 
 const SENDER_NAME_PALETTE = [
@@ -256,7 +257,7 @@ const BOOST_STAGES = [
     maxMembers: 10,
     allowBackground: false,
     title: 'Stage 1 • City Starter',
-    shortBadge: 'T1 • 10 Max',
+    shortBadge: 'T1 ',
     color: '#A1A1AA',
     exposureSummary: 'Up to 10 members • Standard city listing.',
   },
@@ -267,7 +268,7 @@ const BOOST_STAGES = [
     maxMembers: 25,
     allowBackground: true,
     title: 'Stage 2 • Silver Pulse',
-    shortBadge: 'T2 • 25 Max',
+    shortBadge: 'T2  ',
     color: '#22C55E',
     exposureSummary: 'Up to 25 members • Unlocks Chat Background.',
   },
@@ -278,7 +279,7 @@ const BOOST_STAGES = [
     maxMembers: 50,
     allowBackground: true,
     title: 'Stage 3 • Gold Spotlight',
-    shortBadge: 'T3 • 50 Max',
+    shortBadge: 'T3  ',
     color: '#EAB308',
     exposureSummary: 'Up to 50 members • Gold spotlight + Background.',
   },
@@ -289,7 +290,7 @@ const BOOST_STAGES = [
     maxMembers: 100,
     allowBackground: true,
     title: 'Stage 4 • Platinum Riot',
-    shortBadge: 'T4 • 100 Max',
+    shortBadge: 'T4  ',
     color: '#C084FC',
     exposureSummary: 'Up to 100 members • High city visibility + full perks.',
   },
@@ -300,7 +301,7 @@ const BOOST_STAGES = [
     maxMembers: 200,
     allowBackground: true,
     title: 'Stage 5 • Diamond Overdrive',
-    shortBadge: 'T5 • 200 Max',
+    shortBadge: 'T5  ',
     color: '#38BDF8',
     exposureSummary: 'Up to 200 members • Elite city promotion + full perks.',
   },
@@ -311,7 +312,7 @@ const BOOST_STAGES = [
     maxMembers: null as number | null,
     allowBackground: true,
     title: 'Stage 6 • Mythic Crown',
-    shortBadge: 'T6 • Unlimited',
+    shortBadge: 'T6 ',
     color: '#F97316',
     exposureSummary: 'Unlimited members • Top reach & full group perks.',
   },
@@ -326,6 +327,27 @@ const REVENUECAT_PRODUCT_IDS: Record<string, string> = {
   b50: 'group_boost_50',
   b100: 'group_boost_100',
 };
+
+const getMessagesTheme = (isLight: boolean) => ({
+  isLight,
+  bg: isLight ? '#F4F4F6' : '#09090B',
+  surface: isLight ? '#FFFFFF' : '#121215',
+  surfaceAlt: isLight ? '#F8F9FA' : '#18181B',
+  surfaceDeep: isLight ? '#ECEEF2' : '#09090B',
+  border: isLight ? '#E4E4E7' : '#27272A',
+  borderSubtle: isLight ? '#D4D4D8' : '#1E1E24',
+  text: isLight ? '#09090B' : '#FAFAFA',
+  textSecondary: isLight ? '#27272A' : '#E4E4E7',
+  textMuted: isLight ? '#52525B' : '#A1A1AA',
+  textSubtle: isLight ? '#71717A' : '#71717A',
+  accent: '#EAB308',
+  accentText: '#09090B',
+  overlay: isLight ? 'rgba(9,9,11,0.45)' : 'rgba(9,9,11,0.88)',
+  centerOverlay: isLight ? 'rgba(9,9,11,0.5)' : 'rgba(9,9,11,0.92)',
+  sheetBackdrop: isLight ? 'rgba(9,9,11,0.4)' : 'rgba(0,0,0,0.72)',
+  pinnedBg: isLight ? '#FEF9C3' : '#181509',
+  pinnedCardBg: isLight ? '#FFFDF2' : '#17150B',
+});
 
 const getBoostStageInfo = (boostCount: number) => {
   const safeCount = Math.max(0, boostCount || 0);
@@ -506,11 +528,13 @@ const processBoostPayment = async (
 function ChatVideoPreview({
   uri,
   style,
+  styles,
   onLongPress,
   onPress,
 }: {
   uri: string;
   style: any;
+  styles: ReturnType<typeof createStyles>;
   onLongPress?: () => void;
   onPress?: () => void;
 }) {
@@ -547,7 +571,13 @@ function ChatVideoPreview({
   );
 }
 
-function FullscreenMediaPlayer({ uri }: { uri: string }) {
+function FullscreenMediaPlayer({
+  uri,
+  styles,
+}: {
+  uri: string;
+  styles: ReturnType<typeof createStyles>;
+}) {
   const player = useVideoPlayer(uri, p => {
     p.loop = false;
     p.muted = false;
@@ -576,6 +606,10 @@ function FullscreenMediaPlayer({ uri }: { uri: string }) {
 }
 
 export default function MessagesScreen() {
+  const [isLightMode, setIsLightMode] = useState(false);
+  const theme = useMemo(() => getMessagesTheme(isLightMode), [isLightMode]);
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
   const [activeTab, setActiveTab] = useState<'personal' | 'groups' | 'leaderboard'>('personal');
   const [currentUserId, setCurrentUserId] = useState('');
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
@@ -683,6 +717,36 @@ export default function MessagesScreen() {
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+    const syncSavedThemeAndUser = async () => {
+      try {
+        const [savedEmail, savedTheme] = await Promise.all([
+          AsyncStorage.getItem('@saved_user_email'),
+          AsyncStorage.getItem('@world_sports_theme_mode'),
+        ]);
+        if (!isMounted) return;
+        if (savedTheme === 'light' || savedTheme === 'dark') {
+          setIsLightMode(savedTheme === 'light');
+        }
+        if (savedEmail) {
+          const uid = savedEmail.toLowerCase().replace(/[^a-z0-9]/g, '_');
+          setCurrentUserId(prev => (prev !== uid ? uid : prev));
+        }
+      } catch (e) {
+        console.error('Error syncing theme in Messages:', e);
+      }
+    };
+
+    syncSavedThemeAndUser();
+    const pollInterval = setInterval(syncSavedThemeAndUser, 1000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+    };
+  }, []);
+
+  useEffect(() => {
     setAudioModeAsync({
       playsInSilentMode: true,
       shouldPlayInBackground: false,
@@ -758,6 +822,41 @@ export default function MessagesScreen() {
     [allUsers, blockedUsers, currentUserId]
   );
 
+  const sendExpoPushNotification = useCallback(
+    async (targetUserId: string, title: string, body: string, data?: any) => {
+      try {
+        const userSnap = await getDoc(doc(db, 'users', targetUserId));
+        if (!userSnap.exists()) return;
+
+        const userData = userSnap.data() as any;
+        const pushToken = userData?.pushToken || userData?.expoPushToken;
+
+        if (!pushToken || typeof pushToken !== 'string' || !pushToken.startsWith('ExponentPushToken[')) {
+          return;
+        }
+
+        await fetch('https://exp.host/--/api/v2/push/send', {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Accept-encoding': 'gzip, deflate',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            to: pushToken,
+            sound: 'default',
+            title,
+            body,
+            data: data || {},
+          }),
+        });
+      } catch (error) {
+        console.error('Error sending Expo push notification:', error);
+      }
+    },
+    []
+  );
+
   const sendSyncedNotification = useCallback(
     async (
       recipientUid: string,
@@ -787,11 +886,22 @@ export default function MessagesScreen() {
           ...(payload.groupId ? { groupId: payload.groupId } : {}),
           createdAt: serverTimestamp(),
         });
+
+        await sendExpoPushNotification(
+          recipientUid,
+          'World Sports ',
+          payload.message,
+          {
+            type: payload.type,
+            senderUid: currentUserId,
+            ...(payload.groupId ? { groupId: payload.groupId } : {}),
+          }
+        );
       } catch (e) {
         console.error('Error sending synced notification:', e);
       }
     },
-    [currentUserId, currentUser, allUsers, isBlockedBidirectional]
+    [currentUserId, currentUser, allUsers, isBlockedBidirectional, sendExpoPushNotification]
   );
 
   useEffect(() => {
@@ -800,13 +910,8 @@ export default function MessagesScreen() {
 
     (async () => {
       try {
-        const savedEmail = await AsyncStorage.getItem('@saved_user_email');
-        const uid = savedEmail ? savedEmail.toLowerCase().replace(/[^a-z0-9]/g, '_') : '';
-
-        if (uid) {
-          setCurrentUserId(uid);
-
-          const savedPinsRaw = await AsyncStorage.getItem(`@pinned_city_groups_${uid}`);
+        if (currentUserId) {
+          const savedPinsRaw = await AsyncStorage.getItem(`@pinned_city_groups_${currentUserId}`);
           if (savedPinsRaw) {
             const parsedPins = JSON.parse(savedPinsRaw);
             if (Array.isArray(parsedPins)) {
@@ -814,7 +919,7 @@ export default function MessagesScreen() {
             }
           }
 
-          const savedWallsRaw = await AsyncStorage.getItem(`@personal_chat_wallpapers_${uid}`);
+          const savedWallsRaw = await AsyncStorage.getItem(`@personal_chat_wallpapers_${currentUserId}`);
           if (savedWallsRaw) {
             const parsedWalls = JSON.parse(savedWallsRaw);
             if (parsedWalls && typeof parsedWalls === 'object') {
@@ -822,11 +927,17 @@ export default function MessagesScreen() {
             }
           }
 
-          unsubUser = onSnapshot(doc(db, 'users', uid), snap => {
+          unsubUser = onSnapshot(doc(db, 'users', currentUserId), snap => {
             if (snap.exists()) {
               const data = { uid: snap.id, ...(snap.data() as Omit<UserProfile, 'uid'>) };
               setCurrentUser(data);
               setBlockedUsers(Array.isArray(data.blockedUsers) ? data.blockedUsers : []);
+
+              if (data.themeMode === 'light' || data.themeMode === 'dark') {
+                setIsLightMode(data.themeMode === 'light');
+                AsyncStorage.setItem('@world_sports_theme_mode', data.themeMode).catch(() => {});
+              }
+
               if (data.country) {
                 const normCountry = normalizeCountry(data.country);
                 setUserCountry(normCountry);
@@ -867,7 +978,7 @@ export default function MessagesScreen() {
     return () => {
       if (unsubUser) unsubUser();
     };
-  }, []);
+  }, [currentUserId]);
 
   useEffect(() => {
     const unsubUsers = onSnapshot(collection(db, 'users'), snap => {
@@ -2517,9 +2628,9 @@ export default function MessagesScreen() {
     <View style={styles.container}>
       <View style={styles.header}>
         <View>
-          <Text style={styles.eyebrow}>MESSAGES • {normalizeCity(userCity).toUpperCase()}</Text>
+          <Text style={styles.eyebrow}>Messages</Text>
           <Text style={styles.headerTitle}>
-            Chats <Text style={styles.accent}>Hub</Text>
+            World <Text style={styles.accent}>Sports</Text>
           </Text>
         </View>
       </View>
@@ -2533,7 +2644,7 @@ export default function MessagesScreen() {
           <Ionicons
             name="chatbubble-ellipses"
             size={15}
-            color={activeTab === 'personal' ? '#09090B' : '#A1A1AA'}
+            color={activeTab === 'personal' ? '#09090B' : theme.textMuted}
           />
           <Text style={[styles.subTabText, activeTab === 'personal' && styles.subTabTextActive]}>
             Personal
@@ -2548,7 +2659,7 @@ export default function MessagesScreen() {
           <Ionicons
             name="people"
             size={15}
-            color={activeTab === 'groups' ? '#09090B' : '#A1A1AA'}
+            color={activeTab === 'groups' ? '#09090B' : theme.textMuted}
           />
           <Text style={[styles.subTabText, activeTab === 'groups' && styles.subTabTextActive]}>
             Groups ({filteredCityGroups.length})
@@ -2563,10 +2674,10 @@ export default function MessagesScreen() {
           <Ionicons
             name="trophy"
             size={15}
-            color={activeTab === 'leaderboard' ? '#09090B' : '#A1A1AA'}
+            color={activeTab === 'leaderboard' ? '#09090B' : theme.textMuted}
           />
           <Text style={[styles.subTabText, activeTab === 'leaderboard' && styles.subTabTextActive]}>
-            Country Board
+             Boards
           </Text>
         </TouchableOpacity>
       </View>
@@ -2575,17 +2686,17 @@ export default function MessagesScreen() {
         <View style={styles.tabBody}>
           <View style={styles.searchActionRow}>
             <View style={styles.searchBox}>
-              <Ionicons name="search" size={16} color="#71717A" />
+              <Ionicons name="search" size={16} color={theme.textSubtle} />
               <TextInput
                 style={styles.searchInput}
                 placeholder="Search"
-                placeholderTextColor="#71717A"
+                placeholderTextColor={theme.textSubtle}
                 value={personalSearch}
                 onChangeText={setPersonalSearch}
               />
               {personalSearch.length > 0 && (
                 <TouchableOpacity onPress={() => setPersonalSearch('')}>
-                  <Ionicons name="close-circle" size={16} color="#71717A" />
+                  <Ionicons name="close-circle" size={16} color={theme.textSubtle} />
                 </TouchableOpacity>
               )}
             </View>
@@ -2605,7 +2716,7 @@ export default function MessagesScreen() {
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 32 }}>
             {filteredPersonalChats.length === 0 ? (
               <View style={styles.emptyCard}>
-                <Ionicons name="chatbubbles-outline" size={38} color="#52525B" />
+                <Ionicons name="chatbubbles-outline" size={38} color={theme.textSubtle} />
                 <Text style={styles.emptyTitle}>No personal chats yet</Text>
                 <Text style={styles.emptySub}>
                   Tap the compose icon to search a player and start a direct chat.
@@ -2669,17 +2780,17 @@ export default function MessagesScreen() {
         <View style={styles.tabBody}>
           <View style={styles.searchActionRow}>
             <View style={styles.searchBox}>
-              <Ionicons name="search" size={16} color="#71717A" />
+              <Ionicons name="search" size={16} color={theme.textSubtle} />
               <TextInput
                 style={styles.searchInput}
                 placeholder="Search groups..."
-                placeholderTextColor="#71717A"
+                placeholderTextColor={theme.textSubtle}
                 value={groupSearch}
                 onChangeText={setGroupSearch}
               />
               {groupSearch.length > 0 && (
                 <TouchableOpacity onPress={() => setGroupSearch('')}>
-                  <Ionicons name="close-circle" size={16} color="#71717A" />
+                  <Ionicons name="close-circle" size={16} color={theme.textSubtle} />
                 </TouchableOpacity>
               )}
             </View>
@@ -2741,13 +2852,12 @@ export default function MessagesScreen() {
           )}
 
           <Text style={styles.pinHelperText}>
-            Long-press a group to pin ({pinnedGroupIds.length}/{MAX_PINNED_GROUPS}) • Tier 1 = 10 max, Tier 2 = BG + 25 max
           </Text>
 
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 32 }}>
             {filteredCityGroups.length === 0 ? (
               <View style={styles.emptyCard}>
-                <Ionicons name="people-outline" size={38} color="#52525B" />
+                <Ionicons name="people-outline" size={38} color={theme.textSubtle} />
                 <Text style={styles.emptyTitle}>No groups available yet</Text>
                 <Text style={styles.emptySub}>
                   Create a public or private group chat for your sport.
@@ -2829,7 +2939,7 @@ export default function MessagesScreen() {
                       </View>
 
                       <Text style={styles.groupSportsSubtitle} numberOfLines={1}>
-                        🏅 {sportsLabel}
+                         {sportsLabel}
                       </Text>
 
                       <Text style={styles.cardSubtitle} numberOfLines={1}>
@@ -2940,7 +3050,7 @@ export default function MessagesScreen() {
           <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 32 }}>
             {rankedCountryGroups.length === 0 ? (
               <View style={styles.emptyCard}>
-                <Ionicons name="trophy-outline" size={36} color="#52525B" />
+                <Ionicons name="trophy-outline" size={36} color={theme.textSubtle} />
                 <Text style={styles.emptyTitle}>No groups found</Text>
                 <Text style={styles.emptySub}>
                   Create a group to appear on the board.
@@ -2949,7 +3059,7 @@ export default function MessagesScreen() {
             ) : (
               rankedCountryGroups.map((row, index) => {
                 const rankColor =
-                  index === 0 ? '#EAB308' : index === 1 ? '#CBD5E1' : index === 2 ? '#FB923C' : '#A1A1AA';
+                  index === 0 ? '#EAB308' : index === 1 ? '#CBD5E1' : index === 2 ? '#FB923C' : theme.textMuted;
                 const rowLocationSubtitle =
                   leaderboardScope === 'country'
                     ? normalizeCountry(row.group.country)
@@ -3028,16 +3138,16 @@ export default function MessagesScreen() {
                   setNewChatSearch('');
                 }}
               >
-                <Ionicons name="close" size={24} color="#FAFAFA" />
+                <Ionicons name="close" size={24} color={theme.text} />
               </TouchableOpacity>
             </View>
 
             <View style={[styles.searchBox, { marginBottom: 12 }]}>
-              <Ionicons name="search" size={16} color="#71717A" />
+              <Ionicons name="search" size={16} color={theme.textSubtle} />
               <TextInput
                 style={styles.searchInput}
                 placeholder="Search user by name..."
-                placeholderTextColor="#71717A"
+                placeholderTextColor={theme.textSubtle}
                 value={newChatSearch}
                 onChangeText={setNewChatSearch}
                 returnKeyType="search"
@@ -3045,7 +3155,7 @@ export default function MessagesScreen() {
               />
               {newChatSearch.length > 0 && (
                 <TouchableOpacity onPress={() => setNewChatSearch('')}>
-                  <Ionicons name="close-circle" size={16} color="#71717A" />
+                  <Ionicons name="close-circle" size={16} color={theme.textSubtle} />
                 </TouchableOpacity>
               )}
             </View>
@@ -3084,7 +3194,7 @@ export default function MessagesScreen() {
                           {u.isVip && <Ionicons name="checkmark-circle" size={13} color="#EAB308" />}
                         </View>
                       </TouchableOpacity>
-                      <Ionicons name="chevron-forward" size={18} color="#71717A" />
+                      <Ionicons name="chevron-forward" size={18} color={theme.textSubtle} />
                     </TouchableOpacity>
                   );
                 })
@@ -3110,7 +3220,7 @@ export default function MessagesScreen() {
                     style={styles.backIconBtn}
                     onPress={() => setPersonalSettingsVisible(false)}
                   >
-                    <Ionicons name="arrow-back" size={20} color="#FAFAFA" />
+                    <Ionicons name="arrow-back" size={20} color={theme.text} />
                   </TouchableOpacity>
                   <TouchableOpacity
                     style={{ flex: 1 }}
@@ -3128,7 +3238,7 @@ export default function MessagesScreen() {
                     style={styles.closeFullScreenBtn}
                     onPress={() => setPersonalSettingsVisible(false)}
                   >
-                    <Ionicons name="close" size={20} color="#FAFAFA" />
+                    <Ionicons name="close" size={20} color={theme.text} />
                   </TouchableOpacity>
                 </View>
 
@@ -3240,6 +3350,7 @@ export default function MessagesScreen() {
                                 <ChatVideoPreview
                                   uri={media.uri}
                                   style={styles.mediaTileImg}
+                                  styles={styles}
                                   onPress={() =>
                                     handleOpenMediaLightbox({
                                       uri: media.uri,
@@ -3275,7 +3386,7 @@ export default function MessagesScreen() {
                     style={styles.backIconBtn}
                     onPress={closeAllChatRooms}
                   >
-                    <Ionicons name="arrow-back" size={20} color="#FAFAFA" />
+                    <Ionicons name="arrow-back" size={20} color={theme.text} />
                   </TouchableOpacity>
 
                   <TouchableOpacity
@@ -3340,7 +3451,7 @@ export default function MessagesScreen() {
                         onPress={() => handleUnpinPersonalMessage(personalChatId)}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
-                        <Ionicons name="close" size={16} color="#A1A1AA" />
+                        <Ionicons name="close" size={16} color={theme.textMuted} />
                       </TouchableOpacity>
                     )}
                   </TouchableOpacity>
@@ -3371,10 +3482,6 @@ export default function MessagesScreen() {
                             const senderDisplay = isMe
                               ? getDisplayName(currentUser)
                               : msg.senderName || getDisplayName(activePersonalUser);
-                            const senderUidForProfile = isMe
-                              ? currentUserId
-                              : msg.senderId || activePersonalUser?.uid;
-                            const nameColor = getSenderNameColor(senderUidForProfile || senderDisplay);
                             const reactionEntries = Object.entries(msg.reactions || {}).filter(
                               ([, uids]) => Array.isArray(uids) && uids.length > 0
                             );
@@ -3403,24 +3510,11 @@ export default function MessagesScreen() {
                                     isHighlighted && styles.highlightedBubble,
                                   ]}
                                 >
-                                  <TouchableOpacity
-                                    onPress={() => handleOpenUserProfile(senderUidForProfile, senderDisplay)}
-                                    activeOpacity={0.75}
-                                    style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 3 }}
-                                  >
-                                    <Text
-                                      style={[
-                                        styles.senderTag,
-                                        { color: isMe ? '#09090B' : nameColor },
-                                      ]}
-                                    >
-                                      {senderDisplay}
-                                    </Text>
-                                  </TouchableOpacity>
                                   {videoUri && (
                                     <ChatVideoPreview
                                       uri={videoUri}
                                       style={styles.chatInlineVideo}
+                                      styles={styles}
                                       onLongPress={openSheet}
                                       onPress={() =>
                                         handleOpenMediaLightbox({
@@ -3512,10 +3606,6 @@ export default function MessagesScreen() {
                           const senderDisplay = isMe
                             ? getDisplayName(currentUser)
                             : msg.senderName || getDisplayName(activePersonalUser);
-                          const senderUidForProfile = isMe
-                            ? currentUserId
-                            : msg.senderId || activePersonalUser?.uid;
-                          const nameColor = getSenderNameColor(senderUidForProfile || senderDisplay);
                           const reactionEntries = Object.entries(msg.reactions || {}).filter(
                             ([, uids]) => Array.isArray(uids) && uids.length > 0
                           );
@@ -3544,24 +3634,11 @@ export default function MessagesScreen() {
                                   isHighlighted && styles.highlightedBubble,
                                 ]}
                               >
-                                <TouchableOpacity
-                                  onPress={() => handleOpenUserProfile(senderUidForProfile, senderDisplay)}
-                                  activeOpacity={0.75}
-                                  style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 3 }}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.senderTag,
-                                      { color: isMe ? '#09090B' : nameColor },
-                                    ]}
-                                  >
-                                    {senderDisplay}
-                                  </Text>
-                                </TouchableOpacity>
                                 {videoUri && (
                                   <ChatVideoPreview
                                     uri={videoUri}
                                     style={styles.chatInlineVideo}
+                                    styles={styles}
                                     onLongPress={openSheet}
                                     onPress={() =>
                                       handleOpenMediaLightbox({
@@ -3642,6 +3719,7 @@ export default function MessagesScreen() {
                       <ChatVideoPreview
                         uri={pendingPersonalMedia.uri}
                         style={styles.pendingMediaThumb}
+                        styles={styles}
                       />
                     ) : (
                       <Image
@@ -3686,7 +3764,7 @@ export default function MessagesScreen() {
                   <TextInput
                     style={styles.composerInput}
                     placeholder={pendingPersonalMedia ? 'Add text with media...' : 'Write a message...'}
-                    placeholderTextColor="#71717A"
+                    placeholderTextColor={theme.textSubtle}
                     value={personalMessageInput}
                     onChangeText={setPersonalMessageInput}
                   />
@@ -3716,7 +3794,7 @@ export default function MessagesScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Create Group</Text>
               <TouchableOpacity onPress={() => setCreateGroupModalVisible(false)}>
-                <Ionicons name="close" size={24} color="#FAFAFA" />
+                <Ionicons name="close" size={24} color={theme.text} />
               </TouchableOpacity>
             </View>
 
@@ -3725,7 +3803,7 @@ export default function MessagesScreen() {
               <TextInput
                 style={styles.input}
                 placeholder="e.g. Football & Match Discussions"
-                placeholderTextColor="#71717A"
+                placeholderTextColor={theme.textSubtle}
                 value={newGroupName}
                 onChangeText={setNewGroupName}
               />
@@ -3734,7 +3812,7 @@ export default function MessagesScreen() {
               <TextInput
                 style={styles.input}
                 placeholder="What is this group about?"
-                placeholderTextColor="#71717A"
+                placeholderTextColor={theme.textSubtle}
                 value={newGroupDesc}
                 onChangeText={setNewGroupDesc}
               />
@@ -3766,7 +3844,7 @@ export default function MessagesScreen() {
                   <Ionicons
                     name="globe-outline"
                     size={18}
-                    color={newGroupAccess === 'public' ? '#22C55E' : '#A1A1AA'}
+                    color={newGroupAccess === 'public' ? '#22C55E' : theme.textMuted}
                   />
                   <Text
                     style={[styles.privacyTitle, newGroupAccess === 'public' && { color: '#22C55E' }]}
@@ -3786,7 +3864,7 @@ export default function MessagesScreen() {
                   <Ionicons
                     name="lock-closed-outline"
                     size={18}
-                    color={newGroupAccess === 'private' ? '#EAB308' : '#A1A1AA'}
+                    color={newGroupAccess === 'private' ? '#EAB308' : theme.textMuted}
                   />
                   <Text
                     style={[styles.privacyTitle, newGroupAccess === 'private' && { color: '#EAB308' }]}
@@ -3827,7 +3905,7 @@ export default function MessagesScreen() {
                     style={styles.backIconBtn}
                     onPress={handleCloseGroupSettings}
                   >
-                    <Ionicons name="arrow-back" size={20} color="#FAFAFA" />
+                    <Ionicons name="arrow-back" size={20} color={theme.text} />
                   </TouchableOpacity>
 
                   <View style={{ flex: 1 }}>
@@ -3841,7 +3919,7 @@ export default function MessagesScreen() {
                     style={styles.closeFullScreenBtn}
                     onPress={handleCloseGroupSettings}
                   >
-                    <Ionicons name="close" size={22} color="#FAFAFA" />
+                    <Ionicons name="close" size={22} color={theme.text} />
                   </TouchableOpacity>
                 </View>
 
@@ -3918,7 +3996,7 @@ export default function MessagesScreen() {
                         onChangeText={setEditGroupNameInput}
                         editable={isCurrentUserGroupAdmin(settingsGroup)}
                         placeholder="Group name"
-                        placeholderTextColor="#71717A"
+                        placeholderTextColor={theme.textSubtle}
                       />
 
                       <Text style={styles.fieldLabel}>Group Description</Text>
@@ -3928,7 +4006,7 @@ export default function MessagesScreen() {
                         onChangeText={setEditGroupDescInput}
                         editable={isCurrentUserGroupAdmin(settingsGroup)}
                         placeholder="Group description"
-                        placeholderTextColor="#71717A"
+                        placeholderTextColor={theme.textSubtle}
                       />
 
                       {isCurrentUserGroupAdmin(settingsGroup) && (
@@ -4104,13 +4182,13 @@ export default function MessagesScreen() {
                               key={st.stage}
                               style={[
                                 styles.stageInfoRow,
-                                { borderColor: unlocked ? st.color : '#27272A' },
+                                { borderColor: unlocked ? st.color : theme.border },
                               ]}
                             >
                               <Ionicons
                                 name={unlocked ? 'checkmark-circle' : 'lock-closed-outline'}
                                 size={16}
-                                color={unlocked ? st.color : '#71717A'}
+                                color={unlocked ? st.color : theme.textSubtle}
                               />
                               <View style={{ flex: 1 }}>
                                 <Text style={[styles.cardTitle, { fontSize: 12, color: st.color }]}>
@@ -4182,6 +4260,7 @@ export default function MessagesScreen() {
                                 <ChatVideoPreview
                                   uri={media.uri}
                                   style={styles.mediaTileImg}
+                                  styles={styles}
                                   onPress={() =>
                                     handleOpenMediaLightbox({
                                       uri: media.uri,
@@ -4311,7 +4390,7 @@ export default function MessagesScreen() {
                     style={styles.backIconBtn}
                     onPress={closeAllChatRooms}
                   >
-                    <Ionicons name="arrow-back" size={20} color="#FAFAFA" />
+                    <Ionicons name="arrow-back" size={20} color={theme.text} />
                   </TouchableOpacity>
 
                   <TouchableOpacity
@@ -4369,7 +4448,7 @@ export default function MessagesScreen() {
                         onPress={() => handleUnpinGroupMessage(activeGroup)}
                         hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
-                        <Ionicons name="close" size={16} color="#A1A1AA" />
+                        <Ionicons name="close" size={16} color={theme.textMuted} />
                       </TouchableOpacity>
                     )}
                   </TouchableOpacity>
@@ -4453,6 +4532,7 @@ export default function MessagesScreen() {
                                     <ChatVideoPreview
                                       uri={videoUri}
                                       style={styles.chatInlineVideo}
+                                      styles={styles}
                                       onLongPress={openGroupSheet}
                                       onPress={() =>
                                         handleOpenMediaLightbox({
@@ -4599,6 +4679,7 @@ export default function MessagesScreen() {
                                   <ChatVideoPreview
                                     uri={videoUri}
                                     style={styles.chatInlineVideo}
+                                    styles={styles}
                                     onLongPress={openGroupSheet}
                                     onPress={() =>
                                       handleOpenMediaLightbox({
@@ -4683,6 +4764,7 @@ export default function MessagesScreen() {
                           <ChatVideoPreview
                             uri={pendingGroupMedia.uri}
                             style={styles.pendingMediaThumb}
+                            styles={styles}
                           />
                         ) : (
                           <Image
@@ -4729,7 +4811,7 @@ export default function MessagesScreen() {
                         placeholder={
                           pendingGroupMedia ? 'Add text with media...' : 'Write a message...'
                         }
-                        placeholderTextColor="#71717A"
+                        placeholderTextColor={theme.textSubtle}
                         value={groupMessageInput}
                         onChangeText={setGroupMessageInput}
                       />
@@ -4979,7 +5061,7 @@ export default function MessagesScreen() {
               value={editMessageDraft}
               onChangeText={setEditMessageDraft}
               placeholder="Update your message..."
-              placeholderTextColor="#71717A"
+              placeholderTextColor={theme.textSubtle}
               multiline
             />
             <View style={{ flexDirection: 'row', gap: 10 }}>
@@ -5021,7 +5103,7 @@ export default function MessagesScreen() {
                 activeOpacity={0.8}
                 style={styles.closeFullScreenBtn}
               >
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+                <Ionicons name="close" size={22} color={theme.text} />
               </TouchableOpacity>
             </View>
 
@@ -5064,7 +5146,7 @@ export default function MessagesScreen() {
                             {item.age ? ` | Age: ${item.age}` : ''}
                           </Text>
                         </View>
-                        <Ionicons name="chevron-forward" size={18} color="#71717A" />
+                        <Ionicons name="chevron-forward" size={18} color={theme.textSubtle} />
                       </TouchableOpacity>
                     );
                   }
@@ -5096,7 +5178,7 @@ export default function MessagesScreen() {
                   style={styles.closeFullScreenBtn}
                   onPress={handleCloseProfileModal}
                 >
-                  <Ionicons name="close" size={22} color="#FAFAFA" />
+                  <Ionicons name="close" size={22} color={theme.text} />
                 </TouchableOpacity>
               </View>
 
@@ -5221,9 +5303,9 @@ export default function MessagesScreen() {
                                 { flex: 1 },
                                 isFollowing && styles.profileFollowingBtnAlt,
                                 hasRequested && {
-                                  backgroundColor: '#27272A',
+                                  backgroundColor: theme.surfaceAlt,
                                   borderWidth: 1,
-                                  borderColor: '#52525B',
+                                  borderColor: theme.borderSubtle,
                                 },
                               ]}
                               onPress={() => handleToggleFollowInProfileModal(liveProfileUser)}
@@ -5232,7 +5314,7 @@ export default function MessagesScreen() {
                                 style={[
                                   styles.profilePrimaryBtnText,
                                   isFollowing && { color: '#EAB308' },
-                                  hasRequested && { color: '#FAFAFA' },
+                                  hasRequested && { color: theme.text },
                                 ]}
                               >
                                 {isFollowing
@@ -5350,7 +5432,7 @@ export default function MessagesScreen() {
 
               <View style={styles.lightboxBody}>
                 {lightboxMedia.type === 'video' ? (
-                  <FullscreenMediaPlayer key={lightboxMedia.uri} uri={lightboxMedia.uri} />
+                  <FullscreenMediaPlayer key={lightboxMedia.uri} uri={lightboxMedia.uri} styles={styles} />
                 ) : (
                   <Image
                     source={{ uri: lightboxMedia.uri }}
@@ -5378,1169 +5460,1170 @@ export default function MessagesScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#09090B', paddingTop: 50 },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingBottom: 14,
-  },
-  eyebrow: { color: '#EAB308', fontSize: 11, fontWeight: '800', letterSpacing: 0.6 },
-  headerTitle: { color: '#FAFAFA', fontSize: 24, fontWeight: '900', fontStyle: 'italic' },
-  accent: { color: '#EAB308' },
+const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
+  StyleSheet.create({
+    container: { flex: 1, backgroundColor: theme.bg, paddingTop: 50 },
+    header: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      paddingHorizontal: 20,
+      paddingBottom: 14,
+    },
+    eyebrow: { color: '#EAB308', fontSize: 11, fontWeight: '800', letterSpacing: 0.6 },
+    headerTitle: { color: theme.text, fontSize: 24, fontWeight: '900', fontStyle: 'italic' },
+    accent: { color: '#EAB308' },
 
-  subTabsRow: {
-    flexDirection: 'row',
-    marginHorizontal: 20,
-    backgroundColor: '#121215',
-    borderRadius: 14,
-    padding: 4,
-    borderWidth: 1,
-    borderColor: '#27272A',
-    marginBottom: 12,
-  },
-  subTabBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 5,
-    paddingVertical: 10,
-    borderRadius: 11,
-  },
-  subTabBtnActive: { backgroundColor: '#EAB308' },
-  subTabText: { color: '#A1A1AA', fontSize: 12, fontWeight: '800' },
-  subTabTextActive: { color: '#09090B', fontWeight: '900' },
+    subTabsRow: {
+      flexDirection: 'row',
+      marginHorizontal: 20,
+      backgroundColor: theme.surface,
+      borderRadius: 14,
+      padding: 4,
+      borderWidth: 1,
+      borderColor: theme.border,
+      marginBottom: 12,
+    },
+    subTabBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 5,
+      paddingVertical: 10,
+      borderRadius: 11,
+    },
+    subTabBtnActive: { backgroundColor: '#EAB308' },
+    subTabText: { color: theme.textMuted, fontSize: 12, fontWeight: '800' },
+    subTabTextActive: { color: '#09090B', fontWeight: '900' },
 
-  tabBody: { flex: 1, paddingHorizontal: 20 },
-  searchActionRow: { flexDirection: 'row', gap: 8, marginBottom: 8, alignItems: 'center' },
-  searchBox: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    height: 44,
-  },
-  searchInput: { flex: 1, color: '#FAFAFA', fontSize: 13 },
-  filterBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    justifyContent: 'center',
-    alignItems: 'center',
-    position: 'relative',
-  },
-  filterBtnActive: {
-    backgroundColor: '#EAB308',
-    borderColor: '#EAB308',
-  },
-  filterActiveDot: {
-    position: 'absolute',
-    top: 7,
-    right: 7,
-    width: 7,
-    height: 7,
-    borderRadius: 3.5,
-    backgroundColor: '#EF4444',
-  },
-  filterDrawerCard: {
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 8,
-  },
-  filterDrawerHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 8,
-  },
-  filterDrawerTitle: {
-    color: '#EAB308',
-    fontSize: 12,
-    fontWeight: '800',
-    flex: 1,
-    marginRight: 8,
-  },
-  filterResetText: {
-    color: '#FAFAFA',
-    fontSize: 11,
-    fontWeight: '800',
-    textDecorationLine: 'underline',
-  },
-  iconActionBtn: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: '#EAB308',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  pinHelperText: { color: '#A1A1AA', fontSize: 11, fontWeight: '700', marginBottom: 10 },
+    tabBody: { flex: 1, paddingHorizontal: 20 },
+    searchActionRow: { flexDirection: 'row', gap: 8, marginBottom: 8, alignItems: 'center' },
+    searchBox: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 12,
+      paddingHorizontal: 12,
+      height: 44,
+    },
+    searchInput: { flex: 1, color: theme.text, fontSize: 13 },
+    filterBtn: {
+      width: 44,
+      height: 44,
+      borderRadius: 12,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      justifyContent: 'center',
+      alignItems: 'center',
+      position: 'relative',
+    },
+    filterBtnActive: {
+      backgroundColor: '#EAB308',
+      borderColor: '#EAB308',
+    },
+    filterActiveDot: {
+      position: 'absolute',
+      top: 7,
+      right: 7,
+      width: 7,
+      height: 7,
+      borderRadius: 3.5,
+      backgroundColor: '#EF4444',
+    },
+    filterDrawerCard: {
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 14,
+      padding: 12,
+      marginBottom: 8,
+    },
+    filterDrawerHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 8,
+    },
+    filterDrawerTitle: {
+      color: '#EAB308',
+      fontSize: 12,
+      fontWeight: '800',
+      flex: 1,
+      marginRight: 8,
+    },
+    filterResetText: {
+      color: theme.text,
+      fontSize: 11,
+      fontWeight: '800',
+      textDecorationLine: 'underline',
+    },
+    iconActionBtn: {
+      width: 44,
+      height: 44,
+      borderRadius: 12,
+      backgroundColor: '#EAB308',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    pinHelperText: { color: theme.textMuted, fontSize: 11, fontWeight: '700', marginBottom: 10 },
 
-  multiSportWrap: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 6,
-  },
-  sportFilterChip: {
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 10,
-    backgroundColor: '#09090B',
-    borderWidth: 1,
-    borderColor: '#27272A',
-  },
-  sportFilterChipActive: {
-    backgroundColor: '#EAB308',
-    borderColor: '#EAB308',
-  },
-  sportFilterChipText: {
-    color: '#A1A1AA',
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  sportFilterChipTextActive: {
-    color: '#09090B',
-    fontWeight: '900',
-  },
+    multiSportWrap: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 6,
+    },
+    sportFilterChip: {
+      paddingHorizontal: 11,
+      paddingVertical: 6,
+      borderRadius: 10,
+      backgroundColor: theme.surfaceDeep,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    sportFilterChipActive: {
+      backgroundColor: '#EAB308',
+      borderColor: '#EAB308',
+    },
+    sportFilterChipText: {
+      color: theme.textMuted,
+      fontSize: 11,
+      fontWeight: '800',
+    },
+    sportFilterChipTextActive: {
+      color: '#09090B',
+      fontWeight: '900',
+    },
 
-  compactScopeRow: {
-    flexDirection: 'row',
-    gap: 6,
-    marginBottom: 8,
-  },
-  compactScopeBtn: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 8,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-  },
-  compactScopeBtnActive: {
-    backgroundColor: '#EAB308',
-    borderColor: '#EAB308',
-  },
-  compactScopeText: {
-    color: '#A1A1AA',
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  compactScopeTextActive: {
-    color: '#09090B',
-    fontWeight: '900',
-  },
-  countrySubheader: {
-    color: '#EAB308',
-    fontSize: 12,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
+    compactScopeRow: {
+      flexDirection: 'row',
+      gap: 6,
+      marginBottom: 8,
+    },
+    compactScopeBtn: {
+      paddingHorizontal: 12,
+      paddingVertical: 5,
+      borderRadius: 8,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    compactScopeBtnActive: {
+      backgroundColor: '#EAB308',
+      borderColor: '#EAB308',
+    },
+    compactScopeText: {
+      color: theme.textMuted,
+      fontSize: 11,
+      fontWeight: '800',
+    },
+    compactScopeTextActive: {
+      color: '#09090B',
+      fontWeight: '900',
+    },
+    countrySubheader: {
+      color: '#EAB308',
+      fontSize: 12,
+      fontWeight: '800',
+      marginBottom: 8,
+    },
 
-  leaderboardSortRow: {
-    flexDirection: 'row',
-    gap: 6,
-    marginBottom: 10,
-  },
-  sortPillBtn: {
-    flex: 1,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    alignItems: 'center',
-  },
-  sortPillBtnActive: {
-    backgroundColor: '#27272A',
-    borderColor: '#EAB308',
-  },
-  sortPillText: {
-    color: '#A1A1AA',
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  sortPillTextActive: {
-    color: '#EAB308',
-  },
-  leaderboardHeaderBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderBottomWidth: 1,
-    borderBottomColor: '#27272A',
-    marginBottom: 8,
-  },
-  lbColText: {
-    color: '#71717A',
-    fontSize: 10,
-    fontWeight: '800',
-  },
-  leaderboardRowCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 12,
-    padding: 10,
-    marginBottom: 8,
-  },
-  lbGroupLogoBox: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    backgroundColor: '#18181B',
-    borderWidth: 1,
-    borderColor: '#EAB308',
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  lbGroupLogoLetter: {
-    color: '#EAB308',
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  lbRankNum: {
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  lbMetricValue: {
-    color: '#FAFAFA',
-    fontSize: 12,
-    fontWeight: '900',
-  },
-  lbStageSub: {
-    color: '#71717A',
-    fontSize: 9,
-    fontWeight: '700',
-  },
+    leaderboardSortRow: {
+      flexDirection: 'row',
+      gap: 6,
+      marginBottom: 10,
+    },
+    sortPillBtn: {
+      flex: 1,
+      paddingVertical: 6,
+      borderRadius: 8,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      alignItems: 'center',
+    },
+    sortPillBtnActive: {
+      backgroundColor: theme.surfaceAlt,
+      borderColor: '#EAB308',
+    },
+    sortPillText: {
+      color: theme.textMuted,
+      fontSize: 11,
+      fontWeight: '800',
+    },
+    sortPillTextActive: {
+      color: '#EAB308',
+    },
+    leaderboardHeaderBar: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+      marginBottom: 8,
+    },
+    lbColText: {
+      color: theme.textSubtle,
+      fontSize: 10,
+      fontWeight: '800',
+    },
+    leaderboardRowCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 12,
+      padding: 10,
+      marginBottom: 8,
+    },
+    lbGroupLogoBox: {
+      width: 34,
+      height: 34,
+      borderRadius: 10,
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: '#EAB308',
+      justifyContent: 'center',
+      alignItems: 'center',
+      overflow: 'hidden',
+    },
+    lbGroupLogoLetter: {
+      color: '#EAB308',
+      fontSize: 13,
+      fontWeight: '900',
+    },
+    lbRankNum: {
+      fontSize: 13,
+      fontWeight: '900',
+    },
+    lbMetricValue: {
+      color: theme.text,
+      fontSize: 12,
+      fontWeight: '900',
+    },
+    lbStageSub: {
+      color: theme.textSubtle,
+      fontSize: 9,
+      fontWeight: '700',
+    },
 
-  listCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 16,
-    padding: 13,
-    marginBottom: 10,
-  },
-  listItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#09090B',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 8,
-  },
-  pinnedListCard: {
-    borderColor: '#EAB308',
-    backgroundColor: '#17150B',
-  },
-  avatarCircle: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: '#18181B',
-    borderWidth: 1,
-    borderColor: '#EAB308',
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  smallAvatar: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#18181B',
-    borderWidth: 1,
-    borderColor: '#EAB308',
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  groupHeaderAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#18181B',
-    borderWidth: 1.5,
-    borderColor: '#EAB308',
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  avatarImg: { width: '100%', height: '100%' },
-  avatarLetter: { color: '#EAB308', fontSize: 16, fontWeight: '900' },
-  cardTopLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
-  cardTitle: { color: '#FAFAFA', fontSize: 14, fontWeight: '800' },
-  groupSportsSubtitle: { color: '#EAB308', fontSize: 11, fontWeight: '700', marginTop: 2 },
-  cardSubtitle: { color: '#A1A1AA', fontSize: 12, marginTop: 3 },
-  timeLabel: { color: '#71717A', fontSize: 11, fontWeight: '600' },
+    listCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 16,
+      padding: 13,
+      marginBottom: 10,
+    },
+    listItem: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      backgroundColor: theme.surfaceDeep,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 14,
+      padding: 12,
+      marginBottom: 8,
+    },
+    pinnedListCard: {
+      borderColor: '#EAB308',
+      backgroundColor: theme.pinnedCardBg,
+    },
+    avatarCircle: {
+      width: 46,
+      height: 46,
+      borderRadius: 23,
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: '#EAB308',
+      justifyContent: 'center',
+      alignItems: 'center',
+      overflow: 'hidden',
+    },
+    smallAvatar: {
+      width: 38,
+      height: 38,
+      borderRadius: 19,
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: '#EAB308',
+      justifyContent: 'center',
+      alignItems: 'center',
+      overflow: 'hidden',
+    },
+    groupHeaderAvatar: {
+      width: 40,
+      height: 40,
+      borderRadius: 20,
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1.5,
+      borderColor: '#EAB308',
+      justifyContent: 'center',
+      alignItems: 'center',
+      overflow: 'hidden',
+    },
+    avatarImg: { width: '100%', height: '100%' },
+    avatarLetter: { color: '#EAB308', fontSize: 16, fontWeight: '900' },
+    cardTopLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
+    cardTitle: { color: theme.text, fontSize: 14, fontWeight: '800' },
+    groupSportsSubtitle: { color: '#EAB308', fontSize: 11, fontWeight: '700', marginTop: 2 },
+    cardSubtitle: { color: theme.textMuted, fontSize: 12, marginTop: 3 },
+    timeLabel: { color: theme.textSubtle, fontSize: 11, fontWeight: '600' },
 
-  boostBadgeSmall: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    backgroundColor: '#18181B',
-    borderWidth: 1,
-    paddingHorizontal: 6,
-    paddingVertical: 1,
-    borderRadius: 7,
-  },
-  boostBadgeSmallText: { fontSize: 10, fontWeight: '900' },
+    boostBadgeSmall: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 3,
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      paddingHorizontal: 6,
+      paddingVertical: 1,
+      borderRadius: 7,
+    },
+    boostBadgeSmallText: { fontSize: 10, fontWeight: '900' },
 
-  groupBadgeIcon: {
-    width: 46,
-    height: 46,
-    borderRadius: 14,
-    borderWidth: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  groupMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
-  metaChipText: { color: '#71717A', fontSize: 11, fontWeight: '700' },
-  pendingPill: {
-    backgroundColor: '#332E0F',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  pendingPillText: { color: '#EAB308', fontSize: 10, fontWeight: '800' },
+    groupBadgeIcon: {
+      width: 46,
+      height: 46,
+      borderRadius: 14,
+      borderWidth: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    groupMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 6 },
+    metaChipText: { color: theme.textSubtle, fontSize: 11, fontWeight: '700' },
+    pendingPill: {
+      backgroundColor: theme.isLight ? '#FEF9C3' : '#332E0F',
+      paddingHorizontal: 7,
+      paddingVertical: 2,
+      borderRadius: 6,
+    },
+    pendingPillText: { color: '#EAB308', fontSize: 10, fontWeight: '800' },
 
-  emptyCard: {
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 18,
-    padding: 28,
-    alignItems: 'center',
-    marginTop: 12,
-  },
-  emptyTitle: { color: '#FAFAFA', fontSize: 15, fontWeight: '800', marginTop: 10 },
-  emptySub: { color: '#A1A1AA', fontSize: 12, textAlign: 'center', marginTop: 4, lineHeight: 18 },
-  emptyPrimaryBtn: {
-    marginTop: 14,
-    backgroundColor: '#EAB308',
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 12,
-  },
-  emptyPrimaryBtnText: { color: '#09090B', fontWeight: '900', fontSize: 12 },
+    emptyCard: {
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 18,
+      padding: 28,
+      alignItems: 'center',
+      marginTop: 12,
+    },
+    emptyTitle: { color: theme.text, fontSize: 15, fontWeight: '800', marginTop: 10 },
+    emptySub: { color: theme.textMuted, fontSize: 12, textAlign: 'center', marginTop: 4, lineHeight: 18 },
+    emptyPrimaryBtn: {
+      marginTop: 14,
+      backgroundColor: '#EAB308',
+      paddingHorizontal: 18,
+      paddingVertical: 10,
+      borderRadius: 12,
+    },
+    emptyPrimaryBtnText: { color: '#09090B', fontWeight: '900', fontSize: 12 },
 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(9,9,11,0.88)', justifyContent: 'flex-end' },
-  floatingOverlayCenter: {
-    flex: 1,
-    backgroundColor: 'rgba(9,9,11,0.92)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 18,
-    zIndex: 999,
-    elevation: 20,
-  },
-  modalContentCenter: {
-    backgroundColor: '#121215',
-    borderRadius: 24,
-    padding: 20,
-    borderWidth: 1,
-    borderColor: '#27272A',
-    width: '100%',
-    maxWidth: 400,
-    maxHeight: '85%',
-  },
-  profileModalSheet: {
-    backgroundColor: '#09090B',
-    borderRadius: 26,
-    padding: 18,
-    width: '100%',
-    maxWidth: 420,
-    height: '86%',
-    borderWidth: 1,
-    borderColor: '#27272A',
-  },
-  profileCenterHeader: { alignItems: 'center', marginBottom: 14 },
-  profileAvatarLg: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    backgroundColor: '#18181B',
-    borderWidth: 2,
-    borderColor: '#EAB308',
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-    marginBottom: 10,
-  },
-  profileAvatarLgText: { color: '#EAB308', fontSize: 30, fontWeight: '900' },
-  profileModalName: { color: '#FAFAFA', fontSize: 19, fontWeight: '900' },
-  profileSportsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'center',
-    gap: 6,
-    marginVertical: 8,
-  },
-  profileSportPill: {
-    backgroundColor: '#18181B',
-    borderWidth: 1,
-    borderColor: '#EAB308',
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 10,
-  },
-  profileSportPillText: { color: '#EAB308', fontSize: 11, fontWeight: '700' },
-  profileMetaLine: { color: '#A1A1AA', fontSize: 12 },
-  profileStatsBar: {
-    flexDirection: 'row',
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 14,
-    paddingVertical: 12,
-    marginBottom: 14,
-  },
-  profileStatItem: { flex: 1, alignItems: 'center' },
-  profileStatNum: { color: '#EAB308', fontSize: 17, fontWeight: '900' },
-  profileStatLabel: { color: '#A1A1AA', fontSize: 11, marginTop: 2 },
-  profilePrimaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: '#EAB308',
-    height: 42,
-    borderRadius: 12,
-    paddingHorizontal: 14,
-  },
-  profilePrimaryBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
-  profileFollowingBtnAlt: {
-    backgroundColor: '#18181B',
-    borderWidth: 1,
-    borderColor: '#EAB308',
-  },
-  profileBlockBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    alignSelf: 'center',
-    gap: 4,
-    backgroundColor: '#18181B',
-    borderWidth: 1,
-    borderColor: '#EF4444',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-  },
-  profileBlockBtnText: { color: '#EF4444', fontSize: 11, fontWeight: '700' },
+    modalOverlay: { flex: 1, backgroundColor: theme.overlay, justifyContent: 'flex-end' },
+    floatingOverlayCenter: {
+      flex: 1,
+      backgroundColor: theme.centerOverlay,
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingHorizontal: 18,
+      zIndex: 999,
+      elevation: 20,
+    },
+    modalContentCenter: {
+      backgroundColor: theme.surface,
+      borderRadius: 24,
+      padding: 20,
+      borderWidth: 1,
+      borderColor: theme.border,
+      width: '100%',
+      maxWidth: 400,
+      maxHeight: '85%',
+    },
+    profileModalSheet: {
+      backgroundColor: theme.surfaceDeep,
+      borderRadius: 26,
+      padding: 18,
+      width: '100%',
+      maxWidth: 420,
+      height: '86%',
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    profileCenterHeader: { alignItems: 'center', marginBottom: 14 },
+    profileAvatarLg: {
+      width: 80,
+      height: 80,
+      borderRadius: 40,
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 2,
+      borderColor: '#EAB308',
+      justifyContent: 'center',
+      alignItems: 'center',
+      overflow: 'hidden',
+      marginBottom: 10,
+    },
+    profileAvatarLgText: { color: '#EAB308', fontSize: 30, fontWeight: '900' },
+    profileModalName: { color: theme.text, fontSize: 19, fontWeight: '900' },
+    profileSportsRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      justifyContent: 'center',
+      gap: 6,
+      marginVertical: 8,
+    },
+    profileSportPill: {
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: '#EAB308',
+      paddingHorizontal: 10,
+      paddingVertical: 3,
+      borderRadius: 10,
+    },
+    profileSportPillText: { color: '#EAB308', fontSize: 11, fontWeight: '700' },
+    profileMetaLine: { color: theme.textMuted, fontSize: 12 },
+    profileStatsBar: {
+      flexDirection: 'row',
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 14,
+      paddingVertical: 12,
+      marginBottom: 14,
+    },
+    profileStatItem: { flex: 1, alignItems: 'center' },
+    profileStatNum: { color: '#EAB308', fontSize: 17, fontWeight: '900' },
+    profileStatLabel: { color: theme.textMuted, fontSize: 11, marginTop: 2 },
+    profilePrimaryBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      backgroundColor: '#EAB308',
+      height: 42,
+      borderRadius: 12,
+      paddingHorizontal: 14,
+    },
+    profilePrimaryBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
+    profileFollowingBtnAlt: {
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: '#EAB308',
+    },
+    profileBlockBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      alignSelf: 'center',
+      gap: 4,
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: '#EF4444',
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      paddingVertical: 5,
+    },
+    profileBlockBtnText: { color: '#EF4444', fontSize: 11, fontWeight: '700' },
 
-  modalSheet: {
-    backgroundColor: '#121215',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
-    maxHeight: '88%',
-    borderWidth: 1,
-    borderColor: '#27272A',
-  },
-  fullScreenSettingsHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    paddingBottom: 14,
-    marginBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#27272A',
-  },
-  fullScreenSettingsTitle: {
-    color: '#FAFAFA',
-    fontSize: 19,
-    fontWeight: '900',
-  },
-  closeFullScreenBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  roomSheet: {
-    backgroundColor: '#09090B',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 16,
-    height: '92%',
-    borderWidth: 1,
-    borderColor: '#27272A',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 14,
-  },
-  modalTitle: { color: '#FAFAFA', fontSize: 18, fontWeight: '900' },
+    modalSheet: {
+      backgroundColor: theme.surface,
+      borderTopLeftRadius: 24,
+      borderTopRightRadius: 24,
+      padding: 20,
+      maxHeight: '88%',
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    fullScreenSettingsHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      paddingBottom: 14,
+      marginBottom: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+    },
+    fullScreenSettingsTitle: {
+      color: theme.text,
+      fontSize: 19,
+      fontWeight: '900',
+    },
+    closeFullScreenBtn: {
+      width: 38,
+      height: 38,
+      borderRadius: 19,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    roomSheet: {
+      backgroundColor: theme.bg,
+      borderTopLeftRadius: 24,
+      borderTopRightRadius: 24,
+      padding: 16,
+      height: '92%',
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    modalHeader: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: 14,
+    },
+    modalTitle: { color: theme.text, fontSize: 18, fontWeight: '900' },
 
-  userPickRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#09090B',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 14,
-    padding: 11,
-    marginBottom: 8,
-  },
+    userPickRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      backgroundColor: theme.surfaceDeep,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 14,
+      padding: 11,
+      marginBottom: 8,
+    },
 
-  roomHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#27272A',
-  },
-  backIconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  roomTitle: { color: '#FAFAFA', fontSize: 15, fontWeight: '900' },
-  roomSubtitle: { color: '#A1A1AA', fontSize: 11, marginTop: 1 },
+    roomHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingBottom: 12,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.border,
+    },
+    backIconBtn: {
+      width: 36,
+      height: 36,
+      borderRadius: 18,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    roomTitle: { color: theme.text, fontSize: 15, fontWeight: '900' },
+    roomSubtitle: { color: theme.textMuted, fontSize: 11, marginTop: 1 },
 
-  pinnedBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: '#181509',
-    borderWidth: 1,
-    borderColor: '#EAB30866',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginTop: 8,
-  },
-  pinnedBannerTitle: { color: '#EAB308', fontSize: 11, fontWeight: '900' },
-  pinnedBannerText: { color: '#FAFAFA', fontSize: 12, marginTop: 1 },
+    pinnedBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      backgroundColor: theme.pinnedBg,
+      borderWidth: 1,
+      borderColor: '#EAB30866',
+      borderRadius: 12,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      marginTop: 8,
+    },
+    pinnedBannerTitle: { color: '#EAB308', fontSize: 11, fontWeight: '900' },
+    pinnedBannerText: { color: theme.text, fontSize: 12, marginTop: 1 },
 
-  messagesScroll: { flex: 1 },
-  emptyChatHint: { color: '#71717A', textAlign: 'center', marginTop: 40, fontSize: 13 },
-  bubbleRow: { marginBottom: 10, flexDirection: 'row', alignItems: 'flex-end', gap: 6 },
-  bubbleLeft: { justifyContent: 'flex-start' },
-  bubbleRight: { justifyContent: 'flex-end' },
-  bubble: {
-    maxWidth: '78%',
-    paddingHorizontal: 13,
-    paddingVertical: 9,
-    borderRadius: 15,
-    borderWidth: 1,
-  },
-  bubbleOther: { backgroundColor: '#121215', borderColor: '#27272A' },
-  bubbleMe: { backgroundColor: '#EAB308', borderColor: '#EAB308' },
-  highlightedBubble: {
-    borderColor: '#38BDF8',
-    borderWidth: 2,
-  },
-  senderTag: { color: '#EAB308', fontSize: 11, fontWeight: '800', textDecorationLine: 'underline' },
-  adminTag: {
-    color: '#09090B',
-    backgroundColor: '#EAB308',
-    fontSize: 9,
-    fontWeight: '900',
-    paddingHorizontal: 5,
-    paddingVertical: 1,
-    borderRadius: 4,
-    overflow: 'hidden',
-  },
-  chatInlineMedia: { width: 210, height: 145, borderRadius: 10, marginBottom: 4 },
-  chatInlineVideo: { width: 220, height: 135, borderRadius: 10, marginBottom: 4 },
-  videoPreviewCard: {
-    backgroundColor: '#18181B',
-    borderWidth: 1,
-    borderColor: '#38BDF8',
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
-  videoPlayCircle: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: 'rgba(234, 179, 8, 0.92)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  bubbleText: { color: '#FAFAFA', fontSize: 13, lineHeight: 18 },
-  bubbleFooterRow: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    gap: 5,
-    marginTop: 4,
-  },
-  bubbleTime: { color: '#A1A1AA', fontSize: 9 },
+    messagesScroll: { flex: 1 },
+    emptyChatHint: { color: theme.textSubtle, textAlign: 'center', marginTop: 40, fontSize: 13 },
+    bubbleRow: { marginBottom: 10, flexDirection: 'row', alignItems: 'flex-end', gap: 6 },
+    bubbleLeft: { justifyContent: 'flex-start' },
+    bubbleRight: { justifyContent: 'flex-end' },
+    bubble: {
+      maxWidth: '78%',
+      paddingHorizontal: 13,
+      paddingVertical: 9,
+      borderRadius: 15,
+      borderWidth: 1,
+    },
+    bubbleOther: { backgroundColor: theme.surface, borderColor: theme.border },
+    bubbleMe: { backgroundColor: '#EAB308', borderColor: '#EAB308' },
+    highlightedBubble: {
+      borderColor: '#38BDF8',
+      borderWidth: 2,
+    },
+    senderTag: { color: '#EAB308', fontSize: 11, fontWeight: '800', textDecorationLine: 'underline' },
+    adminTag: {
+      color: '#09090B',
+      backgroundColor: '#EAB308',
+      fontSize: 9,
+      fontWeight: '900',
+      paddingHorizontal: 5,
+      paddingVertical: 1,
+      borderRadius: 4,
+      overflow: 'hidden',
+    },
+    chatInlineMedia: { width: 210, height: 145, borderRadius: 10, marginBottom: 4 },
+    chatInlineVideo: { width: 220, height: 135, borderRadius: 10, marginBottom: 4 },
+    videoPreviewCard: {
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: '#38BDF8',
+      justifyContent: 'center',
+      alignItems: 'center',
+      overflow: 'hidden',
+    },
+    videoPlayCircle: {
+      width: 42,
+      height: 42,
+      borderRadius: 21,
+      backgroundColor: 'rgba(234, 179, 8, 0.92)',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    bubbleText: { color: theme.text, fontSize: 13, lineHeight: 18 },
+    bubbleFooterRow: {
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      alignItems: 'center',
+      gap: 5,
+      marginTop: 4,
+    },
+    bubbleTime: { color: theme.textMuted, fontSize: 9 },
 
-  reactionsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 4,
-    marginTop: 6,
-  },
-  reactionChip: {
-    backgroundColor: '#18181B',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 10,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
-  },
-  reactionChipMine: {
-    borderColor: '#38BDF8',
-    backgroundColor: '#0F2430',
-  },
-  reactionChipText: {
-    color: '#FAFAFA',
-    fontSize: 10,
-    fontWeight: '800',
-  },
+    reactionsRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 4,
+      marginTop: 6,
+    },
+    reactionChip: {
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 10,
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+    },
+    reactionChipMine: {
+      borderColor: '#38BDF8',
+      backgroundColor: theme.isLight ? '#E0F2FE' : '#0F2430',
+    },
+    reactionChipText: {
+      color: theme.text,
+      fontSize: 10,
+      fontWeight: '800',
+    },
 
-  pendingMediaPreviewBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#EAB30866',
-    borderRadius: 12,
-    padding: 8,
-    marginBottom: 6,
-  },
-  pendingMediaThumb: {
-    width: 54,
-    height: 54,
-    borderRadius: 8,
-    backgroundColor: '#09090B',
-  },
-  pendingMediaTitle: {
-    color: '#FAFAFA',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  pendingMediaSub: {
-    color: '#A1A1AA',
-    fontSize: 11,
-    marginTop: 1,
-  },
+    pendingMediaPreviewBox: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: '#EAB30866',
+      borderRadius: 12,
+      padding: 8,
+      marginBottom: 6,
+    },
+    pendingMediaThumb: {
+      width: 54,
+      height: 54,
+      borderRadius: 8,
+      backgroundColor: theme.surfaceDeep,
+    },
+    pendingMediaTitle: {
+      color: theme.text,
+      fontSize: 12,
+      fontWeight: '800',
+    },
+    pendingMediaSub: {
+      color: theme.textMuted,
+      fontSize: 11,
+      marginTop: 1,
+    },
 
-  joinFooterBox: {
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#27272A',
-    gap: 8,
-  },
-  joinFooterHint: {
-    color: '#A1A1AA',
-    fontSize: 11,
-    textAlign: 'center',
-    fontWeight: '700',
-  },
-  joinGroupPrimaryBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#EAB308',
-    height: 46,
-    borderRadius: 14,
-  },
-  joinGroupPrimaryBtnText: {
-    color: '#09090B',
-    fontSize: 14,
-    fontWeight: '900',
-  },
+    joinFooterBox: {
+      paddingTop: 10,
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+      gap: 8,
+    },
+    joinFooterHint: {
+      color: theme.textMuted,
+      fontSize: 11,
+      textAlign: 'center',
+      fontWeight: '700',
+    },
+    joinGroupPrimaryBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      backgroundColor: '#EAB308',
+      height: 46,
+      borderRadius: 14,
+    },
+    joinGroupPrimaryBtnText: {
+      color: '#09090B',
+      fontSize: 14,
+      fontWeight: '900',
+    },
 
-  composerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingTop: 10,
-    borderTopWidth: 1,
-    borderTopColor: '#27272A',
-  },
-  mediaAttachBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  composerInput: {
-    flex: 1,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 18,
-    height: 42,
-    paddingHorizontal: 13,
-    color: '#FAFAFA',
-    fontSize: 13,
-  },
-  sendBtn: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
-    backgroundColor: '#EAB308',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
+    composerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      paddingTop: 10,
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+    },
+    mediaAttachBtn: {
+      width: 38,
+      height: 38,
+      borderRadius: 19,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    composerInput: {
+      flex: 1,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 18,
+      height: 42,
+      paddingHorizontal: 13,
+      color: theme.text,
+      fontSize: 13,
+    },
+    sendBtn: {
+      width: 42,
+      height: 42,
+      borderRadius: 21,
+      backgroundColor: '#EAB308',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
 
-  fieldLabel: { color: '#A1A1AA', fontSize: 12, fontWeight: '700', marginBottom: 6 },
-  input: {
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 12,
-    height: 44,
-    paddingHorizontal: 12,
-    color: '#FAFAFA',
-    fontSize: 13,
-    marginBottom: 14,
-  },
-  privacyRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
-  privacyCard: {
-    flex: 1,
-    backgroundColor: '#09090B',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 14,
-    padding: 12,
-    alignItems: 'center',
-  },
-  privacyCardPublic: { borderColor: '#22C55E', backgroundColor: '#14382522' },
-  privacyCardPrivate: { borderColor: '#EAB308', backgroundColor: '#332E0F22' },
-  privacyTitle: { color: '#FAFAFA', fontSize: 13, fontWeight: '800', marginTop: 6 },
-  privacySub: { color: '#71717A', fontSize: 10, textAlign: 'center', marginTop: 2 },
+    fieldLabel: { color: theme.textMuted, fontSize: 12, fontWeight: '700', marginBottom: 6 },
+    input: {
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 12,
+      height: 44,
+      paddingHorizontal: 12,
+      color: theme.text,
+      fontSize: 13,
+      marginBottom: 14,
+    },
+    privacyRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
+    privacyCard: {
+      flex: 1,
+      backgroundColor: theme.surfaceDeep,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 14,
+      padding: 12,
+      alignItems: 'center',
+    },
+    privacyCardPublic: { borderColor: '#22C55E', backgroundColor: '#14382522' },
+    privacyCardPrivate: { borderColor: '#EAB308', backgroundColor: '#332E0F22' },
+    privacyTitle: { color: theme.text, fontSize: 13, fontWeight: '800', marginTop: 6 },
+    privacySub: { color: theme.textSubtle, fontSize: 10, textAlign: 'center', marginTop: 2 },
 
-  primarySubmitBtn: {
-    backgroundColor: '#EAB308',
-    height: 46,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  primarySubmitBtnText: { color: '#09090B', fontSize: 14, fontWeight: '900' },
+    primarySubmitBtn: {
+      backgroundColor: '#EAB308',
+      height: 46,
+      borderRadius: 12,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    primarySubmitBtnText: { color: '#09090B', fontSize: 14, fontWeight: '900' },
 
-  settingsPillsRow: {
-    flexDirection: 'row',
-    gap: 6,
-    marginBottom: 16,
-  },
-  settingsPillBtn: {
-    flex: 1,
-    paddingVertical: 9,
-    borderRadius: 10,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    alignItems: 'center',
-  },
-  settingsPillActive: {
-    backgroundColor: '#EAB308',
-    borderColor: '#EAB308',
-  },
-  settingsPillText: {
-    color: '#A1A1AA',
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  settingsPillTextActive: {
-    color: '#09090B',
-    fontWeight: '900',
-  },
+    settingsPillsRow: {
+      flexDirection: 'row',
+      gap: 6,
+      marginBottom: 16,
+    },
+    settingsPillBtn: {
+      flex: 1,
+      paddingVertical: 9,
+      borderRadius: 10,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      alignItems: 'center',
+    },
+    settingsPillActive: {
+      backgroundColor: '#EAB308',
+      borderColor: '#EAB308',
+    },
+    settingsPillText: {
+      color: theme.textMuted,
+      fontSize: 11,
+      fontWeight: '800',
+    },
+    settingsPillTextActive: {
+      color: '#09090B',
+      fontWeight: '900',
+    },
 
-  groupProfileEditRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 14,
-  },
-  groupEditAvatarBox: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: '#18181B',
-    borderWidth: 1.5,
-    borderColor: '#EAB308',
-    justifyContent: 'center',
-    alignItems: 'center',
-    overflow: 'hidden',
-  },
+    groupProfileEditRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 14,
+      padding: 14,
+      marginBottom: 14,
+    },
+    groupEditAvatarBox: {
+      width: 56,
+      height: 56,
+      borderRadius: 28,
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1.5,
+      borderColor: '#EAB308',
+      justifyContent: 'center',
+      alignItems: 'center',
+      overflow: 'hidden',
+    },
 
-  boostStatusCard: {
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 14,
-    padding: 14,
-    marginBottom: 14,
-  },
-  boostCountValue: { fontSize: 16, fontWeight: '900' },
-  progressBarTrack: {
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#18181B',
-    overflow: 'hidden',
-    marginTop: 10,
-    marginBottom: 6,
-  },
-  progressBarFill: {
-    height: '100%',
-    borderRadius: 4,
-  },
-  stageInfoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 12,
-    padding: 10,
-    marginBottom: 7,
-  },
-  packTagPill: {
-    backgroundColor: '#18181B',
-    borderWidth: 1,
-    color: '#EAB308',
-    fontSize: 10,
-    fontWeight: '800',
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-    overflow: 'hidden',
-  },
-  boostOptionCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 10,
-  },
-  boostBuyPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: '#EAB308',
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-    borderRadius: 10,
-  },
-  boostBuyPillText: { color: '#09090B', fontSize: 12, fontWeight: '900' },
+    boostStatusCard: {
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 14,
+      padding: 14,
+      marginBottom: 14,
+    },
+    boostCountValue: { fontSize: 16, fontWeight: '900' },
+    progressBarTrack: {
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: theme.surfaceAlt,
+      overflow: 'hidden',
+      marginTop: 10,
+      marginBottom: 6,
+    },
+    progressBarFill: {
+      height: '100%',
+      borderRadius: 4,
+    },
+    stageInfoRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 12,
+      padding: 10,
+      marginBottom: 7,
+    },
+    packTagPill: {
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      color: '#EAB308',
+      fontSize: 10,
+      fontWeight: '800',
+      paddingHorizontal: 7,
+      paddingVertical: 2,
+      borderRadius: 6,
+      overflow: 'hidden',
+    },
+    boostOptionCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 14,
+      padding: 12,
+      marginBottom: 10,
+    },
+    boostBuyPill: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      backgroundColor: '#EAB308',
+      paddingHorizontal: 11,
+      paddingVertical: 7,
+      borderRadius: 10,
+    },
+    boostBuyPillText: { color: '#09090B', fontSize: 12, fontWeight: '900' },
 
-  wallpaperActionsRow: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  wallpaperPrimaryBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: '#EAB308',
-    paddingVertical: 11,
-    borderRadius: 10,
-  },
-  wallpaperPrimaryBtnText: {
-    color: '#09090B',
-    fontSize: 12,
-    fontWeight: '900',
-  },
-  wallpaperClearBtn: {
-    backgroundColor: '#1F1214',
-    borderWidth: 1,
-    borderColor: '#EF4444',
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    borderRadius: 10,
-  },
-  wallpaperClearBtnText: {
-    color: '#EF4444',
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  wallpaperPreview: {
-    width: '100%',
-    height: 150,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#27272A',
-  },
+    wallpaperActionsRow: {
+      flexDirection: 'row',
+      gap: 8,
+      alignItems: 'center',
+      marginBottom: 10,
+    },
+    wallpaperPrimaryBtn: {
+      flex: 1,
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 6,
+      backgroundColor: '#EAB308',
+      paddingVertical: 11,
+      borderRadius: 10,
+    },
+    wallpaperPrimaryBtnText: {
+      color: '#09090B',
+      fontSize: 12,
+      fontWeight: '900',
+    },
+    wallpaperClearBtn: {
+      backgroundColor: theme.isLight ? '#FEE2E2' : '#1F1214',
+      borderWidth: 1,
+      borderColor: '#EF4444',
+      paddingHorizontal: 12,
+      paddingVertical: 11,
+      borderRadius: 10,
+    },
+    wallpaperClearBtnText: {
+      color: '#EF4444',
+      fontSize: 12,
+      fontWeight: '800',
+    },
+    wallpaperPreview: {
+      width: '100%',
+      height: 150,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
 
-  mediaGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  mediaTile: {
-    width: '31%',
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 10,
-    overflow: 'hidden',
-  },
-  mediaTileImg: {
-    width: '100%',
-    height: 92,
-  },
-  mediaTileCaption: {
-    color: '#A1A1AA',
-    fontSize: 10,
-    padding: 5,
-  },
+    mediaGrid: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: 8,
+    },
+    mediaTile: {
+      width: '31%',
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 10,
+      overflow: 'hidden',
+    },
+    mediaTileImg: {
+      width: '100%',
+      height: 92,
+    },
+    mediaTileCaption: {
+      color: theme.textMuted,
+      fontSize: 10,
+      padding: 5,
+    },
 
-  sectionHeading: { color: '#EAB308', fontSize: 13, fontWeight: '800', marginBottom: 8 },
-  mutedNote: { color: '#71717A', fontSize: 12, marginTop: 4 },
-  manageRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 12,
-    padding: 11,
-    marginBottom: 8,
-    gap: 8,
-  },
-  approveBtn: {
-    backgroundColor: '#22C55E',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  approveBtnText: { color: '#09090B', fontSize: 11, fontWeight: '900' },
-  kickBtn: {
-    backgroundColor: '#1F160C',
-    borderWidth: 1,
-    borderColor: '#F97316',
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  kickBtnText: { color: '#F97316', fontSize: 11, fontWeight: '800' },
-  rejectBtn: {
-    backgroundColor: '#1F1214',
-    borderWidth: 1,
-    borderColor: '#EF4444',
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  rejectBtnText: { color: '#EF4444', fontSize: 11, fontWeight: '800' },
-  roleToggleBtn: {
-    backgroundColor: '#18181B',
-    borderWidth: 1,
-    borderColor: '#EAB308',
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-    borderRadius: 8,
-  },
-  roleToggleBtnActive: { borderColor: '#EF4444' },
-  roleToggleText: { color: '#EAB308', fontSize: 11, fontWeight: '800' },
+    sectionHeading: { color: '#EAB308', fontSize: 13, fontWeight: '800', marginBottom: 8 },
+    mutedNote: { color: theme.textSubtle, fontSize: 12, marginTop: 4 },
+    manageRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 12,
+      padding: 11,
+      marginBottom: 8,
+      gap: 8,
+    },
+    approveBtn: {
+      backgroundColor: '#22C55E',
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 8,
+    },
+    approveBtnText: { color: '#09090B', fontSize: 11, fontWeight: '900' },
+    kickBtn: {
+      backgroundColor: theme.isLight ? '#FFEDD5' : '#1F160C',
+      borderWidth: 1,
+      borderColor: '#F97316',
+      paddingHorizontal: 9,
+      paddingVertical: 6,
+      borderRadius: 8,
+    },
+    kickBtnText: { color: '#F97316', fontSize: 11, fontWeight: '800' },
+    rejectBtn: {
+      backgroundColor: theme.isLight ? '#FEE2E2' : '#1F1214',
+      borderWidth: 1,
+      borderColor: '#EF4444',
+      paddingHorizontal: 9,
+      paddingVertical: 6,
+      borderRadius: 8,
+    },
+    rejectBtnText: { color: '#EF4444', fontSize: 11, fontWeight: '800' },
+    roleToggleBtn: {
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: '#EAB308',
+      paddingHorizontal: 9,
+      paddingVertical: 6,
+      borderRadius: 8,
+    },
+    roleToggleBtnActive: { borderColor: '#EF4444' },
+    roleToggleText: { color: '#EAB308', fontSize: 11, fontWeight: '800' },
 
-  membershipActionsBox: {
-    marginTop: 22,
-    paddingTop: 16,
-    borderTopWidth: 1,
-    borderTopColor: '#27272A',
-    gap: 10,
-  },
-  leaveGroupBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#1C140C',
-    borderWidth: 1,
-    borderColor: '#F97316',
-    height: 46,
-    borderRadius: 12,
-  },
-  leaveGroupBtnText: {
-    color: '#F97316',
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  closeGroupBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: '#1F1214',
-    borderWidth: 1,
-    borderColor: '#EF4444',
-    height: 46,
-    borderRadius: 12,
-  },
-  closeGroupBtnText: {
-    color: '#EF4444',
-    fontSize: 13,
-    fontWeight: '900',
-  },
+    membershipActionsBox: {
+      marginTop: 22,
+      paddingTop: 16,
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+      gap: 10,
+    },
+    leaveGroupBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      backgroundColor: theme.isLight ? '#FFEDD5' : '#1C140C',
+      borderWidth: 1,
+      borderColor: '#F97316',
+      height: 46,
+      borderRadius: 12,
+    },
+    leaveGroupBtnText: {
+      color: '#F97316',
+      fontSize: 13,
+      fontWeight: '900',
+    },
+    closeGroupBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 8,
+      backgroundColor: theme.isLight ? '#FEE2E2' : '#1F1214',
+      borderWidth: 1,
+      borderColor: '#EF4444',
+      height: 46,
+      borderRadius: 12,
+    },
+    closeGroupBtnText: {
+      color: '#EF4444',
+      fontSize: 13,
+      fontWeight: '900',
+    },
 
-  actionSheetBackdrop: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.72)',
-    justifyContent: 'center',
-    paddingHorizontal: 22,
-  },
-  actionSheetBox: {
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 18,
-    padding: 16,
-  },
-  actionSheetLabel: {
-    color: '#A1A1AA',
-    fontSize: 11,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
-  emojiPickerScroll: {
-    marginBottom: 14,
-    backgroundColor: '#09090B',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#27272A',
-  },
-  emojiPickerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 6,
-  },
-  emojiChoiceBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  emojiChoiceBtnSelected: {
-    backgroundColor: '#27272A',
-  },
-  emojiChoiceText: {
-    fontSize: 20,
-  },
-  actionRowBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#27272A',
-  },
-  actionRowBtnText: {
-    color: '#FAFAFA',
-    fontSize: 14,
-    fontWeight: '700',
-  },
+    actionSheetBackdrop: {
+      flex: 1,
+      backgroundColor: theme.sheetBackdrop,
+      justifyContent: 'center',
+      paddingHorizontal: 22,
+    },
+    actionSheetBox: {
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 18,
+      padding: 16,
+    },
+    actionSheetLabel: {
+      color: theme.textMuted,
+      fontSize: 11,
+      fontWeight: '800',
+      marginBottom: 8,
+    },
+    emojiPickerScroll: {
+      marginBottom: 14,
+      backgroundColor: theme.surfaceDeep,
+      borderRadius: 12,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    emojiPickerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 4,
+      paddingHorizontal: 8,
+      paddingVertical: 6,
+    },
+    emojiChoiceBtn: {
+      width: 38,
+      height: 38,
+      borderRadius: 19,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    emojiChoiceBtnSelected: {
+      backgroundColor: theme.surfaceAlt,
+    },
+    emojiChoiceText: {
+      fontSize: 20,
+    },
+    actionRowBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingVertical: 12,
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+    },
+    actionRowBtnText: {
+      color: theme.text,
+      fontSize: 14,
+      fontWeight: '700',
+    },
 
-  floatingLightbox: {
-    flex: 1,
-    backgroundColor: '#09090B',
-    paddingTop: 52,
-    paddingHorizontal: 16,
-    paddingBottom: 28,
-    zIndex: 999,
-    elevation: 20,
-  },
-  lightboxTopBar: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  lightboxSender: {
-    color: '#EAB308',
-    fontSize: 13,
-    fontWeight: '900',
-  },
-  lightboxBody: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  lightboxImage: {
-    width: '100%',
-    height: '85%',
-    borderRadius: 12,
-  },
-  lightboxVideo: {
-    width: '100%',
-    height: 380,
-    borderRadius: 12,
-    backgroundColor: '#000',
-  },
-  lightboxBottomCaptionCard: {
-    backgroundColor: '#121215',
-    borderWidth: 1,
-    borderColor: '#27272A',
-    borderRadius: 14,
-    padding: 12,
-    marginTop: 10,
-  },
-  lightboxBottomCaptionText: {
-    color: '#FAFAFA',
-    fontSize: 14,
-    lineHeight: 20,
-    marginTop: 2,
-  },
-});
+    floatingLightbox: {
+      flex: 1,
+      backgroundColor: '#09090B',
+      paddingTop: 52,
+      paddingHorizontal: 16,
+      paddingBottom: 28,
+      zIndex: 999,
+      elevation: 20,
+    },
+    lightboxTopBar: {
+      flexDirection: 'row',
+      justifyContent: 'flex-end',
+      alignItems: 'center',
+      marginBottom: 10,
+    },
+    lightboxSender: {
+      color: '#EAB308',
+      fontSize: 13,
+      fontWeight: '900',
+    },
+    lightboxBody: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    lightboxImage: {
+      width: '100%',
+      height: '85%',
+      borderRadius: 12,
+    },
+    lightboxVideo: {
+      width: '100%',
+      height: 380,
+      borderRadius: 12,
+      backgroundColor: '#000',
+    },
+    lightboxBottomCaptionCard: {
+      backgroundColor: '#121215',
+      borderWidth: 1,
+      borderColor: '#27272A',
+      borderRadius: 14,
+      padding: 12,
+      marginTop: 10,
+    },
+    lightboxBottomCaptionText: {
+      color: '#FAFAFA',
+      fontSize: 14,
+      lineHeight: 20,
+      marginTop: 2,
+    },
+  });

@@ -10,8 +10,15 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.naor823.WorldSports",
       "buildNumber": "6",
+      "deploymentTarget": "16.0",
       "icon": "./assets/notification-icon.png",
+      "entitlements": {
+        "com.apple.security.application-groups": [
+          "group.com.naor823.WorldSports"
+        ]
+      },
       "infoPlist": {
+        "CFBundleDisplayName": "World\u00A0Sports",
         "NSLocationWhenInUseUsageDescription": "This app uses GPS to detect your live location.",
         "ITSAppUsesNonExemptEncryption": false,
         "CFBundleURLTypes": [
@@ -56,7 +63,8 @@
       ],
       "expo-web-browser",
       "expo-video",
-      "expo-audio"
+      "expo-audio",
+      "./plugins/withLockScreenWidget"
     ],
     "extra": {
       "router": {

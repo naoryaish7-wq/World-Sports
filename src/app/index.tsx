@@ -7,12 +7,15 @@ import { router } from 'expo-router';
 import { Ionicons, FontAwesome } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
 import * as Google from 'expo-auth-session/providers/google';
+import { makeRedirectUri } from 'expo-auth-session';
 import * as WebBrowser from 'expo-web-browser';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 WebBrowser.maybeCompleteAuthSession();
 
 const IOS_CLIENT_ID = '562029576530-hafa1usttf58rlflt06uohkruev7t3a5.apps.googleusercontent.com';
 const WEB_CLIENT_ID = '562029576530-1rqebmfjovhqlius30ntb9krpfk8g77a.apps.googleusercontent.com';
+const APP_SCHEME = 'worldsports';
 
 const { width } = Dimensions.get('window');
 const SPORTS_LIST = ['Football ⚽', 'Basketball 🏀', 'Tennis 🎾', 'Running 🏃‍♂️', 'Fitness 💪', 'Cycling 🚴‍♂️', 'Swimming 🏊‍♂️'];
@@ -54,9 +57,14 @@ export default function LoginScreen() {
   const [isSportModalVisible, setIsSportModalVisible] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
+  const redirectUri = makeRedirectUri({
+    scheme: APP_SCHEME,
+  });
+
   const [request, , promptAsync] = Google.useAuthRequest({
     iosClientId: IOS_CLIENT_ID,
     webClientId: WEB_CLIENT_ID,
+    redirectUri,
   });
 
   // כניסה אוטומטית למסך הבית ברגע שהמשתמש כבר מחובר ונטען
@@ -203,8 +211,7 @@ export default function LoginScreen() {
   const handleGoogleLogin = async () => {
     try {
       setIsGoogleLoading(true);
-      const result = await promptAsync();
-
+       const result = await promptAsync();
       if (result.type === 'success') {
         const idToken = result.authentication?.idToken || result.params?.id_token;
         if (!idToken) {
@@ -214,6 +221,10 @@ export default function LoginScreen() {
         const credential = GoogleAuthProvider.credential(idToken);
         const userCred = await signInWithCredential(auth, credential);
         const fbUser = userCred.user;
+
+        if (fbUser.email) {
+          await AsyncStorage.setItem('@saved_user_email', fbUser.email.toLowerCase());
+        }
 
         const userId = fbUser.email
           ? fbUser.email.toLowerCase().replace(/[^a-z0-9]/g, '_')

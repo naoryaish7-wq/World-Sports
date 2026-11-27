@@ -1,7 +1,8 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, Alert, TextInput, Image, Dimensions, TouchableWithoutFeedback, Platform, Switch, Linking } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
-import { doc, collection, onSnapshot, updateDoc, setDoc, getDoc, arrayUnion, arrayRemove, query, where, getDocs, addDoc, orderBy, serverTimestamp } from 'firebase/firestore';
+import { doc, collection, onSnapshot, updateDoc, setDoc, getDoc, arrayUnion, arrayRemove, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { router } from 'expo-router';
@@ -10,6 +11,63 @@ import * as Location from 'expo-location';
 import Purchases from 'react-native-purchases';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { useVideoPlayer, VideoView } from 'expo-video';
+import { registerForPushNotificationsAsync } from '../../services/notificationService';
+
+type ThemeMode = 'dark' | 'light';
+
+type ThemePalette = {
+  bgPrimary: string;
+  bgSurface: string;
+  bgElevated: string;
+  border: string;
+  borderSubtle: string;
+  textPrimary: string;
+  textSecondary: string;
+  textMuted: string;
+  accent: string;
+  accentTextOnButton: string;
+  danger: string;
+  dangerBg: string;
+  switchTrackOff: string;
+  switchThumbOff: string;
+  modalOverlay: string;
+};
+
+const DARK_THEME: ThemePalette = {
+  bgPrimary: '#09090B',
+  bgSurface: '#121215',
+  bgElevated: '#18181B',
+  border: '#27272A',
+  borderSubtle: '#18181B',
+  textPrimary: '#FAFAFA',
+  textSecondary: '#D4D4D8',
+  textMuted: '#A1A1AA',
+  accent: '#EAB308',
+  accentTextOnButton: '#09090B',
+  danger: '#EF4444',
+  dangerBg: '#271215',
+  switchTrackOff: '#27272A',
+  switchThumbOff: '#71717A',
+  modalOverlay: 'rgba(9,9,11,0.85)',
+};
+
+const LIGHT_THEME: ThemePalette = {
+  bgPrimary: '#F8FAFC',
+  bgSurface: '#FFFFFF',
+  bgElevated: '#F1F5F9',
+  border: '#E2E8F0',
+  borderSubtle: '#E2E8F0',
+  textPrimary: '#0F172A',
+  textSecondary: '#334155',
+  textMuted: '#64748B',
+  accent: '#EAB308',
+  accentTextOnButton: '#09090B',
+  danger: '#DC2626',
+  dangerBg: '#FEF2F2',
+  switchTrackOff: '#CBD5E1',
+  switchThumbOff: '#FFFFFF',
+  modalOverlay: 'rgba(15,23,42,0.55)',
+};
 
 type UserProfile = {
   uid: string;
@@ -26,10 +84,13 @@ type UserProfile = {
   following?: string[];
   pendingRequests?: string[];
   blockedUsers?: string[];
+  expoPushToken?: string;
+  pushToken?: string;
   isVip?: boolean;
   isPromoted?: boolean;
   promotedUntil?: any;
   isPrivate?: boolean;
+  themeMode?: ThemeMode;
 };
 
 type Comment = {
@@ -57,15 +118,6 @@ type PostItem = {
   likesList?: string[];
   isLiked?: boolean;
   comments?: Comment[];
-  createdAt?: any;
-};
-
-type ChatMessage = {
-  id: string;
-  senderId: string;
-  senderName?: string;
-  text: string;
-  time?: string;
   createdAt?: any;
 };
 
@@ -168,6 +220,7 @@ export default function ProfileScreen() {
   const [currentUser, setCurrentUser] = useState<UserProfile | null>(null);
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [userPosts, setUserPosts] = useState<PostItem[]>([]);
+  const [themeMode, setThemeMode] = useState<ThemeMode>('dark');
   
   const [privateAccount, setPrivateAccount] = useState(false);
   const [notificationsChat, setNotificationsChat] = useState(true);
@@ -176,6 +229,34 @@ export default function ProfileScreen() {
   const [notificationsMatchActivity, setNotificationsMatchActivity] = useState(true);
   const [notificationsAdminActions, setNotificationsAdminActions] = useState(true);
   const [notificationsStoriesPosts, setNotificationsStoriesPosts] = useState(true);
+
+  const palette = themeMode === 'light' ? LIGHT_THEME : DARK_THEME;
+  const themedStyles = useMemo(() => createThemedStyles(palette), [palette]);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const savedTheme = await AsyncStorage.getItem('@world_sports_theme_mode');
+        if (savedTheme === 'light' || savedTheme === 'dark') {
+          setThemeMode(savedTheme);
+        }
+      } catch (e) {
+        console.error('Error reading saved theme mode:', e);
+      }
+    })();
+  }, []);
+
+  const handleSelectThemeMode = async (mode: ThemeMode) => {
+    setThemeMode(mode);
+    try {
+      await AsyncStorage.setItem('@world_sports_theme_mode', mode);
+      if (currentUser?.uid) {
+        await updateDoc(doc(db, 'users', currentUser.uid), { themeMode: mode });
+      }
+    } catch (e) {
+      console.error('Error saving theme mode:', e);
+    }
+  };
   
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -192,11 +273,6 @@ export default function ProfileScreen() {
   const [selectedUserModalId, setSelectedUserModalId] = useState<string | null>(null);
   const [targetProfileUser, setTargetProfileUser] = useState<UserProfile | null>(null);
   const [targetUserPosts, setTargetUserPosts] = useState<PostItem[]>([]);
-
-  const [chatModalVisible, setChatModalVisible] = useState(false);
-  const [chatTargetUser, setChatTargetUser] = useState<UserProfile | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [messageInput, setMessageInput] = useState('');
 
   const [vipModalVisible, setVipModalVisible] = useState(false);
   const [settingsModalVisible, setSettingsModalVisible] = useState(false);
@@ -230,6 +306,72 @@ export default function ProfileScreen() {
 
     return iBlockedThem || theyBlockedMe;
   }, [allUsers, blockedUsersList, currentUserId]);
+
+  const sendPushNotificationToUser = useCallback(async (
+    targetUid: string,
+    subTitle: string,
+    body: string,
+    extraData: Record<string, any> = {}
+  ) => {
+    if (!targetUid || targetUid === currentUserId) return;
+
+    try {
+      const targetUser = allUsers.find(u => u.uid === targetUid);
+      const pushToken = targetUser?.expoPushToken || targetUser?.pushToken;
+
+      if (!pushToken || typeof pushToken !== 'string' || !pushToken.startsWith('ExponentPushToken')) {
+        return;
+      }
+
+      const fullTitle = subTitle
+        ? `World Sports • ${subTitle.replace(/^World Sports\s*[•\-–:]?\s*/i, '').trim()}`
+        : 'World Sports';
+
+      await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Accept-encoding': 'gzip, deflate',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          to: pushToken,
+          sound: 'default',
+          title: fullTitle,
+          body,
+          data: extraData,
+          channelId: 'default',
+        }),
+      });
+    } catch (error) {
+      console.error('Error sending push notification:', error);
+    }
+  }, [allUsers, currentUserId]);
+
+  const createInAppNotification = useCallback(async (
+    targetUid: string,
+    type: 'new_follower' | 'follow_request' | 'post_like' | 'post_comment',
+    message: string,
+    subTitle: string,
+    extraData: Record<string, any> = {}
+  ) => {
+    if (!targetUid || targetUid === currentUserId) return;
+
+    await addDoc(collection(db, 'users', targetUid, 'notifications'), {
+      senderUid: currentUserId,
+      type,
+      message,
+      ...extraData,
+      createdAt: serverTimestamp(),
+      status: type === 'follow_request' ? 'pending' : 'unread',
+    });
+
+    await sendPushNotificationToUser(targetUid, subTitle, message, {
+      type,
+      senderUid: currentUserId,
+      ...extraData,
+    });
+  }, [currentUserId, sendPushNotificationToUser]);
 
   const handleDoubleTap = (postId: string) => {
     const now = Date.now();
@@ -283,6 +425,7 @@ export default function ProfileScreen() {
     const loadUserData = async () => {
       try {
         const userId = firebaseUser.email ? firebaseUser.email.toLowerCase().replace(/[^a-z0-9]/g, '_') : firebaseUser.uid;
+        registerForPushNotificationsAsync(userId);
         const userRef = doc(db, 'users', userId);
         
         const userSnap = await getDoc(userRef);
@@ -304,6 +447,7 @@ export default function ProfileScreen() {
             isVip: false,
             isPromoted: false,
             isPrivate: false,
+            themeMode: 'dark',
             notifications_chat: true,
             notifications_likes: true,
             notifications_follows: true,
@@ -324,6 +468,10 @@ export default function ProfileScreen() {
             });
             setEditName(data.name || '');
             setEditAvatar(data.avatar || '');
+            if (data.themeMode === 'light' || data.themeMode === 'dark') {
+              setThemeMode(data.themeMode);
+              AsyncStorage.setItem('@world_sports_theme_mode', data.themeMode).catch(() => {});
+            }
             if (data.isPrivate !== undefined) setPrivateAccount(data.isPrivate);
             if (data.notifications_chat !== undefined) setNotificationsChat(data.notifications_chat);
             if (data.notifications_likes !== undefined) setNotificationsLikes(data.notifications_likes);
@@ -448,65 +596,6 @@ export default function ProfileScreen() {
 
     return () => unsubscribe();
   }, [targetProfileUser, currentUser, isBlockedBidirectional]);
-
-  useEffect(() => {
-    if (!currentUser || !chatTargetUser || !chatModalVisible) return;
-
-    const chatId = [currentUser.uid, chatTargetUser.uid].sort().join('_');
-    const messagesRef = collection(db, 'chats', chatId, 'messages');
-    const q = query(messagesRef, orderBy('createdAt', 'asc'));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs: ChatMessage[] = snapshot.docs.map(docSnap => ({
-        id: docSnap.id,
-        ...(docSnap.data() as any)
-      }));
-      setChatMessages(msgs);
-    });
-
-    return () => unsubscribe();
-  }, [currentUser, chatTargetUser, chatModalVisible]);
-
-  const handleSendMessage = async () => {
-    if (!messageInput.trim() || !currentUser || !chatTargetUser) return;
-    if (isBlockedBidirectional(chatTargetUser.uid, chatTargetUser.name)) {
-      Alert.alert('Messaging Blocked', 'You cannot send messages to this user because one of you blocked the other.');
-      return;
-    }
-
-    const chatId = [currentUser.uid, chatTargetUser.uid].sort().join('_');
-    const textToSend = messageInput.trim();
-    const activeSenderName = currentUser.name || 'Player';
-    setMessageInput('');
-
-    try {
-      const chatDocRef = doc(db, 'chats', chatId);
-      await setDoc(chatDocRef, {
-        participants: [currentUser.uid, chatTargetUser.uid],
-        lastMessageText: textToSend,
-        lastUpdated: serverTimestamp()
-      }, { merge: true });
-
-      const messagesRef = collection(db, 'chats', chatId, 'messages');
-      await addDoc(messagesRef, {
-        senderId: currentUser.uid,
-        senderName: activeSenderName,
-        text: textToSend,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        createdAt: serverTimestamp()
-      });
-
-      await addDoc(collection(db, 'users', chatTargetUser.uid, 'notifications'), {
-        senderUid: currentUser.uid,
-        type: 'message',
-        message: `${activeSenderName} sent you a message: "${textToSend.substring(0, 30)}" 💬`,
-        createdAt: serverTimestamp(),
-        status: 'unread'
-      });
-    } catch (e) {
-      console.error('Error sending message:', e);
-    }
-  };
 
   const handleTogglePrivacy = async (value: boolean) => {
     setPrivateAccount(value);
@@ -877,6 +966,7 @@ export default function ProfileScreen() {
     const isApproved = targetProfileUser.followers?.includes(currentUser.uid);
     const hasRequested = targetProfileUser.pendingRequests?.includes(currentUser.uid);
     const isPrivateAccount = targetProfileUser.isPrivate === true;
+    const activeFollowerName = currentUser.name || 'Player';
 
     try {
       const myRef = doc(db, 'users', currentUser.uid);
@@ -897,15 +987,13 @@ export default function ProfileScreen() {
         });
       } else if (isPrivateAccount) {
         await updateDoc(targetRef, { pendingRequests: arrayUnion(currentUser.uid) });
-        
-        await addDoc(collection(db, 'users', targetProfileUser.uid, 'notifications'), {
-          senderUid: currentUser.uid,
-          type: 'follow_request',
-          message: `${currentUser.name} requested to follow you.`,
-          status: 'pending',
-          createdAt: serverTimestamp()
-        });
-
+        const reqMsg = `${activeFollowerName} requested to follow you. 🔒`;
+        await createInAppNotification(
+          targetProfileUser.uid,
+          'follow_request',
+          reqMsg,
+          'Follow Request 🔒'
+        );
         setTargetProfileUser({
           ...targetProfileUser,
           pendingRequests: [...(targetProfileUser.pendingRequests || []), currentUser.uid]
@@ -913,6 +1001,13 @@ export default function ProfileScreen() {
       } else {
         await updateDoc(targetRef, { followers: arrayUnion(currentUser.uid) });
         await updateDoc(myRef, { following: arrayUnion(targetProfileUser.uid) });
+        const followMsg = `${activeFollowerName} started following you! 🤝`;
+        await createInAppNotification(
+          targetProfileUser.uid,
+          'new_follower',
+          followMsg,
+          'New Follower 🤝'
+        );
         setTargetProfileUser({
           ...targetProfileUser,
           followers: [...(targetProfileUser.followers || []), currentUser.uid]
@@ -950,6 +1045,14 @@ export default function ProfileScreen() {
       if (commentsModalPost && commentsModalPost.id === postId) {
         setCommentsModalPost({ ...commentsModalPost, likesList: updatedLikes, likes: newLikesCount, isLiked: newIsLiked });
       }
+
+      if (!hasLiked && post.userId && post.userId !== currentUser.uid) {
+        const likerName = currentUser.name || 'Player';
+        const likeMsg = `${likerName} liked your post! ❤️`;
+        await createInAppNotification(post.userId, 'post_like', likeMsg, 'New Like ❤️', {
+          postId,
+        });
+      }
     } catch (e) {
       console.error('Error toggling like:', e);
     }
@@ -966,12 +1069,15 @@ export default function ProfileScreen() {
       return;
     }
 
+    const trimmedComment = modalCommentInput.trim();
+    const commenterName = currentUser.name || 'Player';
+
     const newComment: Comment = {
       id: Date.now().toString(),
       userId: currentUser.uid,
-      user: currentUser.name,
+      user: commenterName,
       avatarUrl: currentUser.avatar || '',
-      text: modalCommentInput.trim(),
+      text: trimmedComment,
       createdAt: serverTimestamp()
     };
 
@@ -987,6 +1093,13 @@ export default function ProfileScreen() {
       }
       if (selectedPostModal && selectedPostModal.id === postId) {
         setSelectedPostModal(updatedPostObj);
+      }
+
+      if (post.userId && post.userId !== currentUser.uid) {
+        const commentMsg = `${commenterName} commented on your post: "${trimmedComment.slice(0, 60)}" 💬`;
+        await createInAppNotification(post.userId, 'post_comment', commentMsg, 'New Comment 💬', {
+          postId,
+        });
       }
     } catch (e) {
       console.error('Error adding comment:', e);
@@ -1016,22 +1129,22 @@ export default function ProfileScreen() {
   const canViewFullProfile = !isAnyBlockBetweenUs && (isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower);
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, themedStyles.container]}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         
         <View style={styles.headerRow}>
           <View>
             <Text style={styles.homeCategory}>My Profile</Text>
-            <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
+            <Text style={[styles.appTitle, themedStyles.appTitle]}>World <Text style={{color: palette.accent}}>Sports</Text></Text>
           </View>
 
           <View style={{ flexDirection: 'row', gap: 8, alignItems: 'center' }}>
-            <TouchableOpacity style={styles.settingsBtn} onPress={() => setSettingsModalVisible(true)} activeOpacity={0.8}>
-              <Ionicons name="settings-outline" size={16} color="#EAB308" />
+            <TouchableOpacity style={[styles.settingsBtn, themedStyles.settingsBtn]} onPress={() => setSettingsModalVisible(true)} activeOpacity={0.8}>
+              <Ionicons name="settings-outline" size={16} color={palette.accent} />
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.editProfileBtn} onPress={() => setIsEditModalVisible(true)} activeOpacity={0.8}>
-              <Ionicons name="pencil" size={14} color="#09090B" style={{ marginRight: 4 }} />
+              <Ionicons name="pencil" size={14} color={palette.accentTextOnButton} style={{ marginRight: 4 }} />
               <Text style={styles.editProfileBtnText}>Edit</Text>
             </TouchableOpacity>
           </View>
@@ -1039,7 +1152,7 @@ export default function ProfileScreen() {
 
         <View style={styles.headerProfile}>
           <TouchableOpacity 
-            style={styles.avatarLarge} 
+            style={[styles.avatarLarge, themedStyles.avatarLarge]} 
             onPress={() => {
               if (currentUser?.avatar) setZoomedAvatarUri(currentUser.avatar);
             }}
@@ -1052,74 +1165,74 @@ export default function ProfileScreen() {
             )}
           </TouchableOpacity>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-            <Text style={styles.profileName}>{currentUser?.name || 'Loading...'}</Text>
-            {currentUser?.isVip && <Ionicons name="checkmark-circle" size={18} color="#EAB308" />}
-            {currentUser?.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
+            <Text style={[styles.profileName, themedStyles.profileName]}>{currentUser?.name || 'Loading...'}</Text>
+            {currentUser?.isVip && <Ionicons name="checkmark-circle" size={18} color={palette.accent} />}
+            {currentUser?.isPrivate && <Ionicons name="lock-closed" size={14} color={palette.danger} />}
           </View>
           
           <View style={styles.sportsTagsRow}>
             {userSportsList.map((sport, index) => (
-              <View key={index} style={styles.sportTagBadge}>
+              <View key={index} style={[styles.sportTagBadge, themedStyles.sportTagBadge]}>
                 <Text style={styles.sportTagText}> {sport}</Text>
               </View>
             ))}
           </View>
 
-          <Text style={styles.profileCity}>
+          <Text style={[styles.profileCity, themedStyles.profileCity]}>
             📍 {currentUser?.city || 'Netanya'}{currentUser?.country ? `, ${currentUser.country}` : ', Israel'} |  Age: {currentUser?.age || 20}
           </Text>
         </View>
 
         <TouchableOpacity 
-          style={styles.unifiedUpgradeCard} 
+          style={[styles.unifiedUpgradeCard, themedStyles.unifiedUpgradeCard]} 
           onPress={() => setVipModalVisible(true)}
           activeOpacity={0.9}
         >
           <View style={styles.vipBannerLeft}>
-            <View style={styles.vipIconCircle}>
-              <Ionicons name="star" size={16} color="#EAB308" />
+            <View style={[styles.vipIconCircle, themedStyles.vipIconCircle]}>
+              <Ionicons name="star" size={16} color={palette.accent} />
             </View>
             <View>
-              <Text style={styles.vipBannerTitle}>Subscription & Upgrades Hub 🌟</Text>
-              <Text style={styles.vipBannerSubtitle}>Manage VIP & Spotlight Boost</Text>
+              <Text style={[styles.vipBannerTitle, themedStyles.vipBannerTitle]}>Subscription & Upgrades Hub 🌟</Text>
+              <Text style={[styles.vipBannerSubtitle, themedStyles.vipBannerSubtitle]}>Manage VIP & Spotlight Boost</Text>
             </View>
           </View>
-          <Ionicons name="chevron-forward" size={18} color="#EAB308" />
+          <Ionicons name="chevron-forward" size={18} color={palette.accent} />
         </TouchableOpacity>
 
-        <View style={styles.statsRow}>
+        <View style={[styles.statsRow, themedStyles.statsRow]}>
           <TouchableOpacity style={styles.statBox} onPress={() => setActiveModalList('followers')} activeOpacity={0.8}>
             <Text style={styles.statNumber}>{followersList.length}</Text>
-            <Text style={styles.statLabel}>Followers</Text>
+            <Text style={[styles.statLabel, themedStyles.statLabel]}>Followers</Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={styles.statBox} onPress={() => setActiveModalList('following')} activeOpacity={0.8}>
             <Text style={styles.statNumber}>{followingList.length}</Text>
-            <Text style={styles.statLabel}>Following</Text>
+            <Text style={[styles.statLabel, themedStyles.statLabel]}>Following</Text>
           </TouchableOpacity>
 
           <View style={styles.statBox}>
             <Text style={styles.statNumber}>{userPosts.length}</Text>
-            <Text style={styles.statLabel}>Posts</Text>
+            <Text style={[styles.statLabel, themedStyles.statLabel]}>Posts</Text>
           </View>
         </View>
 
-        <View style={styles.postsSectionHeader}>
-          <Ionicons name="grid-outline" size={18} color="#EAB308" />
-          <Text style={styles.sectionTitle}>My Posts</Text>
+        <View style={[styles.postsSectionHeader, themedStyles.postsSectionHeader]}>
+          <Ionicons name="grid-outline" size={18} color={palette.accent} />
+          <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>My Posts</Text>
         </View>
 
         {userPosts.length === 0 ? (
-          <View style={styles.emptyPostsBox}>
-            <Ionicons name="images-outline" size={32} color="#52525B" />
-            <Text style={styles.emptyPostsText}>No posts shared yet.</Text>
+          <View style={[styles.emptyPostsBox, themedStyles.emptyPostsBox]}>
+            <Ionicons name="images-outline" size={32} color={palette.textMuted} />
+            <Text style={[styles.emptyPostsText, themedStyles.emptyPostsText]}>No posts shared yet.</Text>
           </View>
         ) : (
           <View style={styles.postsGrid}>
             {userPosts.map(post => {
               const isVid = post.mediaType === 'video';
               return (
-                <TouchableOpacity key={post.id} style={styles.postThumbnailBox} onPress={() => setSelectedPostModal(post)} activeOpacity={0.9}>
+                <TouchableOpacity key={post.id} style={[styles.postThumbnailBox, themedStyles.postThumbnailBox]} onPress={() => setSelectedPostModal(post)} activeOpacity={0.9}>
                   {isVid ? (
                     <View style={[styles.postThumbnailImage, { backgroundColor: '#000' }]}>
                       {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} /> : null}
@@ -1140,155 +1253,220 @@ export default function ProfileScreen() {
 
       {/* Settings Modal */}
       <Modal visible={settingsModalVisible && !blockedUsersModalVisible} animationType="slide" transparent={true} onRequestClose={() => setSettingsModalVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.settingsModalContent}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.settingsModalContent, themedStyles.settingsModalContent]}>
             
             <View style={styles.modalHeader}>
               <View>
                 <Text style={styles.homeCategory}>PREFERENCES</Text>
-                <Text style={styles.modalTitle}>Settings and activity</Text>
+                <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Settings and activity</Text>
               </View>
-              <TouchableOpacity onPress={() => setSettingsModalVisible(false)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+              <TouchableOpacity onPress={() => setSettingsModalVisible(false)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 30 }}>
               
+              <Text style={styles.igSectionHeader}>Appearance & Display</Text>
+
+              <View style={[styles.igSettingItemToggle, themedStyles.igSettingItemToggle]}>
+                <View style={styles.igSettingLeft}>
+                  <Ionicons
+                    name={themeMode === 'dark' ? 'moon-outline' : 'sunny-outline'}
+                    size={20}
+                    color={palette.accent}
+                    style={styles.igSettingIcon}
+                  />
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>
+                    {themeMode === 'dark' ? 'Dark Mode' : 'Light Mode'}
+                  </Text>
+                </View>
+                <View style={styles.themeSelectorRow}>
+                  <TouchableOpacity
+                    style={[
+                      styles.themeOptionBtn,
+                      themedStyles.themeOptionBtn,
+                      themeMode === 'light' && styles.themeOptionBtnActive,
+                    ]}
+                    onPress={() => handleSelectThemeMode('light')}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons
+                      name="sunny"
+                      size={14}
+                      color={themeMode === 'light' ? palette.accentTextOnButton : palette.textMuted}
+                    />
+                    <Text
+                      style={[
+                        styles.themeOptionText,
+                        { color: themeMode === 'light' ? palette.accentTextOnButton : palette.textMuted },
+                      ]}
+                    >
+                      Light
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[
+                      styles.themeOptionBtn,
+                      themedStyles.themeOptionBtn,
+                      themeMode === 'dark' && styles.themeOptionBtnActive,
+                    ]}
+                    onPress={() => handleSelectThemeMode('dark')}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons
+                      name="moon"
+                      size={14}
+                      color={themeMode === 'dark' ? palette.accentTextOnButton : palette.textMuted}
+                    />
+                    <Text
+                      style={[
+                        styles.themeOptionText,
+                        { color: themeMode === 'dark' ? palette.accentTextOnButton : palette.textMuted },
+                      ]}
+                    >
+                      Dark
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
               <Text style={styles.igSectionHeader}>Your account</Text>
               
-              <TouchableOpacity style={styles.igSettingItem} onPress={() => { setSettingsModalVisible(false); setIsEditModalVisible(true); }} activeOpacity={0.7}>
+              <TouchableOpacity style={[styles.igSettingItem, themedStyles.igSettingItem]} onPress={() => { setSettingsModalVisible(false); setIsEditModalVisible(true); }} activeOpacity={0.7}>
                 <View style={styles.igSettingLeft}>
-                  <Ionicons name="person-outline" size={20} color="#FAFAFA" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>Edit Personal Profile</Text>
+                  <Ionicons name="person-outline" size={20} color={palette.textPrimary} style={styles.igSettingIcon} />
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>Edit Personal Profile</Text>
                 </View>
                 <View style={styles.igSettingRight}>
-                  <Text style={styles.igSettingValue}>Name, photo</Text>
-                  <Ionicons name="chevron-forward" size={16} color="#71717A" />
+                  <Text style={[styles.igSettingValue, themedStyles.igSettingValue]}>Name, photo</Text>
+                  <Ionicons name="chevron-forward" size={16} color={palette.textMuted} />
                 </View>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.igSettingItem} onPress={() => { setSettingsModalVisible(false); setVipModalVisible(true); }} activeOpacity={0.7}>
+              <TouchableOpacity style={[styles.igSettingItem, themedStyles.igSettingItem]} onPress={() => { setSettingsModalVisible(false); setVipModalVisible(true); }} activeOpacity={0.7}>
                 <View style={styles.igSettingLeft}>
-                  <Ionicons name="star-outline" size={20} color="#EAB308" style={styles.igSettingIcon} />
-                  <Text style={[styles.igSettingText, { color: '#EAB308' }]}>Gold VIP & Spotlight Subscriptions</Text>
+                  <Ionicons name="star-outline" size={20} color={palette.accent} style={styles.igSettingIcon} />
+                  <Text style={[styles.igSettingText, { color: palette.accent }]}>Gold VIP & Spotlight Subscriptions</Text>
                 </View>
                 <View style={styles.igSettingRight}>
-                  <Text style={styles.igSettingValue}>{currentUser?.isVip ? 'Active 🌟' : 'Upgrade'}</Text>
-                  <Ionicons name="chevron-forward" size={16} color="#71717A" />
+                  <Text style={[styles.igSettingValue, themedStyles.igSettingValue]}>{currentUser?.isVip ? 'Active 🌟' : 'Upgrade'}</Text>
+                  <Ionicons name="chevron-forward" size={16} color={palette.textMuted} />
                 </View>
               </TouchableOpacity>
 
               <Text style={styles.igSectionHeader}>Who can see your content</Text>
 
-              <View style={styles.igSettingItemToggle}>
+              <View style={[styles.igSettingItemToggle, themedStyles.igSettingItemToggle]}>
                 <View style={styles.igSettingLeft}>
                   <Ionicons name="lock-closed-outline" size={20} color="#22C55E" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>Private Account</Text>
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>Private Account</Text>
                 </View>
                 <Switch 
                   value={privateAccount} 
                   onValueChange={handleTogglePrivacy}
-                  trackColor={{ false: '#27272A', true: '#EAB308' }}
-                  thumbColor={privateAccount ? '#FAFAFA' : '#71717A'}
+                  trackColor={{ false: palette.switchTrackOff, true: palette.accent }}
+                  thumbColor={privateAccount ? '#FAFAFA' : palette.switchThumbOff}
                 />
               </View>
 
-              <TouchableOpacity style={styles.igSettingItem} onPress={() => setBlockedUsersModalVisible(true)} activeOpacity={0.7}>
+              <TouchableOpacity style={[styles.igSettingItem, themedStyles.igSettingItem]} onPress={() => setBlockedUsersModalVisible(true)} activeOpacity={0.7}>
                 <View style={styles.igSettingLeft}>
-                  <Ionicons name="ban-outline" size={20} color="#EF4444" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>Blocked Users</Text>
+                  <Ionicons name="ban-outline" size={20} color={palette.danger} style={styles.igSettingIcon} />
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>Blocked Users</Text>
                 </View>
                 <View style={styles.igSettingRight}>
-                  <Text style={styles.igSettingValue}>{blockedAccountsList.length}</Text>
-                  <Ionicons name="chevron-forward" size={16} color="#71717A" />
+                  <Text style={[styles.igSettingValue, themedStyles.igSettingValue]}>{blockedAccountsList.length}</Text>
+                  <Ionicons name="chevron-forward" size={16} color={palette.textMuted} />
                 </View>
               </TouchableOpacity>
 
               <Text style={styles.igSectionHeader}>Notification Preferences</Text>
 
-              <View style={styles.igSettingItemToggle}>
+              <View style={[styles.igSettingItemToggle, themedStyles.igSettingItemToggle]}>
                 <View style={styles.igSettingLeft}>
                   <Ionicons name="chatbubble-outline" size={20} color="#3B82F6" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>Chat Messages</Text>
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>Chat Messages</Text>
                 </View>
                 <Switch 
                   value={notificationsChat} 
                   onValueChange={(val) => handleUpdateNotificationPref('chat', val)}
-                  trackColor={{ false: '#27272A', true: '#EAB308' }}
-                  thumbColor={notificationsChat ? '#FAFAFA' : '#71717A'}
+                  trackColor={{ false: palette.switchTrackOff, true: palette.accent }}
+                  thumbColor={notificationsChat ? '#FAFAFA' : palette.switchThumbOff}
                 />
               </View>
 
-              <View style={styles.igSettingItemToggle}>
+              <View style={[styles.igSettingItemToggle, themedStyles.igSettingItemToggle]}>
                 <View style={styles.igSettingLeft}>
-                  <Ionicons name="football-outline" size={20} color="#EAB308" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>Match Join / Leave Activity</Text>
+                  <Ionicons name="football-outline" size={20} color={palette.accent} style={styles.igSettingIcon} />
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>Match Join / Leave Activity</Text>
                 </View>
                 <Switch 
                   value={notificationsMatchActivity} 
                   onValueChange={(val) => handleUpdateNotificationPref('matchActivity', val)}
-                  trackColor={{ false: '#27272A', true: '#EAB308' }}
-                  thumbColor={notificationsMatchActivity ? '#FAFAFA' : '#71717A'}
+                  trackColor={{ false: palette.switchTrackOff, true: palette.accent }}
+                  thumbColor={notificationsMatchActivity ? '#FAFAFA' : palette.switchThumbOff}
                 />
               </View>
 
-              <View style={styles.igSettingItemToggle}>
+              <View style={[styles.igSettingItemToggle, themedStyles.igSettingItemToggle]}>
                 <View style={styles.igSettingLeft}>
-                  <Ionicons name="shield-outline" size={20} color="#EF4444" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>Admin Match Deletions</Text>
+                  <Ionicons name="shield-outline" size={20} color={palette.danger} style={styles.igSettingIcon} />
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>Admin Match Deletions</Text>
                 </View>
                 <Switch 
                   value={notificationsAdminActions} 
                   onValueChange={(val) => handleUpdateNotificationPref('adminActions', val)}
-                  trackColor={{ false: '#27272A', true: '#EAB308' }}
-                  thumbColor={notificationsAdminActions ? '#FAFAFA' : '#71717A'}
+                  trackColor={{ false: palette.switchTrackOff, true: palette.accent }}
+                  thumbColor={notificationsAdminActions ? '#FAFAFA' : palette.switchThumbOff}
                 />
               </View>
 
-              <View style={styles.igSettingItemToggle}>
+              <View style={[styles.igSettingItemToggle, themedStyles.igSettingItemToggle]}>
                 <View style={styles.igSettingLeft}>
                   <Ionicons name="radio-outline" size={20} color="#A855F7" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>New Stories & Posts from Following</Text>
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>New Stories & Posts from Following</Text>
                 </View>
                 <Switch 
                   value={notificationsStoriesPosts} 
                   onValueChange={(val) => handleUpdateNotificationPref('storiesPosts', val)}
-                  trackColor={{ false: '#27272A', true: '#EAB308' }}
-                  thumbColor={notificationsStoriesPosts ? '#FAFAFA' : '#71717A'}
+                  trackColor={{ false: palette.switchTrackOff, true: palette.accent }}
+                  thumbColor={notificationsStoriesPosts ? '#FAFAFA' : palette.switchThumbOff}
                 />
               </View>
 
-              <View style={styles.igSettingItemToggle}>
+              <View style={[styles.igSettingItemToggle, themedStyles.igSettingItemToggle]}>
                 <View style={styles.igSettingLeft}>
-                  <Ionicons name="heart-outline" size={20} color="#EF4444" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>Likes & Comments</Text>
+                  <Ionicons name="heart-outline" size={20} color={palette.danger} style={styles.igSettingIcon} />
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>Likes & Comments</Text>
                 </View>
                 <Switch 
                   value={notificationsLikes} 
                   onValueChange={(val) => handleUpdateNotificationPref('likes', val)}
-                  trackColor={{ false: '#27272A', true: '#EAB308' }}
-                  thumbColor={notificationsLikes ? '#FAFAFA' : '#71717A'}
+                  trackColor={{ false: palette.switchTrackOff, true: palette.accent }}
+                  thumbColor={notificationsLikes ? '#FAFAFA' : palette.switchThumbOff}
                 />
               </View>
 
-              <View style={styles.igSettingItemToggle}>
+              <View style={[styles.igSettingItemToggle, themedStyles.igSettingItemToggle]}>
                 <View style={styles.igSettingLeft}>
                   <Ionicons name="person-add-outline" size={20} color="#22C55E" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>New Followers</Text>
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>New Followers</Text>
                 </View>
                 <Switch 
                   value={notificationsFollows} 
                   onValueChange={(val) => handleUpdateNotificationPref('follows', val)}
-                  trackColor={{ false: '#27272A', true: '#EAB308' }}
-                  thumbColor={notificationsFollows ? '#FAFAFA' : '#71717A'}
+                  trackColor={{ false: palette.switchTrackOff, true: palette.accent }}
+                  thumbColor={notificationsFollows ? '#FAFAFA' : palette.switchThumbOff}
                 />
               </View>
 
               <Text style={styles.igSectionHeader}>More info and support</Text>
 
               <TouchableOpacity 
-                style={styles.igSettingItem} 
+                style={[styles.igSettingItem, themedStyles.igSettingItem]} 
                 onPress={async () => {
                   const url = 'https://naoryaish7-wq.github.io/World-Sports/';
                   try {
@@ -1305,36 +1483,36 @@ export default function ProfileScreen() {
                 activeOpacity={0.7}
               >
                 <View style={styles.igSettingLeft}>
-                  <Ionicons name="help-circle-outline" size={20} color="#FAFAFA" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>Help & Support </Text>
+                  <Ionicons name="help-circle-outline" size={20} color={palette.textPrimary} style={styles.igSettingIcon} />
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>Help & Support </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={16} color="#71717A" />
+                <Ionicons name="chevron-forward" size={16} color={palette.textMuted} />
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.igSettingItem} onPress={() => Alert.alert('About App', 'World Sports Hub v2.4.1\nAll rights reserved.')} activeOpacity={0.7}>
+              <TouchableOpacity style={[styles.igSettingItem, themedStyles.igSettingItem]} onPress={() => Alert.alert('About App', 'World Sports Hub v2.4.1\nAll rights reserved.')} activeOpacity={0.7}>
                 <View style={styles.igSettingLeft}>
-                  <Ionicons name="information-circle-outline" size={20} color="#FAFAFA" style={styles.igSettingIcon} />
-                  <Text style={styles.igSettingText}>About App</Text>
+                  <Ionicons name="information-circle-outline" size={20} color={palette.textPrimary} style={styles.igSettingIcon} />
+                  <Text style={[styles.igSettingText, themedStyles.igSettingText]}>About App</Text>
                 </View>
                 <View style={styles.igSettingRight}>
-                  <Text style={styles.igSettingValue}>v2.4.1</Text>
-                  <Ionicons name="chevron-forward" size={16} color="#71717A" />
+                  <Text style={[styles.igSettingValue, themedStyles.igSettingValue]}>v2.4.1</Text>
+                  <Ionicons name="chevron-forward" size={16} color={palette.textMuted} />
                 </View>
               </TouchableOpacity>
 
               <Text style={styles.igSectionHeader}>Login & Actions</Text>
 
-              <TouchableOpacity style={styles.igSettingItem} onPress={() => { setSettingsModalVisible(false); handleLogoutPress(); }} activeOpacity={0.7}>
+              <TouchableOpacity style={[styles.igSettingItem, themedStyles.igSettingItem]} onPress={() => { setSettingsModalVisible(false); handleLogoutPress(); }} activeOpacity={0.7}>
                 <View style={styles.igSettingLeft}>
-                  <Ionicons name="log-out-outline" size={20} color="#EAB308" style={styles.igSettingIcon} />
-                  <Text style={[styles.igSettingText, { color: '#EAB308', fontWeight: 'bold' }]}>Log out</Text>
+                  <Ionicons name="log-out-outline" size={20} color={palette.accent} style={styles.igSettingIcon} />
+                  <Text style={[styles.igSettingText, { color: palette.accent, fontWeight: 'bold' }]}>Log out</Text>
                 </View>
               </TouchableOpacity>
 
-              <TouchableOpacity style={styles.igSettingItem} onPress={() => { setSettingsModalVisible(false); handleDeleteAccountPress(); }} activeOpacity={0.7}>
+              <TouchableOpacity style={[styles.igSettingItem, themedStyles.igSettingItem]} onPress={() => { setSettingsModalVisible(false); handleDeleteAccountPress(); }} activeOpacity={0.7}>
                 <View style={styles.igSettingLeft}>
-                  <Ionicons name="trash-outline" size={20} color="#EF4444" style={styles.igSettingIcon} />
-                  <Text style={[styles.igSettingText, { color: '#EF4444', fontWeight: 'bold' }]}>Delete Account Permanently</Text>
+                  <Ionicons name="trash-outline" size={20} color={palette.danger} style={styles.igSettingIcon} />
+                  <Text style={[styles.igSettingText, { color: palette.danger, fontWeight: 'bold' }]}>Delete Account Permanently</Text>
                 </View>
               </TouchableOpacity>
 
@@ -1345,49 +1523,49 @@ export default function ProfileScreen() {
 
       {/* Blocked Users Modal */}
       <Modal visible={blockedUsersModalVisible} animationType="slide" transparent={true} onRequestClose={() => setBlockedUsersModalVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentCenter}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentCenter, themedStyles.modalContentCenter]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Blocked Users 🚫</Text>
-              <TouchableOpacity onPress={() => setBlockedUsersModalVisible(false)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+              <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Blocked Users 🚫</Text>
+              <TouchableOpacity onPress={() => setBlockedUsersModalVisible(false)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
             <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
               {blockedAccountsList.length === 0 ? (
-                <View style={styles.emptyPostsBox}>
-                  <Ionicons name="checkmark-circle-outline" size={32} color="#71717A" />
-                  <Text style={styles.emptyPostsText}>You haven't blocked any users.</Text>
+                <View style={[styles.emptyPostsBox, themedStyles.emptyPostsBox]}>
+                  <Ionicons name="checkmark-circle-outline" size={32} color={palette.textMuted} />
+                  <Text style={[styles.emptyPostsText, themedStyles.emptyPostsText]}>You haven't blocked any users.</Text>
                 </View>
               ) : (
                 blockedAccountsList.map((blockedUser) => (
-                  <View key={blockedUser.uid} style={styles.listItem}>
-                    <View style={styles.listAvatar}>
+                  <View key={blockedUser.uid} style={[styles.listItem, themedStyles.listItem]}>
+                    <View style={[styles.listAvatar, themedStyles.listAvatar]}>
                       {blockedUser.avatar ? (
                         <Image source={{ uri: blockedUser.avatar }} style={{ width: 38, height: 38, borderRadius: 19 }} />
                       ) : (
-                        <Text style={{ color: '#EAB308', fontWeight: 'bold' }}>
+                        <Text style={{ color: palette.accent, fontWeight: 'bold' }}>
                           {blockedUser.name ? blockedUser.name[0].toUpperCase() : 'P'}
                         </Text>
                       )}
                     </View>
                     <View style={{ flex: 1, marginRight: 8 }}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                        <Text style={styles.listName} numberOfLines={1}>{blockedUser.name}</Text>
-                        {blockedUser.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                        <Text style={[styles.listName, themedStyles.listName]} numberOfLines={1}>{blockedUser.name}</Text>
+                        {blockedUser.isVip && <Ionicons name="checkmark-circle" size={14} color={palette.accent} />}
                       </View>
-                      <Text style={styles.listCity} numberOfLines={1}>
+                      <Text style={[styles.listCity, themedStyles.listCity]} numberOfLines={1}>
                         📍 {blockedUser.city || 'Netanya'}{blockedUser.country ? `, ${blockedUser.country}` : ', Israel'}
                       </Text>
                     </View>
 
                     <TouchableOpacity
-                      style={styles.unblockListBtn}
+                      style={[styles.unblockListBtn, themedStyles.unblockListBtn]}
                       onPress={() => handleUnblockUser(blockedUser.uid, blockedUser.name)}
                       activeOpacity={0.8}
                     >
-                      <Text style={styles.unblockListBtnText}>Unblock</Text>
+                      <Text style={[styles.unblockListBtnText, themedStyles.unblockListBtnText]}>Unblock</Text>
                     </TouchableOpacity>
                   </View>
                 ))
@@ -1399,58 +1577,58 @@ export default function ProfileScreen() {
 
       {/* VIP Modal */}
       <Modal visible={vipModalVisible} animationType="slide" transparent={true} onRequestClose={() => setVipModalVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentCenter}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentCenter, themedStyles.modalContentCenter]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Subscriptions Hub 🚀</Text>
-              <TouchableOpacity onPress={() => setVipModalVisible(false)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+              <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Subscriptions Hub 🚀</Text>
+              <TouchableOpacity onPress={() => setVipModalVisible(false)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={styles.hubSectionCard}>
+              <View style={[styles.hubSectionCard, themedStyles.hubSectionCard]}>
                 <View style={styles.hubSectionHeaderRow}>
-                  <Ionicons name="star" size={22} color="#EAB308" />
-                  <Text style={styles.hubSectionTitle}>Gold VIP Membership</Text>
+                  <Ionicons name="star" size={22} color={palette.accent} />
+                  <Text style={[styles.hubSectionTitle, themedStyles.hubSectionTitle]}>Gold VIP Membership</Text>
                 </View>
-                <Text style={styles.hubSectionDesc}>Get verified gold badge, high visibility, priority in feeds & unlimited direct access ($9.99/mo).</Text>
+                <Text style={[styles.hubSectionDesc, themedStyles.hubSectionDesc]}>Get verified gold badge, high visibility, priority in feeds & unlimited direct access ($9.99/mo).</Text>
                 
                 <TouchableOpacity 
-                  style={[styles.hubActionBtn, currentUser?.isVip && styles.hubActionBtnCancel]} 
+                  style={[styles.hubActionBtn, currentUser?.isVip && [styles.hubActionBtnCancel, themedStyles.hubActionBtnCancel]]} 
                   onPress={() => handlePurchaseProduct('world_sports_vip_monthly', 'vip')}
                   activeOpacity={0.85}
                 >
-                  <Text style={[styles.hubActionBtnText, currentUser?.isVip && styles.hubActionBtnCancelText]}>
+                  <Text style={[styles.hubActionBtnText, { color: palette.accentTextOnButton }, currentUser?.isVip && { color: palette.danger }]}>
                     {currentUser?.isVip ? 'Disable VIP (Mock) ❌' : 'Subscribe to VIP 🌟'}
                   </Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.hubSectionCard}>
+              <View style={[styles.hubSectionCard, themedStyles.hubSectionCard]}>
                 <View style={styles.hubSectionHeaderRow}>
                   <Ionicons name="rocket" size={22} color="#3B82F6" />
-                  <Text style={styles.hubSectionTitle}>Spotlight Profile Boost</Text>
+                  <Text style={[styles.hubSectionTitle, themedStyles.hubSectionTitle]}>Spotlight Profile Boost</Text>
                 </View>
-                <Text style={styles.hubSectionDesc}>Pin your profile to the very top of the Discover feed for 24 hours to gain maximum player reach ($2.99).</Text>
+                <Text style={[styles.hubSectionDesc, themedStyles.hubSectionDesc]}>Pin your profile to the very top of the Discover feed for 24 hours to gain maximum player reach ($2.99).</Text>
                 
                 <TouchableOpacity 
-                  style={[styles.hubActionBtnBlue, currentUser?.isPromoted && styles.hubActionBtnCancel]} 
+                  style={[styles.hubActionBtnBlue, currentUser?.isPromoted && [styles.hubActionBtnCancel, themedStyles.hubActionBtnCancel]]} 
                   onPress={() => handlePurchaseProduct('world_sports_spotlight_boost', 'boost')}
                   activeOpacity={0.85}
                 >
-                  <Text style={[styles.hubActionBtnText, currentUser?.isPromoted && styles.hubActionBtnCancelText]}>
+                  <Text style={[styles.hubActionBtnText, { color: palette.accentTextOnButton }, currentUser?.isPromoted && { color: palette.danger }]}>
                     {currentUser?.isPromoted ? 'Remove Boost (Mock) ❌' : 'Activate Spotlight Boost 🚀'}
                   </Text>
                 </TouchableOpacity>
               </View>
 
-              <TouchableOpacity style={styles.manageStoreSubBtn} onPress={handleManageSubscriptions} activeOpacity={0.85}>
-                <Ionicons name="settings-outline" size={16} color="#FAFAFA" style={{ marginRight: 6 }} />
-                <Text style={styles.manageStoreSubText}>Manage / Cancel Store Subscriptions </Text>
+              <TouchableOpacity style={[styles.manageStoreSubBtn, themedStyles.manageStoreSubBtn]} onPress={handleManageSubscriptions} activeOpacity={0.85}>
+                <Ionicons name="settings-outline" size={16} color={palette.textPrimary} style={{ marginRight: 6 }} />
+                <Text style={[styles.manageStoreSubText, themedStyles.manageStoreSubText]}>Manage / Cancel Store Subscriptions </Text>
               </TouchableOpacity>
 
-              <Text style={styles.billingNotice}>
+              <Text style={[styles.billingNotice, themedStyles.billingNotice]}>
                 🔒 All purchases and subscriptions are securely processed through your device's app store (Apple App Store / Google Play Billing) and can be managed or canceled anytime via your device settings.
               </Text>
             </ScrollView>
@@ -1460,18 +1638,18 @@ export default function ProfileScreen() {
 
       {/* Edit Profile Modal */}
       <Modal visible={isEditModalVisible} animationType="slide" transparent={true} onRequestClose={() => setIsEditModalVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentCenter}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentCenter, themedStyles.modalContentCenter]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Edit Profile ✏️</Text>
-              <TouchableOpacity onPress={() => setIsEditModalVisible(false)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+              <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Edit Profile ✏️</Text>
+              <TouchableOpacity onPress={() => setIsEditModalVisible(false)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
               <View style={styles.editAvatarContainer}>
-                <View style={styles.avatarEditPreview}>
+                <View style={[styles.avatarEditPreview, themedStyles.avatarEditPreview]}>
                   {editAvatar ? (
                     <Image source={{ uri: editAvatar }} style={styles.avatarImage} />
                   ) : (
@@ -1479,22 +1657,22 @@ export default function ProfileScreen() {
                   )}
                 </View>
                 <View style={{ flexDirection: 'row', gap: 10 }}>
-                  <TouchableOpacity style={styles.imagePickBtn} onPress={pickImage} activeOpacity={0.8}>
+                  <TouchableOpacity style={[styles.imagePickBtn, themedStyles.imagePickBtn]} onPress={pickImage} activeOpacity={0.8}>
                     <Text style={styles.imagePickText}>Change Photo</Text>
                   </TouchableOpacity>
                   {editAvatar ? (
-                    <TouchableOpacity style={styles.imageRemoveBtn} onPress={() => setEditAvatar('')} activeOpacity={0.8}>
-                      <Text style={styles.imageRemoveText}>Remove</Text>
+                    <TouchableOpacity style={[styles.imageRemoveBtn, themedStyles.imageRemoveBtn]} onPress={() => setEditAvatar('')} activeOpacity={0.8}>
+                      <Text style={[styles.imageRemoveText, { color: palette.danger }]}>Remove</Text>
                     </TouchableOpacity>
                   ) : null}
                 </View>
               </View>
 
-              <Text style={styles.label}>Username / Full Name</Text>
-              <TextInput style={styles.input} value={editName} onChangeText={setEditName} placeholder="Username" placeholderTextColor="#52525B" />
+              <Text style={[styles.label, themedStyles.label]}>Username / Full Name</Text>
+              <TextInput style={[styles.input, themedStyles.input]} value={editName} onChangeText={setEditName} placeholder="Username" placeholderTextColor={palette.textMuted} />
 
               <TouchableOpacity style={styles.saveBtn} onPress={handleSaveProfile} activeOpacity={0.85}>
-                <Text style={styles.saveBtnText}>Save Changes 🚀</Text>
+                <Text style={[styles.saveBtnText, { color: palette.accentTextOnButton }]}>Save Changes 🚀</Text>
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -1503,20 +1681,20 @@ export default function ProfileScreen() {
 
       {/* Followers / Following Modal */}
       <Modal visible={!!activeModalList} animationType="slide" transparent={true} onRequestClose={() => setActiveModalList(null)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentCenter}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentCenter, themedStyles.modalContentCenter]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
+              <Text style={[styles.modalTitle, themedStyles.modalTitle]}>
                 {activeModalList === 'followers' ? 'Followers 👥' : 'Following 🤝'}
               </Text>
-              <TouchableOpacity onPress={() => setActiveModalList(null)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+              <TouchableOpacity onPress={() => setActiveModalList(null)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
             <ScrollView style={{ maxHeight: 350 }} showsVerticalScrollIndicator={false}>
               {(activeModalList === 'followers' ? followersList : followingList).map((item) => (
-                <View key={item.uid} style={styles.listItem}>
+                <View key={item.uid} style={[styles.listItem, themedStyles.listItem]}>
                   <TouchableOpacity 
                     style={{ flexDirection: 'row', alignItems: 'center', flex: 1 }} 
                     onPress={() => {
@@ -1525,29 +1703,29 @@ export default function ProfileScreen() {
                     }}
                     activeOpacity={0.85}
                   >
-                    <View style={styles.listAvatar}>
+                    <View style={[styles.listAvatar, themedStyles.listAvatar]}>
                       {item.avatar ? (
                         <Image source={{ uri: item.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
                       ) : (
-                        <Text style={{color: '#EAB308', fontWeight: 'bold'}}>{item.name ? item.name[0] : 'P'}</Text>
+                        <Text style={{color: palette.accent, fontWeight: 'bold'}}>{item.name ? item.name[0] : 'P'}</Text>
                       )}
                     </View>
                     <View style={{flex: 1}}>
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                        <Text style={styles.listName}>{item.name}</Text>
-                        {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                        <Text style={[styles.listName, themedStyles.listName]}>{item.name}</Text>
+                        {item.isVip && <Ionicons name="checkmark-circle" size={14} color={palette.accent} />}
                       </View>
-                      <Text style={styles.listCity}>📍 {item.city || 'Netanya'}{item.country ? `, ${item.country}` : ', Israel'} |  Age: {item.age || 'N/A'}</Text>
+                      <Text style={[styles.listCity, themedStyles.listCity]}>📍 {item.city || 'Netanya'}{item.country ? `, ${item.country}` : ', Israel'} |  Age: {item.age || 'N/A'}</Text>
                     </View>
                   </TouchableOpacity>
 
                   {activeModalList === 'followers' && (
                     <TouchableOpacity 
-                      style={styles.removeFollowerBtn}
+                      style={[styles.removeFollowerBtn, themedStyles.removeFollowerBtn]}
                       onPress={() => handleRemoveFollower(item.uid)}
                       activeOpacity={0.8}
                     >
-                      <Text style={styles.removeFollowerBtnText}>Remove</Text>
+                      <Text style={[styles.removeFollowerBtnText, { color: palette.danger }]}>Remove</Text>
                     </TouchableOpacity>
                   )}
                 </View>
@@ -1559,14 +1737,14 @@ export default function ProfileScreen() {
 
       {/* Target User Followers / Following Modal */}
       <Modal visible={!!targetActiveModalList} animationType="slide" transparent={true} onRequestClose={() => setTargetActiveModalList(null)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentCenter}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentCenter, themedStyles.modalContentCenter]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
+              <Text style={[styles.modalTitle, themedStyles.modalTitle]}>
                 {targetActiveModalList === 'followers' ? 'Followers 👥' : 'Following 🤝'}
               </Text>
-              <TouchableOpacity onPress={() => setTargetActiveModalList(null)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+              <TouchableOpacity onPress={() => setTargetActiveModalList(null)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -1574,7 +1752,7 @@ export default function ProfileScreen() {
               {(targetActiveModalList === 'followers' ? targetFollowersList : targetFollowingList).map((item) => (
                 <TouchableOpacity 
                   key={item.uid} 
-                  style={styles.listItem} 
+                  style={[styles.listItem, themedStyles.listItem]} 
                   onPress={() => {
                     const nextUserId = item.uid;
                     const nextUserName = item.name;
@@ -1586,21 +1764,21 @@ export default function ProfileScreen() {
                   }}
                   activeOpacity={0.85}
                 >
-                  <View style={styles.listAvatar}>
+                  <View style={[styles.listAvatar, themedStyles.listAvatar]}>
                     {item.avatar ? (
                       <Image source={{ uri: item.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
                     ) : (
-                      <Text style={{color: '#EAB308', fontWeight: 'bold'}}>{item.name ? item.name[0] : 'P'}</Text>
+                      <Text style={{color: palette.accent, fontWeight: 'bold'}}>{item.name ? item.name[0] : 'P'}</Text>
                     )}
                   </View>
                   <View style={{flex: 1}}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Text style={styles.listName}>{item.name}</Text>
-                      {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                      <Text style={[styles.listName, themedStyles.listName]}>{item.name}</Text>
+                      {item.isVip && <Ionicons name="checkmark-circle" size={14} color={palette.accent} />}
                     </View>
-                    <Text style={styles.listCity}>📍 {item.city || 'Netanya'}{item.country ? `, ${item.country}` : ', Israel'} |  Age: {item.age || 'N/A'}</Text>
+                    <Text style={[styles.listCity, themedStyles.listCity]}>📍 {item.city || 'Netanya'}{item.country ? `, ${item.country}` : ', Israel'} |  Age: {item.age || 'N/A'}</Text>
                   </View>
-                  <Ionicons name="chevron-forward" size={18} color="#71717A" />
+                  <Ionicons name="chevron-forward" size={18} color={palette.textMuted} />
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -1610,15 +1788,15 @@ export default function ProfileScreen() {
 
       {/* Target User Profile Modal */}
       <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentHomeStyle}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentHomeStyle, themedStyles.modalContentHomeStyle]}>
             <View style={styles.modalHeader}>
               <View>
                 <Text style={styles.homeCategory}>PLAYER PROFILE</Text>
-                <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
+                <Text style={[styles.appTitle, themedStyles.appTitle]}>World <Text style={{color: palette.accent}}>Sports</Text></Text>
               </View>
-              <TouchableOpacity onPress={() => setSelectedUserModalId(null)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+              <TouchableOpacity onPress={() => setSelectedUserModalId(null)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -1626,7 +1804,7 @@ export default function ProfileScreen() {
               <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
                 <View style={styles.headerProfile}>
                   <TouchableOpacity 
-                    style={styles.avatarLarge}
+                    style={[styles.avatarLarge, themedStyles.avatarLarge]}
                     onPress={() => {
                       if (targetProfileUser.avatar && !isAnyBlockBetweenUs) setZoomedAvatarUri(targetProfileUser.avatar);
                     }}
@@ -1639,22 +1817,22 @@ export default function ProfileScreen() {
                     )}
                   </TouchableOpacity>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <Text style={styles.profileName}>{targetProfileUser.name}</Text>
-                    {targetProfileUser.isVip && <Ionicons name="checkmark-circle" size={18} color="#EAB308" />}
-                    {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
+                    <Text style={[styles.profileName, themedStyles.profileName]}>{targetProfileUser.name}</Text>
+                    {targetProfileUser.isVip && <Ionicons name="checkmark-circle" size={18} color={palette.accent} />}
+                    {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color={palette.danger} />}
                   </View>
                   
                   {!isAnyBlockBetweenUs && (
                     <>
                       <View style={styles.sportsTagsRow}>
                         {targetSportsList.map((sport: string, index: number) => (
-                          <View key={index} style={styles.sportTagBadge}>
+                          <View key={index} style={[styles.sportTagBadge, themedStyles.sportTagBadge]}>
                             <Text style={styles.sportTagText}> {sport}</Text>
                           </View>
                         ))}
                       </View>
 
-                      <Text style={styles.profileCity}>
+                      <Text style={[styles.profileCity, themedStyles.profileCity]}>
                         📍 {targetProfileUser.city || 'Netanya'}{targetProfileUser.country ? `, ${targetProfileUser.country}` : ', Israel'} |  Age: {targetProfileUser.age || 20}
                       </Text>
                     </>
@@ -1662,7 +1840,7 @@ export default function ProfileScreen() {
                 </View>
 
                 {!isAnyBlockBetweenUs && (
-                  <View style={styles.statsRow}>
+                  <View style={[styles.statsRow, themedStyles.statsRow]}>
                     <TouchableOpacity 
                       style={styles.statBox} 
                       onPress={() => {
@@ -1677,7 +1855,7 @@ export default function ProfileScreen() {
                       activeOpacity={canViewFullProfile ? 0.8 : 1}
                     >
                       <Text style={styles.statNumber}>{targetFollowersList.length}</Text>
-                      <Text style={styles.statLabel}>Followers</Text>
+                      <Text style={[styles.statLabel, themedStyles.statLabel]}>Followers</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity 
@@ -1694,12 +1872,12 @@ export default function ProfileScreen() {
                       activeOpacity={canViewFullProfile ? 0.8 : 1}
                     >
                       <Text style={styles.statNumber}>{targetFollowingList.length}</Text>
-                      <Text style={styles.statLabel}>Following</Text>
+                      <Text style={[styles.statLabel, themedStyles.statLabel]}>Following</Text>
                     </TouchableOpacity>
 
                     <View style={styles.statBox}>
                       <Text style={styles.statNumber}>{targetUserPosts.length}</Text>
-                      <Text style={styles.statLabel}>Posts</Text>
+                      <Text style={[styles.statLabel, themedStyles.statLabel]}>Posts</Text>
                     </View>
                   </View>
                 )}
@@ -1707,46 +1885,32 @@ export default function ProfileScreen() {
                 {!isViewingMyOwnProfile && (
                   <View style={{ marginVertical: 12, gap: 10 }}>
                     {!isAnyBlockBetweenUs && (
-                      <View style={{ flexDirection: 'row', gap: 10 }}>
-                        <TouchableOpacity 
-                          style={[
-                            styles.profileFollowBtn, 
-                            isApprovedFollower && styles.profileFollowingBtn,
-                            hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
-                            { flex: 1 }
-                          ]} 
-                          onPress={handleToggleFollowTarget}
-                          activeOpacity={0.85}
-                        >
-                          <Text style={[
-                            styles.profileFollowBtnText, 
-                            isApprovedFollower && styles.profileFollowingBtnText,
-                            hasRequestedFollow && { color: '#FAFAFA' }
-                          ]}>
-                            {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : isPrivateAccount ? 'Request Follow 🤝' : 'Follow Player 🤝'}
-                          </Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity 
-                          style={styles.chatOpenBtn} 
-                          onPress={() => {
-                            setChatTargetUser(targetProfileUser);
-                            setSelectedUserModalId(null);
-                            setChatModalVisible(true);
-                          }}
-                          activeOpacity={0.85}
-                        >
-                          <Ionicons name="chatbubbles-outline" size={18} color="#09090B" />
-                          <Text style={styles.chatOpenBtnText}>Message 💬</Text>
-                        </TouchableOpacity>
-                      </View>
+                      <TouchableOpacity 
+                        style={[
+                          styles.profileFollowBtn, 
+                          isApprovedFollower && [styles.profileFollowingBtn, themedStyles.profileFollowingBtn],
+                          hasRequestedFollow && [styles.requestedFollowBtn, themedStyles.requestedFollowBtn],
+                        ]} 
+                        onPress={handleToggleFollowTarget}
+                        activeOpacity={0.85}
+                      >
+                        <Text style={[
+                          styles.profileFollowBtnText,
+                          { color: palette.accentTextOnButton },
+                          isApprovedFollower && styles.profileFollowingBtnText,
+                          hasRequestedFollow && { color: palette.textPrimary }
+                        ]}>
+                          {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : isPrivateAccount ? 'Request Follow 🤝' : 'Follow Player 🤝'}
+                        </Text>
+                      </TouchableOpacity>
                     )}
 
                     {!isTargetBlockingMe && (
                       <TouchableOpacity
                         style={[
                           styles.blockProfileBtn,
-                          isTargetBlockedByMe && styles.unblockProfileBtn,
+                          themedStyles.blockProfileBtn,
+                          isTargetBlockedByMe && [styles.unblockProfileBtn, themedStyles.unblockProfileBtn],
                         ]}
                         onPress={handleToggleBlockTargetUser}
                         activeOpacity={0.85}
@@ -1754,12 +1918,13 @@ export default function ProfileScreen() {
                         <Ionicons
                           name={isTargetBlockedByMe ? 'person-add-outline' : 'ban-outline'}
                           size={12}
-                          color={isTargetBlockedByMe ? '#FAFAFA' : '#EF4444'}
+                          color={isTargetBlockedByMe ? palette.textPrimary : palette.danger}
                         />
                         <Text
                           style={[
                             styles.blockProfileBtnText,
-                            isTargetBlockedByMe && styles.unblockProfileBtnText,
+                            { color: palette.danger },
+                            isTargetBlockedByMe && { color: palette.textPrimary },
                           ]}
                         >
                           {isTargetBlockedByMe ? 'Unblock' : 'Block'}
@@ -1770,35 +1935,35 @@ export default function ProfileScreen() {
                 )}
 
                 {isAnyBlockBetweenUs ? (
-                  <View style={styles.privateAccountBox}>
-                    <Ionicons name="ban" size={40} color="#EF4444" style={{ marginBottom: 8 }} />
-                    <Text style={styles.privateAccountTitle}>
+                  <View style={[styles.privateAccountBox, themedStyles.privateAccountBox]}>
+                    <Ionicons name="ban" size={40} color={palette.danger} style={{ marginBottom: 8 }} />
+                    <Text style={[styles.privateAccountTitle, themedStyles.privateAccountTitle]}>
                       {isTargetBlockedByMe ? 'You Blocked This User' : 'Content Unavailable'}
                     </Text>
-                    <Text style={styles.privateAccountText}>
+                    <Text style={[styles.privateAccountText, themedStyles.privateAccountText]}>
                       {isTargetBlockedByMe
-                        ? 'Unblock this user to view their profile, posts, or send messages.'
-                        : 'You cannot view this profile or communicate with this user.'}
+                        ? 'Unblock this user to view their profile or posts.'
+                        : 'You cannot view this profile.'}
                     </Text>
                   </View>
                 ) : canViewFullProfile ? (
                   <>
-                    <View style={styles.postsSectionHeader}>
-                      <Ionicons name="grid-outline" size={18} color="#EAB308" />
-                      <Text style={styles.sectionTitle}>Posts</Text>
+                    <View style={[styles.postsSectionHeader, themedStyles.postsSectionHeader]}>
+                      <Ionicons name="grid-outline" size={18} color={palette.accent} />
+                      <Text style={[styles.sectionTitle, themedStyles.sectionTitle]}>Posts</Text>
                     </View>
 
                     {targetUserPosts.length === 0 ? (
-                      <View style={styles.emptyPostsBox}>
-                        <Ionicons name="images-outline" size={32} color="#52525B" />
-                        <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
+                      <View style={[styles.emptyPostsBox, themedStyles.emptyPostsBox]}>
+                        <Ionicons name="images-outline" size={32} color={palette.textMuted} />
+                        <Text style={[styles.emptyPostsText, themedStyles.emptyPostsText]}>No posts shared yet by this user.</Text>
                       </View>
                     ) : (
                       <View style={styles.postsGrid}>
                         {targetUserPosts.map(post => {
                           const isVid = post.mediaType === 'video';
                           return (
-                            <TouchableOpacity key={post.id} style={styles.postThumbnailBox} onPress={() => setSelectedPostModal(post)} activeOpacity={0.9}>
+                            <TouchableOpacity key={post.id} style={[styles.postThumbnailBox, themedStyles.postThumbnailBox]} onPress={() => setSelectedPostModal(post)} activeOpacity={0.9}>
                               {isVid ? (
                                 <View style={[styles.postThumbnailImage, { backgroundColor: '#000' }]}>
                                   {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} /> : null}
@@ -1816,10 +1981,10 @@ export default function ProfileScreen() {
                     )}
                   </>
                 ) : (
-                  <View style={styles.privateAccountBox}>
-                    <Ionicons name="lock-closed" size={40} color="#EAB308" style={{ marginBottom: 8 }} />
-                    <Text style={styles.privateAccountTitle}>This Account is Private 🔒</Text>
-                    <Text style={styles.privateAccountText}>Follow this player to see their posts, stories, and connections.</Text>
+                  <View style={[styles.privateAccountBox, themedStyles.privateAccountBox]}>
+                    <Ionicons name="lock-closed" size={40} color={palette.accent} style={{ marginBottom: 8 }} />
+                    <Text style={[styles.privateAccountTitle, themedStyles.privateAccountTitle]}>This Account is Private 🔒</Text>
+                    <Text style={[styles.privateAccountText, themedStyles.privateAccountText]}>Follow this player to see their posts, stories, and connections.</Text>
                   </View>
                 )}
 
@@ -1829,87 +1994,22 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* Chat Modal */}
-      <Modal visible={chatModalVisible} animationType="slide" transparent={true} onRequestClose={() => setChatModalVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentCenter}>
-            <View style={styles.modalHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <View style={styles.chatHeaderAvatarBox}>
-                  {chatTargetUser?.avatar ? (
-                    <Image source={{ uri: chatTargetUser.avatar }} style={styles.avatarImg} />
-                  ) : (
-                    <Text style={{ color: '#EAB308', fontWeight: 'bold' }}>{chatTargetUser?.name ? chatTargetUser.name[0] : 'P'}</Text>
-                  )}
-                </View>
-                <View>
-                  <Text style={styles.chatHeaderTitle}>Chat</Text>
-                  <Text style={styles.chatHeaderSubTitle}>Chatting with {chatTargetUser?.name || 'Player'}</Text>
-                </View>
-              </View>
-              <TouchableOpacity onPress={() => setChatModalVisible(false)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={24} color="#FAFAFA" />
-              </TouchableOpacity>
-            </View>
-
-            {isBlockedBidirectional(chatTargetUser?.uid, chatTargetUser?.name) ? (
-              <View style={{ paddingVertical: 30, alignItems: 'center' }}>
-                <Ionicons name="ban" size={32} color="#EF4444" />
-                <Text style={{ color: '#FAFAFA', fontWeight: '700', marginTop: 10 }}>Messaging Unavailable</Text>
-                <Text style={{ color: '#A1A1AA', fontSize: 12, textAlign: 'center', marginTop: 4 }}>
-                  You cannot send or receive messages with this user while a block is active.
-                </Text>
-              </View>
-            ) : (
-              <>
-                <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ padding: 6 }} showsVerticalScrollIndicator={false}>
-                  {chatMessages.map(item => {
-                    const isMe = item.senderId === currentUser?.uid;
-                    return (
-                      <View key={item.id} style={[styles.chatBubbleRow, isMe ? styles.chatBubbleRowRight : styles.chatBubbleRowLeft]}>
-                        <View style={[styles.chatBubbleMsg, isMe ? styles.chatBubbleMe : styles.chatBubbleOther]}>
-                          <Text style={[styles.chatBubbleText, isMe && { color: '#09090B' }]}>{item.text}</Text>
-                          <Text style={[styles.chatBubbleTime, isMe && { color: '#3F3F46' }]}>{item.time || getTimeAgo(item.createdAt)}</Text>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </ScrollView>
-
-                <View style={styles.chatInputRow}>
-                  <TextInput 
-                    style={styles.chatInputField}
-                    placeholder="Type a message..."
-                    placeholderTextColor="#52525B"
-                    value={messageInput}
-                    onChangeText={setMessageInput}
-                  />
-                  <TouchableOpacity style={styles.chatSendBtn} onPress={handleSendMessage} activeOpacity={0.85}>
-                    <Ionicons name="send" size={16} color="#09090B" />
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-          </View>
-        </View>
-      </Modal>
-
       {/* Post Details Modal */}
       <Modal visible={!!selectedPostModal} animationType="slide" transparent={true} onRequestClose={() => setSelectedPostModal(null)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentHomeStyle}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentHomeStyle, themedStyles.modalContentHomeStyle]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Post Details 📷</Text>
-              <TouchableOpacity onPress={() => setSelectedPostModal(null)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+              <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Post Details 📷</Text>
+              <TouchableOpacity onPress={() => setSelectedPostModal(null)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
             {selectedPostModal && (
               <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 30 }} nestedScrollEnabled={true}>
-                <View style={styles.postCard}>
+                <View style={[styles.postCard, themedStyles.postCard]}>
                   <View style={styles.postHeader}>
-                    <TouchableOpacity style={styles.postAvatarBox} onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, selectedPostModal.authorName || selectedPostModal.userName); }} activeOpacity={0.85}>
+                    <TouchableOpacity style={[styles.postAvatarBox, themedStyles.postAvatarBox]} onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, selectedPostModal.authorName || selectedPostModal.userName); }} activeOpacity={0.85}>
                       {postOwner?.avatar ? (
                         <Image source={{ uri: postOwner.avatar }} style={styles.avatarImg} />
                       ) : (
@@ -1920,25 +2020,25 @@ export default function ProfileScreen() {
                     <View style={styles.postUserInfo}>
                       <TouchableOpacity onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, selectedPostModal.authorName || selectedPostModal.userName); }} activeOpacity={0.85}>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <Text style={styles.postUserName}>{postOwner?.name || selectedPostModal.authorName || selectedPostModal.userName}</Text>
-                          {postOwner?.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                          <Text style={[styles.postUserName, themedStyles.postUserName]}>{postOwner?.name || selectedPostModal.authorName || selectedPostModal.userName}</Text>
+                          {postOwner?.isVip && <Ionicons name="checkmark-circle" size={14} color={palette.accent} />}
                           
-                          <View style={styles.postSportBadge}>
+                          <View style={[styles.postSportBadge, themedStyles.postSportBadge]}>
                             <Text style={styles.postSportBadgeText}>⚽ Football</Text>
                           </View>
                         </View>
                       </TouchableOpacity>
-                      <Text style={styles.postUserMeta}>{postOwner?.city || 'Netanya'}{postOwner?.country ? `, ${postOwner.country}` : ', Israel'}</Text>
+                      <Text style={[styles.postUserMeta, themedStyles.postUserMeta]}>{postOwner?.city || 'Netanya'}{postOwner?.country ? `, ${postOwner.country}` : ', Israel'}</Text>
                     </View>
 
-                    <Text style={styles.postTime}>{getTimeAgo(selectedPostModal.createdAt)}</Text>
+                    <Text style={[styles.postTime, themedStyles.postTime]}>{getTimeAgo(selectedPostModal.createdAt)}</Text>
                   </View>
 
-                  <Text style={styles.postText}>{selectedPostModal.caption || selectedPostModal.text}</Text>
+                  <Text style={[styles.postText, themedStyles.postText]}>{selectedPostModal.caption || selectedPostModal.text}</Text>
                   
                   {selectedPostModal.imageUrl ? (
                     <TouchableWithoutFeedback onPress={() => handleDoubleTap(selectedPostModal.id)}>
-                      <View style={styles.postImageBox}>
+                      <View style={[styles.postImageBox, themedStyles.postImageBox]}>
                         {selectedPostModal.mediaType === 'video' ? (
                           <PostVideoPlayer key={`modal_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isStoryOpen={false} />
                         ) : (
@@ -1948,21 +2048,21 @@ export default function ProfileScreen() {
                     </TouchableWithoutFeedback>
                   ) : null}
 
-                  <View style={styles.postActionsRow}>
+                  <View style={[styles.postActionsRow, themedStyles.postActionsRow]}>
                     <TouchableOpacity style={styles.actionBtn} onPress={() => toggleLikePost(selectedPostModal.id)} activeOpacity={0.7}>
                       <Ionicons 
                         name={selectedPostModal.isLiked ? "heart" : "heart-outline"} 
                         size={20} 
-                        color={selectedPostModal.isLiked ? "#EF4444" : "#A1A1AA"} 
+                        color={selectedPostModal.isLiked ? palette.danger : palette.textMuted} 
                       />
-                      <Text style={[styles.actionText, selectedPostModal.isLiked && { color: '#EF4444', fontWeight: 'bold' }]}>
+                      <Text style={[styles.actionText, themedStyles.actionText, selectedPostModal.isLiked && { color: palette.danger, fontWeight: 'bold' }]}>
                         {selectedPostModal.likes || selectedPostModal.likesList?.length || 0} Likes
                       </Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity style={styles.actionBtn} onPress={() => { const current = selectedPostModal; setSelectedPostModal(null); setCommentsModalPost(current); }} activeOpacity={0.7}>
-                      <Ionicons name="chatbubble-outline" size={18} color="#A1A1AA" />
-                      <Text style={styles.actionText}>{selectedPostModal.comments?.length || 0} Comments</Text>
+                      <Ionicons name="chatbubble-outline" size={18} color={palette.textMuted} />
+                      <Text style={[styles.actionText, themedStyles.actionText]}>{selectedPostModal.comments?.length || 0} Comments</Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -1974,15 +2074,15 @@ export default function ProfileScreen() {
 
       {/* Comments Modal */}
       <Modal visible={!!commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setCommentsModalPost(null)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.commentsModalContent}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.commentsModalContent, themedStyles.commentsModalContent]}>
             <View style={styles.modalHeader}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Text style={styles.modalTitle}>Comments</Text>
-                <Ionicons name="chatbubble-ellipses-outline" size={18} color="#EAB308" />
+                <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Comments</Text>
+                <Ionicons name="chatbubble-ellipses-outline" size={18} color={palette.accent} />
               </View>
-              <TouchableOpacity onPress={() => setCommentsModalPost(null)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+              <TouchableOpacity onPress={() => setCommentsModalPost(null)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -1990,7 +2090,7 @@ export default function ProfileScreen() {
               <View style={{ flex: 1, width: '100%' }}>
                 <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 15 }}>
                   {(!commentsModalPost.comments || commentsModalPost.comments.length === 0) ? (
-                    <Text style={{ color: '#71717A', textAlign: 'center', marginVertical: 30, fontSize: 13 }}>No comments yet. Be the first to comment!</Text>
+                    <Text style={{ color: palette.textMuted, textAlign: 'center', marginVertical: 30, fontSize: 13 }}>No comments yet. Be the first to comment!</Text>
                   ) : (
                     commentsModalPost.comments
                       .filter(c => !isBlockedBidirectional(c.userId, c.user))
@@ -2003,22 +2103,22 @@ export default function ProfileScreen() {
                             {c.avatarUrl ? (
                               <Image source={{ uri: c.avatarUrl }} style={styles.commentAvatar} />
                             ) : (
-                              <View style={styles.commentAvatarPlaceholder}>
-                                <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>{c.user ? c.user[0].toUpperCase() : 'U'}</Text>
+                              <View style={[styles.commentAvatarPlaceholder, themedStyles.commentAvatarPlaceholder]}>
+                                <Text style={{ color: palette.accent, fontSize: 10, fontWeight: 'bold' }}>{c.user ? c.user[0].toUpperCase() : 'U'}</Text>
                               </View>
                             )}
                           </TouchableOpacity>
-                          <View style={{ flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 10, borderRadius: 12 }}>
+                          <View style={[styles.commentBubble, themedStyles.commentBubble]}>
                             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
                               <TouchableOpacity onPress={() => { setCommentsModalPost(null); openUserProfileById(c.userId, c.user); }} activeOpacity={0.85}>
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                                   <Text style={styles.commentUser}>{c.user}</Text>
-                                  {commentUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color="#EAB308" />}
+                                  {commentUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color={palette.accent} />}
                                 </View>
                               </TouchableOpacity>
-                              <Text style={styles.commentTimeText}>{commentTimeAgo}</Text>
+                              <Text style={[styles.commentTimeText, themedStyles.commentTimeText]}>{commentTimeAgo}</Text>
                             </View>
-                            <Text style={styles.commentText}>{c.text}</Text>
+                            <Text style={[styles.commentText, themedStyles.commentText]}>{c.text}</Text>
                           </View>
                         </View>
                       );
@@ -2026,16 +2126,16 @@ export default function ProfileScreen() {
                   )}
                 </ScrollView>
 
-                <View style={styles.commentInputRow}>
+                <View style={[styles.commentInputRow, themedStyles.commentInputRow]}>
                   <TextInput 
-                    style={styles.commentInput} 
+                    style={[styles.commentInput, themedStyles.commentInput]} 
                     placeholder="Write a comment..." 
-                    placeholderTextColor="#52525B"
+                    placeholderTextColor={palette.textMuted}
                     value={modalCommentInput}
                     onChangeText={setModalCommentInput}
                   />
                   <TouchableOpacity style={styles.commentSendBtn} onPress={() => handleAddCommentToPost(commentsModalPost.id)} activeOpacity={0.85}>
-                    <Ionicons name="arrow-forward" size={16} color="#09090B" />
+                    <Ionicons name="arrow-forward" size={16} color={palette.accentTextOnButton} />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -2048,7 +2148,7 @@ export default function ProfileScreen() {
       <Modal visible={!!zoomedAvatarUri} transparent={true} animationType="fade" onRequestClose={() => setZoomedAvatarUri(null)}>
         <View style={styles.zoomedAvatarOverlay}>
           <TouchableOpacity 
-            style={styles.closeZoomedBtn} 
+            style={[styles.closeZoomedBtn, themedStyles.closeZoomedBtn]} 
             onPress={() => setZoomedAvatarUri(null)}
             activeOpacity={0.8}
           >
@@ -2063,6 +2163,83 @@ export default function ProfileScreen() {
     </View>
   );
 }
+
+const createThemedStyles = (palette: ThemePalette) =>
+  StyleSheet.create({
+    container: { backgroundColor: palette.bgPrimary },
+    appTitle: { color: palette.textPrimary },
+    settingsBtn: { backgroundColor: palette.bgSurface, borderColor: palette.border },
+    avatarLarge: { backgroundColor: palette.bgElevated },
+    profileName: { color: palette.textPrimary },
+    sportTagBadge: { backgroundColor: palette.bgElevated },
+    profileCity: { color: palette.textMuted },
+    unifiedUpgradeCard: { backgroundColor: palette.bgSurface },
+    vipIconCircle: { backgroundColor: palette.bgElevated },
+    vipBannerTitle: { color: palette.textPrimary },
+    vipBannerSubtitle: { color: palette.textMuted },
+    statsRow: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    statLabel: { color: palette.textMuted },
+    postsSectionHeader: { borderTopColor: palette.border },
+    sectionTitle: { color: palette.textPrimary },
+    emptyPostsBox: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    emptyPostsText: { color: palette.textMuted },
+    postThumbnailBox: { backgroundColor: palette.bgSurface },
+    modalOverlayCenter: { backgroundColor: palette.modalOverlay },
+    settingsModalContent: { backgroundColor: palette.bgSurface, borderColor: palette.border },
+    modalContentHomeStyle: { backgroundColor: palette.bgPrimary, borderColor: palette.border },
+    modalContentCenter: { backgroundColor: palette.bgSurface, borderColor: palette.border },
+    modalTitle: { color: palette.textPrimary },
+    closeHomeModalBtn: { backgroundColor: palette.bgSurface, borderColor: palette.border },
+    igSettingItem: { borderBottomColor: palette.borderSubtle },
+    igSettingItemToggle: { borderBottomColor: palette.borderSubtle },
+    igSettingText: { color: palette.textPrimary },
+    igSettingValue: { color: palette.textMuted },
+    themeOptionBtn: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    hubSectionCard: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    hubSectionTitle: { color: palette.textPrimary },
+    hubSectionDesc: { color: palette.textSecondary },
+    hubActionBtnCancel: { backgroundColor: palette.dangerBg, borderColor: palette.danger },
+    manageStoreSubBtn: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    manageStoreSubText: { color: palette.textPrimary },
+    billingNotice: { color: palette.textMuted },
+    avatarEditPreview: { backgroundColor: palette.bgElevated },
+    imagePickBtn: { backgroundColor: palette.bgElevated },
+    imageRemoveBtn: { backgroundColor: palette.dangerBg, borderColor: palette.danger },
+    label: { color: palette.textSecondary },
+    input: { backgroundColor: palette.bgPrimary, borderColor: palette.border, color: palette.textPrimary },
+    listItem: { backgroundColor: palette.bgPrimary, borderColor: palette.border },
+    listAvatar: { backgroundColor: palette.bgElevated },
+    listName: { color: palette.textPrimary },
+    listCity: { color: palette.textMuted },
+    removeFollowerBtn: { backgroundColor: palette.dangerBg, borderColor: palette.danger },
+    unblockListBtn: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    unblockListBtnText: { color: palette.textPrimary },
+    profileFollowingBtn: { backgroundColor: palette.bgElevated },
+    requestedFollowBtn: { backgroundColor: palette.bgElevated, borderWidth: 1, borderColor: palette.border },
+    blockProfileBtn: { backgroundColor: palette.bgElevated, borderColor: palette.danger },
+    unblockProfileBtn: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    privateAccountBox: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    privateAccountTitle: { color: palette.textPrimary },
+    privateAccountText: { color: palette.textMuted },
+    postCard: { backgroundColor: palette.bgSurface, borderColor: palette.border },
+    postAvatarBox: { backgroundColor: palette.bgElevated },
+    postUserName: { color: palette.textPrimary },
+    postUserMeta: { color: palette.textMuted },
+    postTime: { color: palette.textMuted },
+    postText: { color: palette.textSecondary },
+    postImageBox: { backgroundColor: palette.bgPrimary, borderColor: palette.border },
+    postSportBadge: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    postActionsRow: { borderTopColor: palette.border },
+    actionText: { color: palette.textMuted },
+    commentsModalContent: { backgroundColor: palette.bgSurface, borderColor: palette.border },
+    commentAvatarPlaceholder: { backgroundColor: palette.bgElevated },
+    commentBubble: { backgroundColor: palette.bgElevated },
+    commentText: { color: palette.textSecondary },
+    commentTimeText: { color: palette.textMuted },
+    commentInputRow: { borderTopColor: palette.border },
+    commentInput: { backgroundColor: palette.bgPrimary, borderColor: palette.border, color: palette.textPrimary },
+    closeZoomedBtn: { backgroundColor: '#121215', borderColor: '#27272A' },
+  });
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#09090B' },
@@ -2087,6 +2264,11 @@ const styles = StyleSheet.create({
   igSettingText: { color: '#FAFAFA', fontSize: 14, fontWeight: '500' },
   igSettingRight: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   igSettingValue: { color: '#71717A', fontSize: 12 },
+
+  themeSelectorRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  themeOptionBtn: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, borderWidth: 1 },
+  themeOptionBtnActive: { backgroundColor: '#EAB308', borderColor: '#EAB308' },
+  themeOptionText: { fontSize: 12, fontWeight: '700' },
 
   headerProfile: { alignItems: 'center', marginBottom: 16, paddingHorizontal: 20 },
   avatarLarge: { width: 84, height: 84, borderRadius: 42, backgroundColor: '#18181B', borderWidth: 2, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', marginBottom: 10, overflow: 'hidden' },
@@ -2114,7 +2296,6 @@ const styles = StyleSheet.create({
   hubActionBtnBlue: { backgroundColor: '#3B82F6', borderRadius: 10, height: 42, justifyContent: 'center', alignItems: 'center' },
   hubActionBtnCancel: { backgroundColor: '#271215', borderWidth: 1, borderColor: '#EF4444' },
   hubActionBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
-  hubActionBtnCancelText: { color: '#EF4444' },
 
   manageStoreSubBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', backgroundColor: '#27272A', borderWidth: 1, borderColor: '#3F3F46', borderRadius: 12, height: 46, marginBottom: 14 },
   manageStoreSubText: { color: '#FAFAFA', fontWeight: 'bold', fontSize: 13 },
@@ -2175,29 +2356,11 @@ const styles = StyleSheet.create({
   profileFollowBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
   profileFollowingBtn: { backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308' },
   profileFollowingBtnText: { color: '#EAB308' },
+  requestedFollowBtn: { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
 
   blockProfileBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', gap: 4, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EF4444', borderRadius: 8, height: 26, paddingHorizontal: 10 },
   blockProfileBtnText: { color: '#EF4444', fontWeight: '700', fontSize: 10 },
   unblockProfileBtn: { backgroundColor: '#27272A', borderColor: '#52525B' },
-  unblockProfileBtnText: { color: '#FAFAFA' },
-
-  chatOpenBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#EAB308', borderRadius: 12, height: 44, paddingHorizontal: 16 },
-  chatOpenBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
-
-  chatHeaderAvatarBox: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
-  chatHeaderTitle: { color: '#FAFAFA', fontSize: 15, fontWeight: '700' },
-  chatHeaderSubTitle: { color: '#EAB308', fontSize: 11, fontWeight: '600' },
-  chatBubbleRow: { marginBottom: 10, flexDirection: 'row' },
-  chatBubbleRowLeft: { justifyContent: 'flex-start' },
-  chatBubbleRowRight: { justifyContent: 'flex-end' },
-  chatBubbleMsg: { maxWidth: '75%', padding: 12, borderRadius: 16, borderWidth: 1 },
-  chatBubbleOther: { backgroundColor: '#18181B', borderColor: '#27272A' },
-  chatBubbleMe: { backgroundColor: '#EAB308', borderColor: '#EAB308' },
-  chatBubbleText: { color: '#FAFAFA', fontSize: 13, fontWeight: '500' },
-  chatBubbleTime: { color: '#A1A1AA', fontSize: 9, marginTop: 4, alignSelf: 'flex-end' },
-  chatInputRow: { flexDirection: 'row', paddingTop: 12, borderTopWidth: 1, borderTopColor: '#27272A', gap: 8, alignItems: 'center' },
-  chatInputField: { flex: 1, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 20, height: 42, color: '#FAFAFA', paddingHorizontal: 14, fontSize: 13 },
-  chatSendBtn: { backgroundColor: '#EAB308', width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center' },
 
   postCard: { backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 20, padding: 16, marginBottom: 16 },
   postHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
@@ -2223,6 +2386,7 @@ const styles = StyleSheet.create({
   commentRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10 },
   commentAvatar: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
   commentAvatarPlaceholder: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: '#EAB308', backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center' },
+  commentBubble: { flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 10, borderRadius: 12 },
   commentUser: { color: '#EAB308', fontSize: 12, fontWeight: '700' },
   commentText: { color: '#D4D4D8', fontSize: 13 },
   commentTimeText: { color: '#71717A', fontSize: 10 },

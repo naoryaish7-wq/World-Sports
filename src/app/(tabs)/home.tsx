@@ -1,18 +1,64 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useFocusEffect } from 'expo-router';
 import { StyleSheet, Text, View, ScrollView, FlatList, Image, TouchableOpacity, TextInput, Modal, Alert, Dimensions, TouchableWithoutFeedback, PanResponder, Animated } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import * as ImagePicker from 'expo-image-picker';
-import { doc, onSnapshot, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, query, orderBy, limit, getDoc, setDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
+import { doc, onSnapshot, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, query, orderBy, limit, getDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { db } from '../../firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { router } from 'expo-router';
 import { useVideoPlayer, VideoView } from 'expo-video';
 
 const { width, height } = Dimensions.get('window');
 
 const activeVideoPlayers = new Set<any>();
+
+type ThemeMode = 'dark' | 'light';
+
+type ThemePalette = {
+  bgPrimary: string;
+  bgSurface: string;
+  bgElevated: string;
+  border: string;
+  textPrimary: string;
+  textSecondary: string;
+  textMuted: string;
+  accent: string;
+  accentTextOnButton: string;
+  danger: string;
+  modalOverlay: string;
+  storyOverlay: string;
+};
+
+const DARK_THEME: ThemePalette = {
+  bgPrimary: '#09090B',
+  bgSurface: '#121215',
+  bgElevated: '#18181B',
+  border: '#27272A',
+  textPrimary: '#FAFAFA',
+  textSecondary: '#E4E4E7',
+  textMuted: '#A1A1AA',
+  accent: '#EAB308',
+  accentTextOnButton: '#09090B',
+  danger: '#EF4444',
+  modalOverlay: 'rgba(9,9,11,0.85)',
+  storyOverlay: 'rgba(9,9,11,0.95)',
+};
+
+const LIGHT_THEME: ThemePalette = {
+  bgPrimary: '#F8FAFC',
+  bgSurface: '#FFFFFF',
+  bgElevated: '#F1F5F9',
+  border: '#E2E8F0',
+  textPrimary: '#0F172A',
+  textSecondary: '#334155',
+  textMuted: '#64748B',
+  accent: '#EAB308',
+  accentTextOnButton: '#09090B',
+  danger: '#DC2626',
+  modalOverlay: 'rgba(15,23,42,0.55)',
+  storyOverlay: 'rgba(15,23,42,0.92)',
+};
 
 type Comment = {
   id: string;
@@ -283,10 +329,21 @@ function StoryVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean })
 export default function HomeScreen() {
   const { user } = useAuth();
   const [isScreenFocused, setIsScreenFocused] = useState(true);
+  const [themeMode, setThemeMode] = useState<ThemeMode>('dark');
+
+  const palette = themeMode === 'light' ? LIGHT_THEME : DARK_THEME;
+  const themedStyles = useMemo(() => createThemedStyles(palette), [palette]);
 
   useFocusEffect(
     useCallback(() => {
       setIsScreenFocused(true);
+      AsyncStorage.getItem('@world_sports_theme_mode')
+        .then(savedTheme => {
+          if (savedTheme === 'light' || savedTheme === 'dark') {
+            setThemeMode(savedTheme);
+          }
+        })
+        .catch(() => {});
 
       return () => {
         setIsScreenFocused(false);
@@ -351,6 +408,26 @@ export default function HomeScreen() {
   }, []);
 
   useEffect(() => {
+    let isMounted = true;
+    const syncThemeFromStorage = async () => {
+      try {
+        const savedTheme = await AsyncStorage.getItem('@world_sports_theme_mode');
+        if (isMounted && (savedTheme === 'light' || savedTheme === 'dark')) {
+          setThemeMode(savedTheme);
+        }
+      } catch {}
+    };
+
+    syncThemeFromStorage();
+    const themePoll = setInterval(syncThemeFromStorage, 1000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(themePoll);
+    };
+  }, []);
+
+  useEffect(() => {
     let unsubscribeDoc: (() => void) | undefined;
 
     const fetchLiveUserData = async () => {
@@ -366,6 +443,10 @@ export default function HomeScreen() {
             if (docSnap.exists()) {
               const data = docSnap.data();
               setLiveUserData({ uid: docSnap.id, ...data });
+              if (data.themeMode === 'light' || data.themeMode === 'dark') {
+                setThemeMode(data.themeMode);
+                AsyncStorage.setItem('@world_sports_theme_mode', data.themeMode).catch(() => {});
+              }
               if (data.avatar !== undefined) setLiveAvatar(data.avatar);
               if (data.name) setLiveName(data.name);
               if (data.country && data.city) {
@@ -446,7 +527,7 @@ export default function HomeScreen() {
                 message: msg,
                 createdAt: serverTimestamp()
               });
-              await sendExpoPushNotification(currentUserId, 'World Sports ⚽', msg);
+              await sendExpoPushNotification(currentUserId, 'World Sports ', msg);
             } catch (e) {
               console.error('Error adding story notification:', e);
             }
@@ -713,11 +794,6 @@ export default function HomeScreen() {
   const [targetUserPosts, setTargetUserPosts] = useState<Post[]>([]);
   const [targetActiveModalList, setTargetActiveModalList] = useState<'followers' | 'following' | null>(null);
 
-  const [chatModalVisible, setChatModalVisible] = useState(false);
-  const [chatTargetUser, setChatTargetUser] = useState<any | null>(null);
-  const [chatMessages, setChatMessages] = useState<any[]>([]);
-  const [messageInput, setMessageInput] = useState('');
-
   const [selectedPostModal, setSelectedPostModal] = useState<Post | null>(null);
   const [commentsModalPost, setCommentsModalPost] = useState<Post | null>(null);
   const [modalCommentInput, setModalCommentInput] = useState('');
@@ -805,24 +881,6 @@ export default function HomeScreen() {
 
     return () => unsubscribe();
   }, [selectedUserModalId, allUsersList]);
-
-  useEffect(() => {
-    if (!chatModalVisible || !currentUserId || !chatTargetUser?.uid) {
-      setChatMessages([]);
-      return;
-    }
-
-    const chatId = [currentUserId, chatTargetUser.uid].sort().join('_');
-    const q = query(collection(db, 'chats', chatId, 'messages'), orderBy('createdAt', 'asc'));
-    const unsub = onSnapshot(q, (snapshot) => {
-      const msgs = snapshot.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
-      setChatMessages(msgs);
-    }, (err) => {
-      console.error('Error listening to chat messages:', err);
-    });
-
-    return () => unsub();
-  }, [chatModalVisible, currentUserId, chatTargetUser]);
 
   const handleToggleBlockTargetUser = async () => {
     if (!targetProfileUser || !currentUserId || !targetProfileUser.uid || targetProfileUser.uid === currentUserId) {
@@ -1127,48 +1185,6 @@ export default function HomeScreen() {
     } catch (error) {
       console.error('Error updating follow status / sending follow request notification:', error);
       Alert.alert('Error', 'Could not update follow status. Please try again.');
-    }
-  };
-
-  const handleSendMessage = async () => {
-    if (!messageInput.trim() || !currentUserId || !chatTargetUser?.uid) return;
-
-    if (isBlockedBidirectional(chatTargetUser.uid, chatTargetUser.name)) {
-      Alert.alert('Messaging Blocked', 'You cannot send messages to this user because one of you blocked the other.');
-      return;
-    }
-
-    const chatId = [currentUserId, chatTargetUser.uid].sort().join('_');
-    const textToSend = messageInput.trim();
-    setMessageInput('');
-
-    try {
-      const chatDocRef = doc(db, 'chats', chatId);
-      await setDoc(chatDocRef, {
-        participants: [currentUserId, chatTargetUser.uid],
-        lastMessageText: textToSend,
-        lastUpdated: serverTimestamp()
-      }, { merge: true });
-
-      const messagesRef = collection(db, 'chats', chatId, 'messages');
-      await addDoc(messagesRef, {
-        senderId: currentUserId,
-        senderName: liveName,
-        text: textToSend,
-        createdAt: serverTimestamp()
-      });
-
-      const msgContent = `${liveName} sent you a message: "${textToSend.substring(0, 25)}..." 💬`;
-      await addDoc(collection(db, 'users', chatTargetUser.uid, 'notifications'), {
-        senderUid: currentUserId,
-        type: 'message',
-        message: msgContent,
-        createdAt: serverTimestamp(),
-        status: 'unread'
-      });
-      await sendExpoPushNotification(chatTargetUser.uid, 'World Sports ⚽', msgContent);
-    } catch (e) {
-      console.error('Error sending message:', e);
     }
   };
 
@@ -1733,11 +1749,11 @@ export default function HomeScreen() {
   }).current;
 
   return (
-    <View style={{ flex: 1, backgroundColor: '#09090B' }}>
+    <View style={[styles.container, themedStyles.container]}>
       <FlatList 
         data={filteredPosts}
         keyExtractor={(item) => item.id}
-        style={styles.container} 
+        style={[styles.container, themedStyles.container]} 
         contentContainerStyle={styles.scrollContent} 
         showsVerticalScrollIndicator={false}
         viewabilityConfig={viewabilityConfig}
@@ -1747,59 +1763,59 @@ export default function HomeScreen() {
             <View style={styles.headerRow}>
               <View>
                 <Text style={styles.homeCategory}>Home</Text>
-                <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
+                <Text style={[styles.appTitle, themedStyles.appTitle]}>World <Text style={{color: palette.accent}}>Sports</Text></Text>
               </View>
 
               <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
                 <TouchableOpacity 
-                  style={styles.notificationBellBtn} 
+                  style={[styles.notificationBellBtn, themedStyles.notificationBellBtn]} 
                   onPress={() => {
                     stopAllVideos();
                     setNotificationsModalVisible(true);
                   }}
                   activeOpacity={0.8}
                 >
-                  <Ionicons name="notifications-outline" size={20} color="#EAB308" />
+                  <Ionicons name="notifications-outline" size={20} color={palette.accent} />
                   {notificationsList.some(n => n.status === 'pending' || !n.isRead) && (
                     <View style={{
                       position: 'absolute',
                       top: -2,
                       right: -2,
-                      backgroundColor: '#EF4444',
+                      backgroundColor: palette.danger,
                       width: 10,
                       height: 10,
                       borderRadius: 5,
                       borderWidth: 1,
-                      borderColor: '#09090B'
+                      borderColor: palette.bgPrimary
                     }} />
                   )}
                 </TouchableOpacity>
 
                 <TouchableOpacity style={styles.createBtn} onPress={() => { stopAllVideos(); setCreatePostVisible(true); }} activeOpacity={0.85}>
-                  <Ionicons name="add" size={16} color="#09090B" style={{ marginRight: 4 }} />
-                  <Text style={styles.createBtnText}>Post</Text>
+                  <Ionicons name="add" size={16} color={palette.accentTextOnButton} style={{ marginRight: 4 }} />
+                  <Text style={[styles.createBtnText, { color: palette.accentTextOnButton }]}>Post</Text>
                 </TouchableOpacity>
               </View>
             </View>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.storiesContainer}>
               <TouchableOpacity style={styles.storyItem} onPress={handlePickStoryMedia} activeOpacity={0.85}>
-                <View style={styles.myStoryRing}>
+                <View style={[styles.myStoryRing, themedStyles.avatarPlaceholder, { borderColor: palette.accent }]}>
                   {liveAvatar ? (
                     <Image source={{ uri: liveAvatar }} style={styles.storyImg} />
                   ) : (
-                    <View style={styles.avatarPlaceholder}>
+                    <View style={[styles.avatarPlaceholder, themedStyles.avatarPlaceholder]}>
                       <Text style={styles.avatarPlaceholderText}>{liveName ? liveName[0].toUpperCase() : 'P'}</Text>
                     </View>
                   )}
-                  <View style={styles.plusBadge}>
-                    <Ionicons name="add" size={12} color="#09090B" />
+                  <View style={[styles.plusBadge, { borderColor: palette.bgPrimary }]}>
+                    <Ionicons name="add" size={12} color={palette.accentTextOnButton} />
                   </View>
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 6 }}>
-                  <Text style={styles.storyName}>Add Story</Text>
+                  <Text style={[styles.storyName, themedStyles.storyName]}>Add Story</Text>
                   {allUsersList.find(u => u.uid === currentUserId)?.isVip && (
-                    <Ionicons name="checkmark-circle" size={12} color="#EAB308" />
+                    <Ionicons name="checkmark-circle" size={12} color={palette.accent} />
                   )}
                 </View>
               </TouchableOpacity>
@@ -1812,9 +1828,10 @@ export default function HomeScreen() {
                   <View key={group.userUid} style={styles.storyItem}>
                     <TouchableOpacity 
                       style={[
-                        styles.storyRing, 
+                        styles.storyRing,
+                        themedStyles.avatarPlaceholder,
                         group.isMine && styles.myStoryRingActive,
-                        hasUnwatchedStories ? styles.unwatchedRing : styles.watchedRing
+                        hasUnwatchedStories ? { borderColor: palette.accent } : { borderColor: palette.textMuted }
                       ]} 
                       onPress={() => {
                         stopAllVideos();
@@ -1826,7 +1843,7 @@ export default function HomeScreen() {
                       {group.avatarUrl ? (
                         <Image source={{ uri: group.avatarUrl }} style={styles.storyImg} />
                       ) : (
-                        <View style={styles.avatarPlaceholder}>
+                        <View style={[styles.avatarPlaceholder, themedStyles.avatarPlaceholder]}>
                           <Text style={styles.avatarPlaceholderText}>{group.name ? group.name[0].toUpperCase() : 'S'}</Text>
                         </View>
                       )}
@@ -1842,9 +1859,9 @@ export default function HomeScreen() {
                       activeOpacity={group.isMine ? 1 : 0.7}
                       style={{ flexDirection: 'row', alignItems: 'center', gap: 3, marginTop: 6 }}
                     >
-                      <Text style={styles.storyName} numberOfLines={1}>{group.isMine ? 'Your Story' : group.name}</Text>
+                      <Text style={[styles.storyName, themedStyles.storyName]} numberOfLines={1}>{group.isMine ? 'Your Story' : group.name}</Text>
                       {groupUserObj?.isVip && (
-                        <Ionicons name="checkmark-circle" size={12} color="#EAB308" />
+                        <Ionicons name="checkmark-circle" size={12} color={palette.accent} />
                       )}
                     </TouchableOpacity>
                   </View>
@@ -1854,9 +1871,9 @@ export default function HomeScreen() {
           </>
         }
         ListEmptyComponent={
-          <View style={styles.emptyFeedBox}>
-            <Ionicons name="football-outline" size={48} color="#52525B" />
-            <Text style={styles.emptyFeedText}>No posts found for your selected sports. Be the first to share!</Text>
+          <View style={[styles.emptyFeedBox, themedStyles.emptyFeedBox]}>
+            <Ionicons name="football-outline" size={48} color={palette.textMuted} />
+            <Text style={[styles.emptyFeedText, themedStyles.emptyFeedText]}>No posts found for your selected sports. Be the first to share!</Text>
           </View>
         }
         renderItem={({ item: post }) => {
@@ -1870,11 +1887,11 @@ export default function HomeScreen() {
           const isVideoActive = isScreenFocused && !isAnyModalOpen && activeVideoId === post.id;
 
           return (
-            <View key={post.id} style={[styles.postCard, isPostPromoted && { borderColor: '#3B82F6', borderWidth: 1.5 }]}>
+            <View key={post.id} style={[styles.postCard, themedStyles.postCard, isPostPromoted && { borderColor: '#3B82F6', borderWidth: 1.5 }]}>
               
               <View style={styles.postHeader}>
                 <TouchableOpacity
-                  style={styles.postAvatarBox}
+                  style={[styles.postAvatarBox, themedStyles.avatarPlaceholder]}
                   onPress={() => openUserProfileById(post.userId, post.authorName)}
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   activeOpacity={0.75}
@@ -1882,7 +1899,7 @@ export default function HomeScreen() {
                   {post.avatarUrl ? (
                     <Image source={{ uri: post.avatarUrl }} style={styles.avatarImg} />
                   ) : (
-                    <View style={styles.avatarPlaceholder}>
+                    <View style={[styles.avatarPlaceholder, themedStyles.avatarPlaceholder]}>
                       <Text style={styles.avatarPlaceholderText}>{post.authorName ? post.authorName[0].toUpperCase() : 'P'}</Text>
                     </View>
                   )}
@@ -1895,41 +1912,41 @@ export default function HomeScreen() {
                     activeOpacity={0.75}
                   >
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Text style={styles.postUserName}>{post.authorName}</Text>
-                      {authorUserObj?.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                      <Text style={[styles.postUserName, themedStyles.postUserName]}>{post.authorName}</Text>
+                      {authorUserObj?.isVip && <Ionicons name="checkmark-circle" size={14} color={palette.accent} />}
                       {isPostPromoted && <Ionicons name="rocket" size={14} color="#3B82F6" style={{ marginLeft: 2 }} />}
                     </View>
                   </TouchableOpacity>
-                  <Text style={styles.postUserMeta}>{post.authorMeta}</Text>
+                  <Text style={[styles.postUserMeta, themedStyles.postUserMeta]}>{post.authorMeta}</Text>
                 </View>
 
                 {post.sport && (
-                  <View style={styles.sportBadge}>
+                  <View style={[styles.sportBadge, themedStyles.sportBadge]}>
                     <Text style={styles.sportBadgeText}>{post.sport}</Text>
                   </View>
                 )}
 
                 <TouchableOpacity onPress={() => handleReportPost(post.id)} style={{ marginLeft: 6, marginRight: 2 }} activeOpacity={0.7}>
-                  <Ionicons name="flag-outline" size={16} color="#A1A1AA" />
+                  <Ionicons name="flag-outline" size={16} color={palette.textMuted} />
                 </TouchableOpacity>
 
                 {(post.authorName === liveName || post.userId === currentUserId) && (
                   <TouchableOpacity onPress={() => handleDeletePost(post.id)} style={{ marginLeft: 6, marginRight: 4 }} activeOpacity={0.7}>
-                    <Ionicons name="trash-outline" size={16} color="#EF4444" />
+                    <Ionicons name="trash-outline" size={16} color={palette.danger} />
                   </TouchableOpacity>
                 )}
 
-                <Text style={styles.postTime}>{postTimeAgo}</Text>
+                <Text style={[styles.postTime, themedStyles.postTime]}>{postTimeAgo}</Text>
               </View>
 
-              <Text style={styles.postText}>{post.text}</Text>
+              <Text style={[styles.postText, themedStyles.postText]}>{post.text}</Text>
               
               {post.imageUrl ? (
                 <TouchableWithoutFeedback onPress={() => {
                   if (isVideo) setActiveVideoId(post.id);
                   handleDoubleTap(post.id);
                 }}>
-                  <View style={styles.postImageBox}>
+                  <View style={[styles.postImageBox, themedStyles.postImageBox]}>
                     {isVideo ? (
                       <PostVideoPlayer key={post.id} uri={post.imageUrl} isActive={isVideoActive} />
                     ) : (
@@ -1939,14 +1956,14 @@ export default function HomeScreen() {
                 </TouchableWithoutFeedback>
               ) : null}
 
-              <View style={styles.postActionsRow}>
+              <View style={[styles.postActionsRow, themedStyles.postActionsRow]}>
                 <TouchableOpacity style={styles.actionBtn} onPress={() => toggleLike(post.id)} activeOpacity={0.7}>
                   <Ionicons 
                     name={post.isLiked ? "heart" : "heart-outline"} 
                     size={20} 
-                    color={post.isLiked ? "#EF4444" : "#A1A1AA"} 
+                    color={post.isLiked ? palette.danger : palette.textMuted} 
                   />
-                  <Text style={[styles.actionText, post.isLiked && { color: '#EF4444', fontWeight: 'bold' }]}>
+                  <Text style={[styles.actionText, themedStyles.actionText, post.isLiked && { color: palette.danger, fontWeight: 'bold' }]}>
                     {post.likes} Likes
                   </Text>
                 </TouchableOpacity>
@@ -1955,8 +1972,8 @@ export default function HomeScreen() {
                   stopAllVideos();
                   setCommentsModalPost(post);
                 }} activeOpacity={0.7}>
-                  <Ionicons name="chatbubble-outline" size={18} color="#A1A1AA" />
-                  <Text style={styles.actionText}>{post.comments.length} Comments</Text>
+                  <Ionicons name="chatbubble-outline" size={18} color={palette.textMuted} />
+                  <Text style={[styles.actionText, themedStyles.actionText]}>{post.comments.length} Comments</Text>
                 </TouchableOpacity>
               </View>
 
@@ -1966,20 +1983,20 @@ export default function HomeScreen() {
       />
 
       <Modal visible={notificationsModalVisible} animationType="slide" transparent={true} onRequestClose={() => setNotificationsModalVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentCenter}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentCenter, themedStyles.modalContentCenter]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Notifications History 🔔</Text>
+              <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Notifications History 🔔</Text>
               <TouchableOpacity onPress={() => setNotificationsModalVisible(false)} activeOpacity={0.8}>
-                <Ionicons name="close" size={24} color="#FAFAFA" />
+                <Ionicons name="close" size={24} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
             <ScrollView style={{ maxHeight: 380 }} showsVerticalScrollIndicator={false}>
               {notificationsList.length === 0 ? (
                 <View style={{ alignItems: 'center', paddingVertical: 40 }}>
-                  <Ionicons name="notifications-off-outline" size={36} color="#52525B" />
-                  <Text style={{ color: '#71717A', fontSize: 13, marginTop: 10 }}>No notifications yet.</Text>
+                  <Ionicons name="notifications-off-outline" size={36} color={palette.textMuted} />
+                  <Text style={{ color: palette.textMuted, fontSize: 13, marginTop: 10 }}>No notifications yet.</Text>
                 </View>
               ) : (
                 notificationsList.map((notif) => {
@@ -1989,44 +2006,44 @@ export default function HomeScreen() {
                   return (
                     <TouchableOpacity 
                       key={notif.id} 
-                      style={styles.listItem}
+                      style={[styles.listItem, themedStyles.listItem]}
                       onPress={() => openUserProfileById(notif.senderUid, senderUser?.name)}
                       activeOpacity={0.85}
                     >
-                      <View style={styles.listAvatar}>
+                      <View style={[styles.listAvatar, themedStyles.avatarPlaceholder]}>
                         {senderUser?.avatar ? (
                           <Image source={{ uri: senderUser.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
                         ) : (
-                          <Text style={{color: '#EAB308', fontWeight: 'bold'}}>{senderUser?.name ? senderUser.name[0] : 'U'}</Text>
+                          <Text style={{color: palette.accent, fontWeight: 'bold'}}>{senderUser?.name ? senderUser.name[0] : 'U'}</Text>
                         )}
                       </View>
                       
                       <View style={{flex: 1, marginRight: 8}}>
-                        <Text style={styles.listName}>{notif.message}</Text>
-                        <Text style={styles.listCity}>{getTimeAgo(notif.createdAt)}</Text>
+                        <Text style={[styles.listName, themedStyles.listName]}>{notif.message}</Text>
+                        <Text style={[styles.listCity, themedStyles.listCity]}>{getTimeAgo(notif.createdAt)}</Text>
                       </View>
 
                       {isPending ? (
                         <View style={{ flexDirection: 'row', gap: 6 }}>
                           <TouchableOpacity 
-                            style={{ backgroundColor: '#EAB308', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}
+                            style={{ backgroundColor: palette.accent, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}
                             onPress={() => handleAcceptRequest(notif.id, notif.senderUid)}
                             activeOpacity={0.8}
                           >
-                            <Text style={{ color: '#09090B', fontWeight: 'bold', fontSize: 11 }}>Accept</Text>
+                            <Text style={{ color: palette.accentTextOnButton, fontWeight: 'bold', fontSize: 11 }}>Accept</Text>
                           </TouchableOpacity>
 
                           <TouchableOpacity 
-                            style={{ backgroundColor: '#27272A', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#52525B' }}
+                            style={[styles.secondaryActionChip, themedStyles.secondaryActionChip]}
                             onPress={() => handleRejectRequest(notif.id, notif.senderUid)}
                             activeOpacity={0.8}
                           >
-                            <Text style={{ color: '#EF4444', fontWeight: 'bold', fontSize: 11 }}>Reject</Text>
+                            <Text style={{ color: palette.danger, fontWeight: 'bold', fontSize: 11 }}>Reject</Text>
                           </TouchableOpacity>
                         </View>
                       ) : notif.status === 'accepted' || notif.status === 'rejected' ? (
-                        <View style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: notif.status === 'accepted' ? '#064E3B' : '#3F3F46' }}>
-                          <Text style={{ color: notif.status === 'accepted' ? '#34D399' : '#A1A1AA', fontSize: 10, fontWeight: 'bold' }}>
+                        <View style={{ paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, backgroundColor: notif.status === 'accepted' ? '#064E3B' : palette.bgElevated }}>
+                          <Text style={{ color: notif.status === 'accepted' ? '#34D399' : palette.textMuted, fontSize: 10, fontWeight: 'bold' }}>
                             {notif.status === 'accepted' ? 'Accepted ✓' : 'Declined ✕'}
                           </Text>
                         </View>
@@ -2041,12 +2058,12 @@ export default function HomeScreen() {
       </Modal>
 
       <Modal visible={!!commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setCommentsModalPost(null)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.commentsModalContent}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.commentsModalContent, themedStyles.modalContentCenter]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Comments 💬</Text>
-              <TouchableOpacity onPress={() => setCommentsModalPost(null)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+              <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Comments 💬</Text>
+              <TouchableOpacity onPress={() => setCommentsModalPost(null)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -2054,7 +2071,7 @@ export default function HomeScreen() {
               <View style={{ flex: 1, width: '100%' }}>
                 <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 15 }}>
                   {commentsModalPost.comments.length === 0 ? (
-                    <Text style={{ color: '#71717A', textAlign: 'center', marginVertical: 30, fontSize: 13 }}>No comments yet. Be the first to comment!</Text>
+                    <Text style={{ color: palette.textMuted, textAlign: 'center', marginVertical: 30, fontSize: 13 }}>No comments yet. Be the first to comment!</Text>
                   ) : (
                     commentsModalPost.comments
                       .filter(c => !isBlockedBidirectional(c.userId, c.user))
@@ -2071,12 +2088,12 @@ export default function HomeScreen() {
                             {c.avatarUrl ? (
                               <Image source={{ uri: c.avatarUrl }} style={styles.commentAvatar} />
                             ) : (
-                              <View style={styles.commentAvatarPlaceholder}>
-                                <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>{c.user ? c.user[0].toUpperCase() : 'U'}</Text>
+                              <View style={[styles.commentAvatarPlaceholder, themedStyles.avatarPlaceholder]}>
+                                <Text style={{ color: palette.accent, fontSize: 10, fontWeight: 'bold' }}>{c.user ? c.user[0].toUpperCase() : 'U'}</Text>
                               </View>
                             )}
                           </TouchableOpacity>
-                          <View style={{ flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 10, borderRadius: 12 }}>
+                          <View style={[styles.commentBubble, themedStyles.commentBubble]}>
                             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
                               <TouchableOpacity
                                 onPress={() => openUserProfileById(c.userId, c.user)}
@@ -2085,12 +2102,12 @@ export default function HomeScreen() {
                               >
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                                   <Text style={styles.commentUser}>{c.user}</Text>
-                                  {commentUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color="#EAB308" />}
+                                  {commentUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color={palette.accent} />}
                                 </View>
                               </TouchableOpacity>
-                              <Text style={styles.commentTimeText}>{commentTimeAgo}</Text>
+                              <Text style={[styles.commentTimeText, themedStyles.postTime]}>{commentTimeAgo}</Text>
                             </View>
-                            <Text style={styles.commentText}>{c.text}</Text>
+                            <Text style={[styles.commentText, themedStyles.commentText]}>{c.text}</Text>
                           </View>
                         </View>
                       );
@@ -2098,16 +2115,16 @@ export default function HomeScreen() {
                   )}
                 </ScrollView>
 
-                <View style={styles.commentInputRow}>
+                <View style={[styles.commentInputRow, themedStyles.commentInputRow]}>
                   <TextInput 
-                    style={styles.commentInput} 
+                    style={[styles.commentInput, themedStyles.commentInput]} 
                     placeholder="Write a comment..." 
-                    placeholderTextColor="#52525B"
+                    placeholderTextColor={palette.textMuted}
                     value={modalCommentInput}
                     onChangeText={setModalCommentInput}
                   />
                   <TouchableOpacity style={styles.commentSendBtn} onPress={() => handleAddComment(commentsModalPost.id, true)} activeOpacity={0.85}>
-                    <Ionicons name="send" size={14} color="#09090B" />
+                    <Ionicons name="send" size={14} color={palette.accentTextOnButton} />
                   </TouchableOpacity>
                 </View>
               </View>
@@ -2117,14 +2134,14 @@ export default function HomeScreen() {
       </Modal>
 
       <Modal visible={storyModalVisible} transparent={true} animationType="slide" onRequestClose={() => setStoryModalVisible(false)}>
-        <View style={styles.storyModalOverlay}>
-          <TouchableOpacity style={styles.closeStoryBtn} onPress={() => setStoryModalVisible(false)} activeOpacity={0.8}>
-            <Ionicons name="close" size={24} color="#FAFAFA" />
+        <View style={[styles.storyModalOverlay, { backgroundColor: palette.storyOverlay }]}>
+          <TouchableOpacity style={[styles.closeStoryBtn, themedStyles.storyFloatingBtn]} onPress={() => setStoryModalVisible(false)} activeOpacity={0.8}>
+            <Ionicons name="close" size={24} color={palette.textPrimary} />
           </TouchableOpacity>
 
-          <View style={styles.storyEditorCard}>
+          <View style={[styles.storyEditorCard, themedStyles.modalContentCenter]}>
             {selectedStoryUri && (
-              <View style={styles.storyCanvasBox}>
+              <View style={[styles.storyCanvasBox, themedStyles.storyCanvasBox]}>
                 {storyMediaType === 'video' ? (
                   <PostVideoPlayer key="editor_video" uri={selectedStoryUri} isActive={false} />
                 ) : (
@@ -2154,30 +2171,30 @@ export default function HomeScreen() {
             )}
 
             <View style={styles.storyControlsRow}>
-              <View style={styles.controlGroup}>
-                <TouchableOpacity style={styles.miniBtn} onPress={() => setStoryFontSize(prev => Math.max(12, prev - 2))} activeOpacity={0.7}>
-                  <Text style={styles.miniBtnText}>A-</Text>
+              <View style={[styles.controlGroup, themedStyles.controlGroup]}>
+                <TouchableOpacity style={[styles.miniBtn, themedStyles.miniBtn]} onPress={() => setStoryFontSize(prev => Math.max(12, prev - 2))} activeOpacity={0.7}>
+                  <Text style={[styles.miniBtnText, themedStyles.miniBtnText]}>A-</Text>
                 </TouchableOpacity>
-                <Text style={{ color: '#FAFAFA', fontSize: 12, marginHorizontal: 6, fontWeight: '700' }}>{storyFontSize}</Text>
-                <TouchableOpacity style={styles.miniBtn} onPress={() => setStoryFontSize(prev => Math.min(40, prev + 2))} activeOpacity={0.7}>
-                  <Text style={styles.miniBtnText}>A+</Text>
+                <Text style={{ color: palette.textPrimary, fontSize: 12, marginHorizontal: 6, fontWeight: '700' }}>{storyFontSize}</Text>
+                <TouchableOpacity style={[styles.miniBtn, themedStyles.miniBtn]} onPress={() => setStoryFontSize(prev => Math.min(40, prev + 2))} activeOpacity={0.7}>
+                  <Text style={[styles.miniBtnText, themedStyles.miniBtnText]}>A+</Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.controlGroup}>
+              <View style={[styles.controlGroup, themedStyles.controlGroup]}>
                 <TouchableOpacity 
-                  style={[styles.miniBtn, storyFontWeight === 'bold' && styles.activeMiniBtn]} 
+                  style={[styles.miniBtn, themedStyles.miniBtn, storyFontWeight === 'bold' && styles.activeMiniBtn]} 
                   onPress={() => setStoryFontWeight(prev => prev === 'bold' ? 'normal' : 'bold')}
                   activeOpacity={0.7}
                 >
-                  <Text style={[styles.miniBtnText, { fontWeight: 'bold' }]}>B</Text>
+                  <Text style={[styles.miniBtnText, themedStyles.miniBtnText, storyFontWeight === 'bold' && { color: palette.accentTextOnButton }, { fontWeight: 'bold' }]}>B</Text>
                 </TouchableOpacity>
                 <TouchableOpacity 
-                  style={[styles.miniBtn, storyFontStyle === 'italic' && styles.activeMiniBtn]} 
+                  style={[styles.miniBtn, themedStyles.miniBtn, storyFontStyle === 'italic' && styles.activeMiniBtn]} 
                   onPress={() => setStoryFontStyle(prev => prev === 'italic' ? 'normal' : 'italic')}
                   activeOpacity={0.7}
                 >
-                  <Text style={[styles.miniBtnText, { fontStyle: 'italic' }]}>I</Text>
+                  <Text style={[styles.miniBtnText, themedStyles.miniBtnText, storyFontStyle === 'italic' && { color: palette.accentTextOnButton }, { fontStyle: 'italic' }]}>I</Text>
                 </TouchableOpacity>
               </View>
             </View>
@@ -2186,7 +2203,7 @@ export default function HomeScreen() {
               {['#ffffff', '#000000', '#EAB308', '#EF4444', '#22C55E', '#3B82F6', '#EC4899'].map(color => (
                 <TouchableOpacity 
                   key={color} 
-                  style={[styles.colorCircle, { backgroundColor: color }, storyTextColor === color && styles.selectedColorCircle]} 
+                  style={[styles.colorCircle, { backgroundColor: color, borderColor: palette.border }, storyTextColor === color && { borderWidth: 3, borderColor: palette.textPrimary }]} 
                   onPress={() => setStoryTextColor(color)}
                   activeOpacity={0.8}
                 />
@@ -2195,50 +2212,50 @@ export default function HomeScreen() {
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.bgOptionsRow}>
               <TouchableOpacity 
-                style={[styles.bgOptionChip, storyBgColor === 'rgba(0,0,0,0.6)' && styles.activeBgChip]} 
+                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'rgba(0,0,0,0.6)' && themedStyles.activeBgChip]} 
                 onPress={() => setStoryBgColor('rgba(0,0,0,0.6)')}
               >
-                <Text style={styles.bgOptionText}>Dark BG</Text>
+                <Text style={[styles.bgOptionText, themedStyles.bgOptionText]}>Dark BG</Text>
               </TouchableOpacity>
               <TouchableOpacity 
-                style={[styles.bgOptionChip, storyBgColor === 'rgba(255,255,255,0.8)' && styles.activeBgChip]} 
+                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'rgba(255,255,255,0.8)' && themedStyles.activeBgChip]} 
                 onPress={() => setStoryBgColor('rgba(255,255,255,0.8)')}
               >
                 <Text style={[styles.bgOptionText, { color: '#000' }]}>Light BG</Text>
               </TouchableOpacity>
               <TouchableOpacity 
-                style={[styles.bgOptionChip, storyBgColor === 'rgba(234,179,8,0.8)' && styles.activeBgChip]} 
+                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'rgba(234,179,8,0.8)' && themedStyles.activeBgChip]} 
                 onPress={() => setStoryBgColor('rgba(234,179,8,0.8)')}
               >
                 <Text style={[styles.bgOptionText, { color: '#000' }]}>Gold BG</Text>
               </TouchableOpacity>
               <TouchableOpacity 
-                style={[styles.bgOptionChip, storyBgColor === 'transparent' && styles.activeBgChip]} 
+                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'transparent' && themedStyles.activeBgChip]} 
                 onPress={() => setStoryBgColor('transparent')}
               >
-                <Text style={styles.bgOptionText}>No BG</Text>
+                <Text style={[styles.bgOptionText, themedStyles.bgOptionText]}>No BG</Text>
               </TouchableOpacity>
             </ScrollView>
 
             <TextInput 
-              style={styles.storyTextInput} 
+              style={[styles.storyTextInput, themedStyles.commentInput]} 
               placeholder="Type text on story..." 
-              placeholderTextColor="#52525B"
+              placeholderTextColor={palette.textMuted}
               value={storyCaption}
               onChangeText={setStoryCaption}
             />
 
             <TouchableOpacity style={styles.publishStoryBtn} onPress={handlePublishStory} activeOpacity={0.85}>
-              <Text style={styles.publishStoryBtnText}>Share to Story 🚀</Text>
+              <Text style={[styles.publishStoryBtnText, { color: palette.accentTextOnButton }]}>Share to Story 🚀</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
       <Modal visible={activeGroupIndex !== null} transparent={true} animationType="fade" onRequestClose={() => setActiveGroupIndex(null)}>
-        <View style={styles.storyModalOverlay}>
-          <TouchableOpacity style={styles.closeStoryBtn} onPress={() => { setActiveGroupIndex(null); setStoryCommentInput(''); }} activeOpacity={0.8}>
-            <Ionicons name="close" size={24} color="#FAFAFA" />
+        <View style={[styles.storyModalOverlay, { backgroundColor: palette.storyOverlay }]}>
+          <TouchableOpacity style={[styles.closeStoryBtn, themedStyles.storyFloatingBtn]} onPress={() => { setActiveGroupIndex(null); setStoryCommentInput(''); }} activeOpacity={0.8}>
+            <Ionicons name="close" size={24} color={palette.textPrimary} />
           </TouchableOpacity>
 
           {activeGroupIndex !== null && groupedStories[activeGroupIndex] && (() => {
@@ -2259,9 +2276,9 @@ export default function HomeScreen() {
                 onPressOut={handlePressOutStory}
               >
                 <View style={styles.storyViewerScrollContentContainer}>
-                  <View style={styles.storyViewerCard}>
+                  <View style={[styles.storyViewerCard, themedStyles.modalContentCenter]}>
                     
-                    <View style={styles.storyProgressBarsRow}>
+                    <View style={[styles.storyProgressBarsRow, { backgroundColor: palette.border }]}>
                       {currentGroup.stories.map((st, idx) => {
                         let widthInterpolate: any = 0;
                         if (idx < activeStoryInGroupIndex) widthInterpolate = '100%';
@@ -2275,8 +2292,8 @@ export default function HomeScreen() {
                         }
 
                         return (
-                          <View key={st.id} style={styles.storyProgressBarContainer}>
-                            <Animated.View style={[styles.storyProgressBarFill, { width: widthInterpolate }]} />
+                          <View key={st.id} style={[styles.storyProgressBarContainer, { backgroundColor: palette.bgElevated }]}>
+                            <Animated.View style={[styles.storyProgressBarFill, { backgroundColor: palette.accent, width: widthInterpolate }]} />
                           </View>
                         );
                       })}
@@ -2289,21 +2306,21 @@ export default function HomeScreen() {
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                         activeOpacity={0.75}
                       >
-                        <View style={styles.storyHeaderAvatar}>
+                        <View style={[styles.storyHeaderAvatar, themedStyles.avatarPlaceholder]}>
                           {currentGroup.avatarUrl ? (
                             <Image source={{ uri: currentGroup.avatarUrl }} style={styles.storyImg} />
                           ) : (
-                            <Text style={{ color: '#EAB308', fontWeight: 'bold', fontSize: 11 }}>{currentGroup.name ? currentGroup.name[0] : 'P'}</Text>
+                            <Text style={{ color: palette.accent, fontWeight: 'bold', fontSize: 11 }}>{currentGroup.name ? currentGroup.name[0] : 'P'}</Text>
                           )}
                         </View>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                          <Text style={styles.fullStoryName}>
+                          <Text style={[styles.fullStoryName, themedStyles.postUserName]}>
                             {currentGroup.name} {isStoryMine ? '(me)' : ''}
                           </Text>
-                          {headerUserObj?.isVip && <Ionicons name="checkmark-circle" size={13} color="#EAB308" />}
+                          {headerUserObj?.isVip && <Ionicons name="checkmark-circle" size={13} color={palette.accent} />}
                         </View>
                       </TouchableOpacity>
-                      <Text style={{ color: '#A1A1AA', fontSize: 11 }}>{storyTimeAgo}</Text>
+                      <Text style={{ color: palette.textMuted, fontSize: 11 }}>{storyTimeAgo}</Text>
                     </View>
 
                     <View style={styles.fullStoryMediaBox}>
@@ -2337,17 +2354,17 @@ export default function HomeScreen() {
                     )}
 
                     {isStoryMine ? (
-                      <View style={styles.creatorInsightsBox}>
-                        <Text style={styles.creatorInsightsTitle}>📊 Story Analytics</Text>
+                      <View style={[styles.creatorInsightsBox, themedStyles.creatorInsightsBox]}>
+                        <Text style={[styles.creatorInsightsTitle, { color: palette.accent }]}>📊 Story Analytics</Text>
                         <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 }}>
-                          <Text style={{ color: '#EAB308', fontSize: 12 }}>👁️ Total Views: {storyViewersList.length}</Text>
-                          <Text style={{ color: '#EAB308', fontSize: 12 }}>❤️ Total Likes: {storyLikesList.length}</Text>
+                          <Text style={{ color: palette.accent, fontSize: 12 }}>👁️ Total Views: {storyViewersList.length}</Text>
+                          <Text style={{ color: palette.accent, fontSize: 12 }}>❤️ Total Likes: {storyLikesList.length}</Text>
                         </View>
 
-                        <Text style={{ color: '#EAB308', fontSize: 12, fontWeight: 'bold', marginTop: 4, marginBottom: 2 }}>👥 Viewed by:</Text>
+                        <Text style={{ color: palette.accent, fontSize: 12, fontWeight: 'bold', marginTop: 4, marginBottom: 2 }}>👥 Viewed by:</Text>
                         <ScrollView style={{ maxHeight: 70 }} nestedScrollEnabled={true}>
                           {storyViewersList.length === 0 ? (
-                            <Text style={{ color: '#71717A', fontSize: 11, fontStyle: 'italic' }}>No views yet.</Text>
+                            <Text style={{ color: palette.textMuted, fontSize: 11, fontStyle: 'italic' }}>No views yet.</Text>
                           ) : (
                             storyViewersList.map(viewerUid => {
                               const viewerUser = allUsersList.find(u => u.uid === viewerUid);
@@ -2355,42 +2372,42 @@ export default function HomeScreen() {
                               return (
                                 <TouchableOpacity 
                                   key={viewerUid} 
-                                  style={styles.viewerItemRow}
+                                  style={[styles.viewerItemRow, themedStyles.viewerItemRow]}
                                   onPress={() => openUserProfileById(viewerUser.uid, viewerUser.name)}
                                   activeOpacity={0.8}
                                 >
                                   {viewerUser.avatar ? (
                                     <Image source={{ uri: viewerUser.avatar }} style={styles.viewerAvatar} />
                                   ) : (
-                                    <View style={[styles.viewerAvatar, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#27272A' }]}>
-                                      <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>{viewerUser.name ? viewerUser.name[0] : 'U'}</Text>
+                                    <View style={[styles.viewerAvatar, themedStyles.avatarPlaceholder, { justifyContent: 'center', alignItems: 'center' }]}>
+                                      <Text style={{ color: palette.accent, fontSize: 10, fontWeight: 'bold' }}>{viewerUser.name ? viewerUser.name[0] : 'U'}</Text>
                                     </View>
                                   )}
-                                  <Text style={{ color: '#FAFAFA', fontSize: 11, fontWeight: '600', marginLeft: 6 }}>{viewerUser.name}</Text>
-                                  {viewerUser.isVip && <Ionicons name="checkmark-circle" size={12} color="#EAB308" style={{ marginLeft: 4 }} />}
+                                  <Text style={{ color: palette.textPrimary, fontSize: 11, fontWeight: '600', marginLeft: 6 }}>{viewerUser.name}</Text>
+                                  {viewerUser.isVip && <Ionicons name="checkmark-circle" size={12} color={palette.accent} style={{ marginLeft: 4 }} />}
                                 </TouchableOpacity>
                               );
                             })
                           )}
                         </ScrollView>
                         
-                        <Text style={{ color: '#EAB308', fontSize: 12, fontWeight: 'bold', marginTop: 6, marginBottom: 4 }}>💬 Comments ({storyCommentsList.length}):</Text>
+                        <Text style={{ color: palette.accent, fontSize: 12, fontWeight: 'bold', marginTop: 6, marginBottom: 4 }}>💬 Comments ({storyCommentsList.length}):</Text>
                         {storyCommentsList.length === 0 ? (
-                          <Text style={{ color: '#71717A', fontSize: 11, fontStyle: 'italic' }}>No comments on this story yet.</Text>
+                          <Text style={{ color: palette.textMuted, fontSize: 11, fontStyle: 'italic' }}>No comments on this story yet.</Text>
                         ) : (
                           storyCommentsList.map(sc => (
-                            <View key={sc.id} style={styles.storyCommentItem}>
-                              <Text style={{ color: '#EAB308', fontWeight: 'bold', fontSize: 11 }}>{sc.user}:</Text>
-                              <Text style={{ color: '#FAFAFA', fontSize: 11, marginLeft: 4 }}>{sc.text}</Text>
+                            <View key={sc.id} style={[styles.storyCommentItem, themedStyles.viewerItemRow]}>
+                              <Text style={{ color: palette.accent, fontWeight: 'bold', fontSize: 11 }}>{sc.user}:</Text>
+                              <Text style={{ color: palette.textPrimary, fontSize: 11, marginLeft: 4 }}>{sc.text}</Text>
                             </View>
                           ))
                         )}
                       </View>
                     ) : (
                       <View style={{ alignItems: 'center', marginTop: 10, width: '100%', paddingHorizontal: 15 }}>
-                        <TouchableOpacity style={styles.storyLikeRow} onPress={() => toggleStoryLike(currentStory.id)} activeOpacity={0.8}>
-                          <Ionicons name={isStoryLiked ? "heart" : "heart-outline"} size={20} color={isStoryLiked ? "#EF4444" : "#FAFAFA"} />
-                          <Text style={{ color: '#FAFAFA', fontSize: 13, fontWeight: 'bold' }}>{storyLikesList.length} Likes</Text>
+                        <TouchableOpacity style={[styles.storyLikeRow, themedStyles.storyLikeRow]} onPress={() => toggleStoryLike(currentStory.id)} activeOpacity={0.8}>
+                          <Ionicons name={isStoryLiked ? "heart" : "heart-outline"} size={20} color={isStoryLiked ? palette.danger : palette.textPrimary} />
+                          <Text style={{ color: palette.textPrimary, fontSize: 13, fontWeight: 'bold' }}>{storyLikesList.length} Likes</Text>
                         </TouchableOpacity>
                       </View>
                     )}
@@ -2398,35 +2415,35 @@ export default function HomeScreen() {
                     {!isStoryMine && (
                       <View style={styles.storyCommentInputRow}>
                         <TextInput 
-                          style={styles.storyCommentInputField}
+                          style={[styles.storyCommentInputField, themedStyles.commentInput]}
                           placeholder="Reply to story..."
-                          placeholderTextColor="#52525B"
+                          placeholderTextColor={palette.textMuted}
                           value={storyCommentInput}
                           onChangeText={setStoryCommentInput}
                         />
                         <TouchableOpacity style={styles.storyCommentSendBtn} onPress={() => handleAddStoryComment(currentStory.id)} activeOpacity={0.85}>
-                           <Ionicons name="send" size={14} color="#09090B" />
+                           <Ionicons name="send" size={14} color={palette.accentTextOnButton} />
                         </TouchableOpacity>
                       </View>
                     )}
 
                     {!isStoryMine && (
                       <TouchableOpacity 
-                        style={styles.reportStoryIconBtn} 
+                        style={[styles.reportStoryIconBtn, themedStyles.storyFloatingBtn]} 
                         onPress={() => handleReportStory(currentStory.id)}
                         activeOpacity={0.8}
                       >
-                        <Ionicons name="flag-outline" size={18} color="#A1A1AA" />
+                        <Ionicons name="flag-outline" size={18} color={palette.textMuted} />
                       </TouchableOpacity>
                     )}
 
                     {isStoryMine && (
                       <TouchableOpacity 
-                        style={styles.deleteStoryIconBtn} 
+                        style={[styles.deleteStoryIconBtn, themedStyles.storyFloatingBtn]} 
                         onPress={() => handleDeleteStory(currentStory.id)}
                         activeOpacity={0.8}
                       >
-                        <Ionicons name="trash-outline" size={18} color="#EF4444" />
+                        <Ionicons name="trash-outline" size={18} color={palette.danger} />
                       </TouchableOpacity>
                     )}
 
@@ -2441,13 +2458,13 @@ export default function HomeScreen() {
       </Modal>
 
       <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentHomeStyle}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentHomeStyle, themedStyles.modalContentHomeStyle]}>
             
             <View style={styles.modalHeader}>
               <View>
                 <Text style={styles.homeCategory}>PLAYER PROFILE</Text>
-                <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
+                <Text style={[styles.appTitle, themedStyles.appTitle]}>World <Text style={{color: palette.accent}}>Sports</Text></Text>
               </View>
               <TouchableOpacity 
                 onPress={() => {
@@ -2455,9 +2472,9 @@ export default function HomeScreen() {
                   setSelectedUserModalId(null);
                 }} 
                 activeOpacity={0.8} 
-                style={styles.closeHomeModalBtn}
+                style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}
               >
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -2471,7 +2488,7 @@ export default function HomeScreen() {
                 
                 <View style={styles.headerProfile}>
                   <TouchableOpacity 
-                    style={styles.avatarLarge} 
+                    style={[styles.avatarLarge, themedStyles.avatarPlaceholder]} 
                     onPress={() => {
                       if (targetProfileUser.avatar && !isAnyBlockBetweenUs) {
                         setZoomedAvatarUri(targetProfileUser.avatar);
@@ -2487,22 +2504,22 @@ export default function HomeScreen() {
                   </TouchableOpacity>
 
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
-                    <Text style={styles.profileName}>{targetProfileUser.name}</Text>
-                    {targetProfileUser.isVip && <Ionicons name="checkmark-circle" size={18} color="#EAB308" />}
-                    {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
+                    <Text style={[styles.profileName, themedStyles.postUserName]}>{targetProfileUser.name}</Text>
+                    {targetProfileUser.isVip && <Ionicons name="checkmark-circle" size={18} color={palette.accent} />}
+                    {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color={palette.danger} />}
                   </View>
                   
                   {!isAnyBlockBetweenUs && (
                     <>
                       <View style={styles.sportsTagsRow}>
                         {targetSportsList.map((sport: string, index: number) => (
-                          <View key={index} style={styles.sportTagBadge}>
+                          <View key={index} style={[styles.sportTagBadge, themedStyles.sportTagBadge]}>
                             <Text style={styles.sportTagText}> {sport}</Text>
                           </View>
                         ))}
                       </View>
 
-                      <Text style={styles.profileCity}>
+                      <Text style={[styles.profileCity, themedStyles.postUserMeta]}>
                         📍 {targetProfileUser.city || 'Netanya'}, {targetProfileUser.country || 'Israel'} |  Age: {targetProfileUser.age || 20}
                       </Text>
                     </>
@@ -2510,14 +2527,14 @@ export default function HomeScreen() {
                 </View>
 
                 {!isAnyBlockBetweenUs && (
-                  <View style={styles.statsRow}>
+                  <View style={[styles.statsRow, themedStyles.statsRow]}>
                     <TouchableOpacity 
                       style={styles.statBox} 
                       onPress={() => setTargetActiveModalList('followers')} 
                       activeOpacity={0.8}
                     >
-                      <Text style={styles.statNumber}>{targetProfileUser.followers?.length || 0}</Text>
-                      <Text style={styles.statLabel}>Followers</Text>
+                      <Text style={[styles.statNumber, { color: palette.accent }]}>{targetProfileUser.followers?.length || 0}</Text>
+                      <Text style={[styles.statLabel, themedStyles.postUserMeta]}>Followers</Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity 
@@ -2525,13 +2542,13 @@ export default function HomeScreen() {
                       onPress={() => setTargetActiveModalList('following')} 
                       activeOpacity={0.8}
                     >
-                      <Text style={styles.statNumber}>{targetProfileUser.following?.length || 0}</Text>
-                      <Text style={styles.statLabel}>Following</Text>
+                      <Text style={[styles.statNumber, { color: palette.accent }]}>{targetProfileUser.following?.length || 0}</Text>
+                      <Text style={[styles.statLabel, themedStyles.postUserMeta]}>Following</Text>
                     </TouchableOpacity>
 
                     <View style={styles.statBox}>
-                      <Text style={styles.statNumber}>{targetUserPosts.length}</Text>
-                      <Text style={styles.statLabel}>Posts</Text>
+                      <Text style={[styles.statNumber, { color: palette.accent }]}>{targetUserPosts.length}</Text>
+                      <Text style={[styles.statLabel, themedStyles.postUserMeta]}>Posts</Text>
                     </View>
                   </View>
                 )}
@@ -2539,47 +2556,32 @@ export default function HomeScreen() {
                 {!isViewingMyOwnProfile && (
                   <View style={{ marginBottom: 16, gap: 10 }}>
                     {!isAnyBlockBetweenUs && currentUserId && (
-                      <View style={{ flexDirection: 'row', gap: 10 }}>
-                        <TouchableOpacity 
-                          style={[
-                            styles.profileFollowBtn, 
-                            isApprovedFollower && styles.profileFollowingBtn,
-                            hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
-                            { flex: 1 }
-                          ]} 
-                          onPress={handleToggleFollowTarget}
-                          activeOpacity={0.85}
-                        >
-                          <Text style={[
-                            styles.profileFollowBtnText, 
-                            isApprovedFollower && styles.profileFollowingBtnText,
-                            hasRequestedFollow && { color: '#FAFAFA' }
-                          ]}>
-                            {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
-                          </Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity 
-                          style={styles.chatOpenBtn} 
-                          onPress={() => {
-                            stopAllVideos();
-                            setChatTargetUser(targetProfileUser);
-                            setSelectedUserModalId(null);
-                            setChatModalVisible(true);
-                          }}
-                          activeOpacity={0.85}
-                        >
-                          <Ionicons name="chatbubbles-outline" size={18} color="#09090B" />
-                          <Text style={styles.chatOpenBtnText}>Message 💬</Text>
-                        </TouchableOpacity>
-                      </View>
+                      <TouchableOpacity 
+                        style={[
+                          styles.profileFollowBtn, 
+                          isApprovedFollower && [styles.profileFollowingBtn, themedStyles.profileFollowingBtn],
+                          hasRequestedFollow && [styles.secondaryActionChip, themedStyles.secondaryActionChip],
+                        ]} 
+                        onPress={handleToggleFollowTarget}
+                        activeOpacity={0.85}
+                      >
+                        <Text style={[
+                          styles.profileFollowBtnText, 
+                          { color: palette.accentTextOnButton },
+                          isApprovedFollower && styles.profileFollowingBtnText,
+                          hasRequestedFollow && { color: palette.textPrimary }
+                        ]}>
+                          {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
+                        </Text>
+                      </TouchableOpacity>
                     )}
 
                     {!isTargetBlockingMe && currentUserId && (
                       <TouchableOpacity
                         style={[
                           styles.blockProfileBtn,
-                          isTargetBlockedByMe && styles.unblockProfileBtn,
+                          themedStyles.blockProfileBtn,
+                          isTargetBlockedByMe && [styles.secondaryActionChip, themedStyles.secondaryActionChip],
                         ]}
                         onPress={handleToggleBlockTargetUser}
                         activeOpacity={0.85}
@@ -2587,12 +2589,13 @@ export default function HomeScreen() {
                         <Ionicons
                           name={isTargetBlockedByMe ? 'person-add-outline' : 'ban-outline'}
                           size={12}
-                          color={isTargetBlockedByMe ? '#FAFAFA' : '#EF4444'}
+                          color={isTargetBlockedByMe ? palette.textPrimary : palette.danger}
                         />
                         <Text
                           style={[
                             styles.blockProfileBtnText,
-                            isTargetBlockedByMe && styles.unblockProfileBtnText,
+                            { color: palette.danger },
+                            isTargetBlockedByMe && { color: palette.textPrimary },
                           ]}
                         >
                           {isTargetBlockedByMe ? 'Unblock' : 'Block'}
@@ -2603,28 +2606,28 @@ export default function HomeScreen() {
                 )}
 
                 {isAnyBlockBetweenUs ? (
-                  <View style={styles.privateAccountBox}>
-                    <Ionicons name="ban" size={40} color="#EF4444" style={{ marginBottom: 8 }} />
-                    <Text style={styles.privateAccountTitle}>
+                  <View style={[styles.privateAccountBox, themedStyles.privateAccountBox]}>
+                    <Ionicons name="ban" size={40} color={palette.danger} style={{ marginBottom: 8 }} />
+                    <Text style={[styles.privateAccountTitle, themedStyles.postUserName]}>
                       {isTargetBlockedByMe ? 'You Blocked This User' : 'Content Unavailable'}
                     </Text>
-                    <Text style={styles.privateAccountText}>
+                    <Text style={[styles.privateAccountText, themedStyles.postUserMeta]}>
                       {isTargetBlockedByMe
-                        ? 'Unblock this user to view their profile, posts, or send messages.'
-                        : 'You cannot view this profile or communicate with this user.'}
+                        ? 'Unblock this user to view their profile or posts.'
+                        : 'You cannot view this profile.'}
                     </Text>
                   </View>
                 ) : canViewFullProfile ? (
                   <>
-                    <View style={styles.postsSectionHeader}>
-                      <Ionicons name="grid-outline" size={18} color="#EAB308" />
-                      <Text style={styles.sectionTitle}>Player Posts</Text>
+                    <View style={[styles.postsSectionHeader, themedStyles.postsSectionHeader]}>
+                      <Ionicons name="grid-outline" size={18} color={palette.accent} />
+                      <Text style={[styles.sectionTitle, themedStyles.postUserName]}>Player Posts</Text>
                     </View>
 
                     {targetUserPosts.length === 0 ? (
-                      <View style={styles.emptyPostsBox}>
-                        <Ionicons name="images-outline" size={32} color="#52525B" />
-                        <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
+                      <View style={[styles.emptyPostsBox, themedStyles.emptyPostsBox]}>
+                        <Ionicons name="images-outline" size={32} color={palette.textMuted} />
+                        <Text style={[styles.emptyPostsText, themedStyles.postTime]}>No posts shared yet by this user.</Text>
                       </View>
                     ) : (
                       <View style={styles.postsGrid}>
@@ -2633,7 +2636,7 @@ export default function HomeScreen() {
                           return (
                             <TouchableOpacity 
                               key={post.id} 
-                              style={styles.postThumbnailBox} 
+                              style={[styles.postThumbnailBox, themedStyles.postThumbnailBox]} 
                               onPress={() => {
                                 stopAllVideos();
                                 setSelectedPostModal(post);
@@ -2643,16 +2646,16 @@ export default function HomeScreen() {
                               {post.imageUrl && !isVid ? (
                                 <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
                               ) : isVid ? (
-                                <View style={[styles.postThumbnailImage, { position: 'relative', backgroundColor: '#18181B' }]}>
+                                <View style={[styles.postThumbnailImage, themedStyles.avatarPlaceholder, { position: 'relative' }]}>
                                   {!!post.imageUrl && <ProfileVideoThumbnail uri={post.imageUrl} />}
                                   <View style={styles.videoBadgeOverlay}>
                                     <Ionicons name="play" size={14} color="#FAFAFA" />
                                   </View>
                                 </View>
                               ) : (
-                                <View style={[styles.postThumbnailImage, styles.textPostThumbnail]}>
-                                  <Ionicons name="document-text-outline" size={22} color="#EAB308" />
-                                  <Text style={styles.postThumbnailText} numberOfLines={5}>
+                                <View style={[styles.postThumbnailImage, styles.textPostThumbnail, themedStyles.avatarPlaceholder]}>
+                                  <Ionicons name="document-text-outline" size={22} color={palette.accent} />
+                                  <Text style={[styles.postThumbnailText, themedStyles.postText]} numberOfLines={5}>
                                     {post.text || 'Text post'}
                                   </Text>
                                 </View>
@@ -2664,10 +2667,10 @@ export default function HomeScreen() {
                     )}
                   </>
                 ) : (
-                  <View style={styles.privateAccountBox}>
-                    <Ionicons name="lock-closed" size={40} color="#EAB308" style={{ marginBottom: 8 }} />
-                    <Text style={styles.privateAccountTitle}>This Account is Private 🔒</Text>
-                    <Text style={styles.privateAccountText}>Follow this account to see their photos and videos.</Text>
+                  <View style={[styles.privateAccountBox, themedStyles.privateAccountBox]}>
+                    <Ionicons name="lock-closed" size={40} color={palette.accent} style={{ marginBottom: 8 }} />
+                    <Text style={[styles.privateAccountTitle, themedStyles.postUserName]}>This Account is Private 🔒</Text>
+                    <Text style={[styles.privateAccountText, themedStyles.postUserMeta]}>Follow this account to see their photos and videos.</Text>
                   </View>
                 )}
 
@@ -2679,21 +2682,21 @@ export default function HomeScreen() {
       </Modal>
 
       <Modal visible={!!selectedPostModal} animationType="slide" transparent={true} onRequestClose={() => setSelectedPostModal(null)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentHomeStyle}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentHomeStyle, themedStyles.modalContentHomeStyle]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Post Details 📷</Text>
-              <TouchableOpacity onPress={() => setSelectedPostModal(null)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+              <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Post Details 📷</Text>
+              <TouchableOpacity onPress={() => setSelectedPostModal(null)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+                <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
             {selectedPostModal && (
               <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 30 }} nestedScrollEnabled={true}>
-                <View style={styles.postCard}>
+                <View style={[styles.postCard, themedStyles.postCard]}>
                   <View style={styles.postHeader}>
                     <TouchableOpacity
-                      style={styles.postAvatarBox}
+                      style={[styles.postAvatarBox, themedStyles.avatarPlaceholder]}
                       onPress={() => openUserProfileById(selectedPostModal.userId, selectedPostModal.authorName)}
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       activeOpacity={0.75}
@@ -2701,7 +2704,7 @@ export default function HomeScreen() {
                       {selectedPostModal.avatarUrl ? (
                         <Image source={{ uri: selectedPostModal.avatarUrl }} style={styles.avatarImg} />
                       ) : (
-                        <View style={styles.avatarPlaceholder}>
+                        <View style={[styles.avatarPlaceholder, themedStyles.avatarPlaceholder]}>
                           <Text style={styles.avatarPlaceholderText}>{selectedPostModal.authorName ? selectedPostModal.authorName[0].toUpperCase() : 'P'}</Text>
                         </View>
                       )}
@@ -2714,26 +2717,26 @@ export default function HomeScreen() {
                         activeOpacity={0.75}
                       >
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                          <Text style={styles.postUserName}>{selectedPostModal.authorName}</Text>
-                          {allUsersList.find(u => u.uid === selectedPostModal.userId || u.name === selectedPostModal.authorName)?.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                          <Text style={[styles.postUserName, themedStyles.postUserName]}>{selectedPostModal.authorName}</Text>
+                          {allUsersList.find(u => u.uid === selectedPostModal.userId || u.name === selectedPostModal.authorName)?.isVip && <Ionicons name="checkmark-circle" size={14} color={palette.accent} />}
                         </View>
                       </TouchableOpacity>
-                      <Text style={styles.postUserMeta}>{selectedPostModal.authorMeta}</Text>
+                      <Text style={[styles.postUserMeta, themedStyles.postUserMeta]}>{selectedPostModal.authorMeta}</Text>
                     </View>
 
                     {selectedPostModal.sport && (
-                      <View style={styles.sportBadge}>
+                      <View style={[styles.sportBadge, themedStyles.sportBadge]}>
                         <Text style={styles.sportBadgeText}>{selectedPostModal.sport}</Text>
                       </View>
                     )}
-                    <Text style={styles.postTime}>{getTimeAgo(selectedPostModal.createdAt)}</Text>
+                    <Text style={[styles.postTime, themedStyles.postTime]}>{getTimeAgo(selectedPostModal.createdAt)}</Text>
                   </View>
 
-                  <Text style={styles.postText}>{selectedPostModal.text}</Text>
+                  <Text style={[styles.postText, themedStyles.postText]}>{selectedPostModal.text}</Text>
                   
                   {selectedPostModal.imageUrl ? (
                     <TouchableWithoutFeedback onPress={() => handleDoubleTap(selectedPostModal.id)}>
-                      <View style={styles.postImageBox}>
+                      <View style={[styles.postImageBox, themedStyles.postImageBox]}>
                         {selectedPostModal.mediaType === 'video' ? (
                           <PostVideoPlayer key={`modal_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isActive={true} />
                         ) : (
@@ -2743,21 +2746,21 @@ export default function HomeScreen() {
                     </TouchableWithoutFeedback>
                   ) : null}
 
-                  <View style={styles.postActionsRow}>
+                  <View style={[styles.postActionsRow, themedStyles.postActionsRow]}>
                     <TouchableOpacity style={styles.actionBtn} onPress={() => toggleLike(selectedPostModal.id)} activeOpacity={0.7}>
                       <Ionicons 
                         name={selectedPostModal.isLiked ? "heart" : "heart-outline"} 
                         size={20} 
-                        color={selectedPostModal.isLiked ? "#EF4444" : "#A1A1AA"} 
+                        color={selectedPostModal.isLiked ? palette.danger : palette.textMuted} 
                       />
-                      <Text style={[styles.actionText, selectedPostModal.isLiked && { color: '#EF4444', fontWeight: 'bold' }]}>
+                      <Text style={[styles.actionText, themedStyles.actionText, selectedPostModal.isLiked && { color: palette.danger, fontWeight: 'bold' }]}>
                         {selectedPostModal.likes} Likes
                       </Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity style={styles.actionBtn} onPress={() => { setSelectedPostModal(null); setCommentsModalPost(selectedPostModal); }} activeOpacity={0.7}>
-                      <Ionicons name="chatbubble-outline" size={18} color="#A1A1AA" />
-                      <Text style={styles.actionText}>{selectedPostModal.comments.length} Comments</Text>
+                      <Ionicons name="chatbubble-outline" size={18} color={palette.textMuted} />
+                      <Text style={[styles.actionText, themedStyles.actionText]}>{selectedPostModal.comments.length} Comments</Text>
                     </TouchableOpacity>
                   </View>
 
@@ -2771,11 +2774,11 @@ export default function HomeScreen() {
       <Modal visible={!!zoomedAvatarUri} transparent={true} animationType="fade" onRequestClose={() => setZoomedAvatarUri(null)}>
         <View style={styles.zoomedAvatarOverlay}>
           <TouchableOpacity 
-            style={styles.closeZoomedBtn} 
+            style={[styles.closeZoomedBtn, themedStyles.storyFloatingBtn]} 
             onPress={() => setZoomedAvatarUri(null)}
             activeOpacity={0.8}
           >
-            <Ionicons name="close" size={24} color="#FAFAFA" />
+            <Ionicons name="close" size={24} color={palette.textPrimary} />
           </TouchableOpacity>
           {zoomedAvatarUri && (
             <Image source={{ uri: zoomedAvatarUri }} style={styles.zoomedAvatarImage} />
@@ -2784,14 +2787,14 @@ export default function HomeScreen() {
       </Modal>
 
       <Modal visible={!!targetActiveModalList} animationType="slide" transparent={true} onRequestClose={() => setTargetActiveModalList(null)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentCenter}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentCenter, themedStyles.modalContentCenter]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>
+              <Text style={[styles.modalTitle, themedStyles.modalTitle]}>
                 {targetActiveModalList === 'followers' ? 'Followers 👥' : 'Following 🤝'}
               </Text>
               <TouchableOpacity onPress={() => setTargetActiveModalList(null)} activeOpacity={0.8}>
-                <Ionicons name="close" size={24} color="#FAFAFA" />
+                <Ionicons name="close" size={24} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
@@ -2801,25 +2804,25 @@ export default function HomeScreen() {
                 .map((item: any) => (
                 <TouchableOpacity 
                   key={item.uid} 
-                  style={styles.listItem} 
+                  style={[styles.listItem, themedStyles.listItem]} 
                   onPress={() => openUserProfileById(item.uid, item.name)}
                   activeOpacity={0.85}
                 >
-                  <View style={styles.listAvatar}>
+                  <View style={[styles.listAvatar, themedStyles.avatarPlaceholder]}>
                     {item.avatar ? (
                       <Image source={{ uri: item.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
                     ) : (
-                      <Text style={{color: '#EAB308', fontWeight: 'bold'}}>{item.name ? item.name[0] : 'P'}</Text>
+                      <Text style={{color: palette.accent, fontWeight: 'bold'}}>{item.name ? item.name[0] : 'P'}</Text>
                     )}
                   </View>
                   <View style={{flex: 1}}>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Text style={styles.listName}>{item.name}</Text>
-                      {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
+                      <Text style={[styles.listName, themedStyles.listName]}>{item.name}</Text>
+                      {item.isVip && <Ionicons name="checkmark-circle" size={14} color={palette.accent} />}
                     </View>
-                    <Text style={styles.listCity}>📍 {item.city} |  Age: {item.age || 'N/A'}</Text>
+                    <Text style={[styles.listCity, themedStyles.listCity]}>📍 {item.city} |  Age: {item.age || 'N/A'}</Text>
                   </View>
-                  <Ionicons name="chevron-forward" size={18} color="#71717A" />
+                  <Ionicons name="chevron-forward" size={18} color={palette.textMuted} />
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -2827,112 +2830,26 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      <Modal visible={chatModalVisible} animationType="slide" transparent={true} onRequestClose={() => setChatModalVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentCenter}>
-            <View style={styles.modalHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <View style={styles.chatHeaderAvatarBox}>
-                  {chatTargetUser?.avatar ? (
-                    <Image source={{ uri: chatTargetUser.avatar }} style={styles.avatarImg} />
-                  ) : (
-                    <Text style={{ color: '#EAB308', fontWeight: 'bold' }}>{chatTargetUser?.name ? chatTargetUser.name[0] : 'P'}</Text>
-                  )}
-                </View>
-                <View>
-                  <Text style={styles.chatHeaderTitle}>Chat</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                    <Text style={styles.chatHeaderSubTitle}>{chatTargetUser?.name || 'Player'}</Text>
-                    {chatTargetUser?.isVip && <Ionicons name="checkmark-circle" size={13} color="#EAB308" />}
-                  </View>
-                </View>
-              </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <TouchableOpacity
-                  onPress={() => {
-                    setChatModalVisible(false);
-                    router.push('/(tabs)/messages');
-                  }}
-                  activeOpacity={0.8}
-                  style={{
-                    backgroundColor: '#18181B',
-                    borderWidth: 1,
-                    borderColor: '#EAB308',
-                    paddingHorizontal: 10,
-                    paddingVertical: 5,
-                    borderRadius: 10,
-                  }}
-                >
-                  <Text style={{ color: '#EAB308', fontSize: 11, fontWeight: '800' }}>Open Hub</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => setChatModalVisible(false)} activeOpacity={0.8}>
-                  <Ionicons name="close" size={24} color="#FAFAFA" />
-                </TouchableOpacity>
-              </View>
-            </View>
-
-            {isBlockedBidirectional(chatTargetUser?.uid, chatTargetUser?.name) ? (
-              <View style={{ paddingVertical: 30, alignItems: 'center' }}>
-                <Ionicons name="ban" size={32} color="#EF4444" />
-                <Text style={{ color: '#FAFAFA', fontWeight: '700', marginTop: 10 }}>Messaging Unavailable</Text>
-                <Text style={{ color: '#A1A1AA', fontSize: 12, textAlign: 'center', marginTop: 4 }}>
-                  You cannot send or receive messages with this user while a block is active.
-                </Text>
-              </View>
-            ) : (
-              <>
-                <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ padding: 6 }} showsVerticalScrollIndicator={false}>
-                  {chatMessages.map(item => {
-                    const isMe = item.senderId === currentUserId;
-                    return (
-                      <View key={item.id} style={[styles.chatBubbleRow, isMe ? styles.chatBubbleRowRight : styles.chatBubbleRowLeft]}>
-                        <View style={[styles.chatBubbleMsg, isMe ? styles.chatBubbleMe : styles.chatBubbleOther]}>
-                          <Text style={[styles.chatBubbleText, isMe && { color: '#09090B' }]}>{item.text}</Text>
-                          <Text style={[styles.chatBubbleTime, isMe && { color: '#3F3F46' }]}>{getTimeAgo(item.createdAt)}</Text>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </ScrollView>
-
-                <View style={styles.chatInputRow}>
-                  <TextInput 
-                    style={styles.chatInputField}
-                    placeholder="Type a message..."
-                    placeholderTextColor="#52525B"
-                    value={messageInput}
-                    onChangeText={setMessageInput}
-                  />
-                  <TouchableOpacity style={styles.chatSendBtn} onPress={handleSendMessage} activeOpacity={0.85}>
-                    <Ionicons name="send" size={16} color="#09090B" />
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
-          </View>
-        </View>
-      </Modal>
-
       <Modal visible={createPostVisible} transparent={true} animationType="fade" onRequestClose={() => setCreatePostVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentCenter}>
+        <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
+          <View style={[styles.modalContentCenter, themedStyles.modalContentCenter]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Create New Post 📝</Text>
+              <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Create New Post 📝</Text>
               <TouchableOpacity onPress={() => setCreatePostVisible(false)} activeOpacity={0.8}>
-                <Ionicons name="close" size={24} color="#FAFAFA" />
+                <Ionicons name="close" size={24} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
             <TextInput 
-              style={styles.createPostInput} 
+              style={[styles.createPostInput, themedStyles.commentInput]} 
               placeholder="What's on your mind about football/sports?" 
-              placeholderTextColor="#52525B" 
+              placeholderTextColor={palette.textMuted} 
               multiline 
               value={newPostText} 
               onChangeText={newText => setNewPostText(newText)} 
             />
 
-            <Text style={{ color: '#FAFAFA', fontSize: 13, fontWeight: '700', marginBottom: 6 }}>Select Sport Category:</Text>
+            <Text style={{ color: palette.textPrimary, fontSize: 13, fontWeight: '700', marginBottom: 6 }}>Select Sport Category:</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 12, maxHeight: 40 }}>
               {(userSports.length > 0 ? userSports : ['Football']).map((sp) => {
                 const isSelected = selectedPostSport === sp || (!selectedPostSport && sp === (userSports[0] || 'Football'));
@@ -2941,19 +2858,19 @@ export default function HomeScreen() {
                     key={sp}
                     onPress={() => setSelectedPostSport(sp)}
                     style={{
-                      backgroundColor: isSelected ? '#EAB308' : '#18181B',
+                      backgroundColor: isSelected ? palette.accent : palette.bgElevated,
                       paddingHorizontal: 12,
                       paddingVertical: 8,
                       borderRadius: 10,
                       marginRight: 6,
                       borderWidth: 1,
-                      borderColor: isSelected ? '#EAB308' : '#27272A',
+                      borderColor: isSelected ? palette.accent : palette.border,
                       justifyContent: 'center',
                       alignItems: 'center'
                     }}
                     activeOpacity={0.8}
                   >
-                    <Text style={{ color: isSelected ? '#09090B' : '#FAFAFA', fontSize: 12, fontWeight: 'bold' }}>
+                    <Text style={{ color: isSelected ? palette.accentTextOnButton : palette.textPrimary, fontSize: 12, fontWeight: 'bold' }}>
                        {sp}
                     </Text>
                   </TouchableOpacity>
@@ -2961,15 +2878,15 @@ export default function HomeScreen() {
               })}
             </ScrollView>
 
-            <TouchableOpacity style={styles.pickImageBtn} onPress={pickPostMedia} activeOpacity={0.8}>
-              <Ionicons name={newPostMediaType === 'video' ? 'videocam-outline' : 'image-outline'} size={18} color="#EAB308" />
+            <TouchableOpacity style={[styles.pickImageBtn, themedStyles.commentInput]} onPress={pickPostMedia} activeOpacity={0.8}>
+              <Ionicons name={newPostMediaType === 'video' ? 'videocam-outline' : 'image-outline'} size={18} color={palette.accent} />
               <Text style={styles.pickImageText}>
                 {newPostImage ? (newPostMediaType === 'video' ? 'Video Attached ✓' : 'Image Attached ✓') : 'Attach Media from Gallery'}
               </Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={styles.publishBtn} onPress={handleCreatePost} activeOpacity={0.85}>
-              <Text style={styles.publishBtnText}>Publish Post 🚀</Text>
+              <Text style={[styles.publishBtnText, { color: palette.accentTextOnButton }]}>Publish Post 🚀</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -2978,6 +2895,57 @@ export default function HomeScreen() {
     </View>
   );
 }
+
+const createThemedStyles = (palette: ThemePalette) =>
+  StyleSheet.create({
+    container: { backgroundColor: palette.bgPrimary },
+    appTitle: { color: palette.textPrimary },
+    notificationBellBtn: { backgroundColor: palette.bgSurface, borderColor: palette.border },
+    avatarPlaceholder: { backgroundColor: palette.bgElevated },
+    storyName: { color: palette.textMuted },
+    emptyFeedBox: { backgroundColor: palette.bgSurface, borderColor: palette.border },
+    emptyFeedText: { color: palette.textMuted },
+    postCard: { backgroundColor: palette.bgSurface, borderColor: palette.border },
+    postUserName: { color: palette.textPrimary },
+    postUserMeta: { color: palette.textMuted },
+    sportBadge: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    postTime: { color: palette.textMuted },
+    postText: { color: palette.textSecondary },
+    postImageBox: { backgroundColor: palette.bgPrimary, borderColor: palette.border },
+    postActionsRow: { borderTopColor: palette.border },
+    actionText: { color: palette.textMuted },
+    modalOverlayCenter: { backgroundColor: palette.modalOverlay },
+    modalContentCenter: { backgroundColor: palette.bgSurface, borderColor: palette.border },
+    modalContentHomeStyle: { backgroundColor: palette.bgPrimary, borderColor: palette.border },
+    closeHomeModalBtn: { backgroundColor: palette.bgSurface, borderColor: palette.border },
+    listItem: { backgroundColor: palette.bgPrimary, borderColor: palette.border },
+    listName: { color: palette.textPrimary },
+    listCity: { color: palette.textMuted },
+    secondaryActionChip: { backgroundColor: palette.bgElevated, borderWidth: 1, borderColor: palette.border },
+    commentBubble: { backgroundColor: palette.bgElevated },
+    commentText: { color: palette.textSecondary },
+    commentInputRow: { borderTopColor: palette.border },
+    commentInput: { backgroundColor: palette.bgPrimary, borderColor: palette.border, color: palette.textPrimary },
+    storyFloatingBtn: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    storyCanvasBox: { backgroundColor: palette.bgPrimary, borderColor: palette.border },
+    controlGroup: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    miniBtn: { backgroundColor: palette.bgPrimary, borderColor: palette.border },
+    miniBtnText: { color: palette.textPrimary },
+    bgOptionChip: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    activeBgChip: { borderColor: palette.accent, backgroundColor: palette.bgPrimary },
+    bgOptionText: { color: palette.textPrimary },
+    creatorInsightsBox: { backgroundColor: palette.bgElevated, borderColor: palette.accent },
+    viewerItemRow: { backgroundColor: palette.bgPrimary, borderColor: palette.border },
+    storyLikeRow: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    sportTagBadge: { backgroundColor: palette.bgElevated },
+    statsRow: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    profileFollowingBtn: { backgroundColor: palette.bgElevated },
+    blockProfileBtn: { backgroundColor: palette.bgElevated, borderColor: palette.danger },
+    postsSectionHeader: { borderTopColor: palette.border },
+    emptyPostsBox: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+    postThumbnailBox: { backgroundColor: palette.bgSurface },
+    privateAccountBox: { backgroundColor: palette.bgElevated, borderColor: palette.border },
+  });
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#09090B' },
@@ -3043,6 +3011,8 @@ const styles = StyleSheet.create({
   commentUser: { color: '#EAB308', fontSize: 12, fontWeight: '700' },
   commentText: { color: '#D4D4D8', fontSize: 13 },
   commentTimeText: { color: '#71717A', fontSize: 10 },
+  commentBubble: { flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 10, borderRadius: 12 },
+  secondaryActionChip: { backgroundColor: '#27272A', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#52525B' },
   
   commentsModalContent: { backgroundColor: '#121215', borderRadius: 28, padding: 20, borderWidth: 1, borderColor: '#27272A', width: '100%', maxWidth: 400, height: '75%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 10 },
   commentInputRow: { flexDirection: 'row', gap: 8, alignItems: 'center', borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 12, marginTop: 4 },
@@ -3066,7 +3036,6 @@ const styles = StyleSheet.create({
 
   colorPaletteRow: { flexDirection: 'row', justifyContent: 'center', gap: 8, marginBottom: 10 },
   colorCircle: { width: 28, height: 28, borderRadius: 14, borderWidth: 1, borderColor: '#27272A' },
-  selectedColorCircle: { borderWidth: 3, borderColor: '#FAFAFA' },
 
   bgOptionsRow: { flexDirection: 'row', marginBottom: 10, maxHeight: 36 },
   bgOptionChip: { backgroundColor: '#18181B', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 10, marginRight: 6, borderWidth: 1, borderColor: '#27272A', justifyContent: 'center' },
@@ -3156,11 +3125,6 @@ const styles = StyleSheet.create({
 
   blockProfileBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', gap: 4, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EF4444', borderRadius: 8, height: 26, paddingHorizontal: 10 },
   blockProfileBtnText: { color: '#EF4444', fontWeight: '700', fontSize: 10 },
-  unblockProfileBtn: { backgroundColor: '#27272A', borderColor: '#52525B' },
-  unblockProfileBtnText: { color: '#FAFAFA' },
-
-  chatOpenBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#EAB308', borderRadius: 12, height: 44, paddingHorizontal: 16 },
-  chatOpenBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
 
   postsSectionHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 6, borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 14 },
   sectionTitle: { color: '#FAFAFA', fontSize: 15, fontWeight: '700' },
@@ -3181,21 +3145,6 @@ const styles = StyleSheet.create({
   listAvatar: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
   listName: { color: '#FAFAFA', fontSize: 14, fontWeight: '700' },
   listCity: { color: '#A1A1AA', fontSize: 11, marginTop: 2 },
-
-  chatHeaderAvatarBox: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
-  chatHeaderTitle: { color: '#FAFAFA', fontSize: 15, fontWeight: '700' },
-  chatHeaderSubTitle: { color: '#EAB308', fontSize: 11, fontWeight: '600' },
-  chatBubbleRow: { marginBottom: 10, flexDirection: 'row' },
-  chatBubbleRowLeft: { justifyContent: 'flex-start' },
-  chatBubbleRowRight: { justifyContent: 'flex-end' },
-  chatBubbleMsg: { maxWidth: '75%', padding: 12, borderRadius: 16, borderWidth: 1 },
-  chatBubbleOther: { backgroundColor: '#18181B', borderColor: '#27272A' },
-  chatBubbleMe: { backgroundColor: '#EAB308', borderColor: '#EAB308' },
-  chatBubbleText: { color: '#FAFAFA', fontSize: 13, fontWeight: '500' },
-  chatBubbleTime: { color: '#A1A1AA', fontSize: 9, marginTop: 4, alignSelf: 'flex-end' },
-  chatInputRow: { flexDirection: 'row', paddingTop: 12, borderTopWidth: 1, borderTopColor: '#27272A', gap: 8, alignItems: 'center' },
-  chatInputField: { flex: 1, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 20, height: 42, color: '#FAFAFA', paddingHorizontal: 14, fontSize: 13 },
-  chatSendBtn: { backgroundColor: '#EAB308', width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center' },
 
   zoomedAvatarOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center', alignItems: 'center' },
   closeZoomedBtn: { position: 'absolute', top: 50, right: 20, zIndex: 30, backgroundColor: '#121215', width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#27272A' },

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { StyleSheet, Text, View, Dimensions, TouchableOpacity, ScrollView, Modal, TextInput, Alert, Linking, Platform, Image, Share } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
@@ -8,8 +8,28 @@ import { collection, onSnapshot, doc, addDoc, setDoc, deleteDoc, arrayUnion, arr
 import { db } from '../../firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { registerForPushNotificationsAsync } from '../../services/notificationService';
+import { syncJoinedMatchToLockWidget } from '../../../utils/lockScreenMatch';
 
 const { width } = Dimensions.get('window');
+
+const getRadarTheme = (isLight: boolean) => ({
+  isLight,
+  bg: isLight ? '#F4F4F6' : '#09090B',
+  surface: isLight ? '#FFFFFF' : '#121215',
+  surfaceAlt: isLight ? '#F8F9FA' : '#18181B',
+  surfaceDeep: isLight ? '#ECEEF2' : '#09090B',
+  border: isLight ? '#E4E4E7' : '#27272A',
+  borderSubtle: isLight ? '#D4D4D8' : '#1E1E24',
+  text: isLight ? '#09090B' : '#FAFAFA',
+  textSecondary: isLight ? '#27272A' : '#E4E4E7',
+  textMuted: isLight ? '#52525B' : '#A1A1AA',
+  textSubtle: isLight ? '#71717A' : '#71717A',
+  accent: '#EAB308',
+  accentText: '#09090B',
+  overlay: isLight ? 'rgba(9,9,11,0.45)' : 'rgba(9,9,11,0.85)',
+  menuOverlay: isLight ? 'rgba(9,9,11,0.35)' : 'rgba(9,9,11,0.75)',
+  pillBg: isLight ? 'rgba(255,255,255,0.92)' : 'rgba(9,9,11,0.85)',
+});
 
 type ChatMessage = {
   id: string;
@@ -40,8 +60,11 @@ type UserProfile = {
   following?: string[];
   pendingRequests?: string[];
   blockedUsers?: string[];
+  expoPushToken?: string;
+  pushToken?: string;
   isVip?: boolean;
   isPrivate?: boolean;
+  themeMode?: 'dark' | 'light';
 };
 
 type Comment = {
@@ -122,14 +145,7 @@ const ALL_AVAILABLE_SPORTS = [
 
 const normalizeCity = (rawCity?: string): string => {
   const value = (rawCity || '').trim();
-  if (!value) return 'Netanya';
-  const lower = value.toLowerCase();
-  if (value.includes('נתניה') || lower.includes('netanya')) return 'Netanya';
-  if (value.includes('תל אביב') || lower.includes('tel aviv') || lower.includes('tel-aviv')) return 'Tel Aviv';
-  if (value.includes('חיפה') || lower.includes('haifa')) return 'Haifa';
-  if (value.includes('ראשון לציון') || lower.includes('rishon lezion') || lower.includes('rishon')) return 'Rishon LeZion';
-  if (value.includes('ירושלים') || lower.includes('jerusalem')) return 'Jerusalem';
-  if (value.includes('באר שבע') || lower.includes('beer sheva') || lower.includes('beersheva')) return 'Beer Sheva';
+  if (!value) return 'Current Location';
   return value.charAt(0).toUpperCase() + value.slice(1);
 };
 
@@ -142,35 +158,35 @@ const generateInviteCode = () => {
   return code;
 };
 
-const getSportIconAndColor = (sportName: string) => {
+const getSportIconAndColor = (sportName: string, isLight: boolean = false) => {
   const sport = (sportName || '').toLowerCase().trim();
 
   if (sport.includes('football') || sport.includes('כדורגל') || sport.includes('soccer')) {
-    return { icon: 'football', color: '#22C55E', bg: '#143825', border: '#22C55E' };
+    return { icon: 'football', color: '#22C55E', bg: isLight ? '#DCFCE7' : '#143825', border: '#22C55E' };
   }
   if (sport.includes('basketball') || sport.includes('כדורסל')) {
-    return { icon: 'basketball', color: '#F97316', bg: '#3D2012', border: '#F97316' };
+    return { icon: 'basketball', color: '#F97316', bg: isLight ? '#FFEDD5' : '#3D2012', border: '#F97316' };
   }
   if (sport.includes('tennis') || sport.includes('טניס')) {
-    return { icon: 'tennisball', color: '#EAB308', bg: '#332E0F', border: '#EAB308' };
+    return { icon: 'tennisball', color: '#EAB308', bg: isLight ? '#FEF9C3' : '#332E0F', border: '#EAB308' };
   }
   if (sport.includes('running') || sport.includes('ריצה')) {
-    return { icon: 'fitness', color: '#3B82F6', bg: '#10223D', border: '#3B82F6' };
+    return { icon: 'fitness', color: '#3B82F6', bg: isLight ? '#DBEAFE' : '#10223D', border: '#3B82F6' };
   }
   if (sport.includes('gym') || sport.includes('fitness') || sport.includes('כושר') || sport.includes('workout')) {
-    return { icon: 'barbell', color: '#EF4444', bg: '#3D1518', border: '#EF4444' };
+    return { icon: 'barbell', color: '#EF4444', bg: isLight ? '#FEE2E2' : '#3D1518', border: '#EF4444' };
   }
   if (sport.includes('padel') || sport.includes('פדל')) {
-    return { icon: 'planet', color: '#A855F7', bg: '#2C153D', border: '#A855F7' };
+    return { icon: 'planet', color: '#A855F7', bg: isLight ? '#F3E8FF' : '#2C153D', border: '#A855F7' };
   }
   if (sport.includes('cycling') || sport.includes('אופניים')) {
-    return { icon: 'bicycle', color: '#06B6D4', bg: '#0F3138', border: '#06B6D4' };
+    return { icon: 'bicycle', color: '#06B6D4', bg: isLight ? '#CFFAFE' : '#0F3138', border: '#06B6D4' };
   }
   if (sport.includes('swimming') || sport.includes('שחייה')) {
-    return { icon: 'water', color: '#0EA5E9', bg: '#102B3D', border: '#0EA5E9' };
+    return { icon: 'water', color: '#0EA5E9', bg: isLight ? '#E0F2FE' : '#102B3D', border: '#0EA5E9' };
   }
 
-  return { icon: 'trophy', color: '#EAB308', bg: '#332E0F', border: '#EAB308' };
+  return { icon: 'trophy', color: '#EAB308', bg: isLight ? '#FEF9C3' : '#332E0F', border: '#EAB308' };
 };
 
 const supportsTournamentDraw = (sportName: string) => {
@@ -245,7 +261,7 @@ const resolvePlayerInfo = (playerEntry: any, allUsersList: UserProfile[]) => {
   };
 };
 
-function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boolean }) {
+function PostVideoPlayer({ uri, isStoryOpen, style }: { uri: string; isStoryOpen: boolean; style: any }) {
   const player = useVideoPlayer(uri, player => {
     player.loop = true;
     player.staysActiveInBackground = false;
@@ -265,10 +281,10 @@ function PostVideoPlayer({ uri, isStoryOpen }: { uri: string; isStoryOpen: boole
     };
   }, [player]);
 
-  return <VideoView style={styles.postImageContent} player={player} nativeControls={true} contentFit="cover" />;
+  return <VideoView style={style} player={player} nativeControls={true} contentFit="cover" />;
 }
 
-function ProfileVideoThumbnail({ uri }: { uri: string }) {
+function ProfileVideoThumbnail({ uri, style }: { uri: string; style: any }) {
   const player = useVideoPlayer(uri, player => {
     player.loop = false;
     player.staysActiveInBackground = false;
@@ -291,7 +307,7 @@ function ProfileVideoThumbnail({ uri }: { uri: string }) {
 
   return (
     <VideoView
-      style={styles.postThumbnailImage}
+      style={style}
       player={player}
       nativeControls={false}
       contentFit="cover"
@@ -347,6 +363,10 @@ const getRemainingTime = (timestamp: any) => {
 };
 
 export default function RadarScreen() {
+  const [isLightMode, setIsLightMode] = useState(false);
+  const theme = useMemo(() => getRadarTheme(isLightMode), [isLightMode]);
+  const styles = useMemo(() => createStyles(theme), [theme]);
+
   const [userSports, setUserSports] = useState<string[]>([]);
   const [gamesList, setGamesList] = useState<GameItem[]>([]);
   const [currentUserId, setCurrentUserId] = useState('');
@@ -354,7 +374,7 @@ export default function RadarScreen() {
   const [userName, setUserName] = useState('Player');
   const [userAvatar, setUserAvatar] = useState('');
   const [userCoords, setUserCoords] = useState<{ latitude: number; longitude: number } | null>(null);
-  const [autoCity, setAutoCity] = useState('Netanya');
+  const [autoCity, setAutoCity] = useState('Current Location');
   const [followingIds, setFollowingIds] = useState<string[]>([]);
   const [followersIds, setFollowersIds] = useState<string[]>([]);
   const [blockedUsersList, setBlockedUsersList] = useState<string[]>([]);
@@ -372,7 +392,7 @@ export default function RadarScreen() {
 
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [newTitle, setNewTitle] = useState('');
-  const [newSport, setNewSport] = useState('');
+  const [newSport, setNewSport] = useState('Football');
   const [newVenue, setNewVenue] = useState('');
   const [newTime, setNewTime] = useState('18:00');
   const [newMaxPlayers, setNewMaxPlayers] = useState('10');
@@ -388,6 +408,7 @@ export default function RadarScreen() {
   const [selectedMatchMode, setSelectedMatchMode] = useState<MatchModeType>('knockout');
   const [chatMessage, setChatMessage] = useState('');
   const chatScrollRef = useRef<any>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const [drawPlayersPerTeam, setDrawPlayersPerTeam] = useState('5');
 
@@ -395,11 +416,6 @@ export default function RadarScreen() {
   const [targetProfileUser, setTargetProfileUser] = useState<UserProfile | null>(null);
   const [targetUserPosts, setTargetUserPosts] = useState<PostItem[]>([]);
   const [targetActiveModalList, setTargetActiveModalList] = useState<'followers' | 'following' | null>(null);
-
-  const [chatModalVisible, setChatModalVisible] = useState(false);
-  const [chatTargetUser, setChatTargetUser] = useState<UserProfile | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-  const [messageInput, setMessageInput] = useState('');
 
   const [selectedPostModal, setSelectedPostModal] = useState<PostItem | null>(null);
   const [commentsModalPost, setCommentsModalPost] = useState<PostItem | null>(null);
@@ -416,6 +432,48 @@ export default function RadarScreen() {
   });
 
   const studioGame = gamesList.find(g => g.id === studioGameId) || selectedGame || null;
+
+  useEffect(() => {
+    let isMounted = true;
+    const syncSavedThemeAndUser = async () => {
+      try {
+        const [savedEmail, savedTheme] = await Promise.all([
+          AsyncStorage.getItem('@saved_user_email'),
+          AsyncStorage.getItem('@world_sports_theme_mode'),
+        ]);
+        if (!isMounted) return;
+        if (savedTheme === 'light' || savedTheme === 'dark') {
+          setIsLightMode(savedTheme === 'light');
+        }
+        if (savedEmail) {
+          const computedId = savedEmail.toLowerCase().replace(/[^a-z0-9]/g, '_');
+          setCurrentUserId(prev => {
+            if (prev !== computedId) {
+              registerForPushNotificationsAsync(computedId);
+              return computedId;
+            }
+            return prev;
+          });
+        }
+      } catch (e) {
+        console.error('Error reading saved user email or theme in Radar:', e);
+      }
+    };
+
+    syncSavedThemeAndUser();
+    const pollInterval = setInterval(syncSavedThemeAndUser, 1000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(pollInterval);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     if (studioGame?.matchMode) {
@@ -439,6 +497,47 @@ export default function RadarScreen() {
     return iBlockedThem || theyBlockedMe;
   }, [allUsersList, blockedUsersList, currentUserId]);
 
+  const sendPushNotificationToUser = useCallback(async (
+    targetUid: string,
+    subTitle: string,
+    body: string,
+    extraData: Record<string, any> = {}
+  ) => {
+    if (!targetUid || targetUid === currentUserId) return;
+
+    try {
+      const targetUser = allUsersList.find(u => u.uid === targetUid);
+      const pushToken = targetUser?.expoPushToken || targetUser?.pushToken;
+
+      if (!pushToken || typeof pushToken !== 'string' || !pushToken.startsWith('ExponentPushToken')) {
+        return;
+      }
+
+      const fullTitle = subTitle
+        ? `World Sports • ${subTitle.replace(/^World Sports\s*[•\-–:]?\s*/i, '').trim()}`
+        : 'World Sports';
+
+      await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Accept-encoding': 'gzip, deflate',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          to: pushToken,
+          sound: 'default',
+          title: fullTitle,
+          body,
+          data: extraData,
+          channelId: 'default',
+        }),
+      });
+    } catch (error) {
+      console.error('Error sending push notification:', error);
+    }
+  }, [allUsersList, currentUserId]);
+
   useEffect(() => {
     (async () => {
       try {
@@ -451,7 +550,7 @@ export default function RadarScreen() {
 
           let reverseGeocode = await Location.reverseGeocodeAsync(coords);
           if (reverseGeocode.length > 0) {
-            const cityFound = normalizeCity(reverseGeocode[0].city || reverseGeocode[0].subregion || 'Netanya');
+            const cityFound = normalizeCity(reverseGeocode[0].city || reverseGeocode[0].subregion || 'Current Location');
             setAutoCity(cityFound);
           }
 
@@ -471,48 +570,39 @@ export default function RadarScreen() {
   }, []);
 
   useEffect(() => {
-    const loadUserData = async () => {
-      try {
-        const savedEmail = await AsyncStorage.getItem('@saved_user_email');
-        if (savedEmail) {
-          const userId = savedEmail.toLowerCase().replace(/[^a-z0-9]/g, '_');
-          setCurrentUserId(userId);
+    if (!currentUserId) return;
 
-          registerForPushNotificationsAsync(userId);
+    const unsubscribeUserDoc = onSnapshot(doc(db, 'users', currentUserId), (userSnap) => {
+      if (userSnap.exists()) {
+        const data = userSnap.data() as UserProfile;
+        setCurrentUser({ ...data, uid: userSnap.id });
 
-          const unsubscribeUserDoc = onSnapshot(doc(db, 'users', userId), async (userSnap) => {
-            if (userSnap.exists()) {
-              const data = userSnap.data() as UserProfile;
-              setCurrentUser({ ...data, uid: userSnap.id });
-
-              if (data.sports) {
-                setUserSports(data.sports);
-                setNewSport(data.sports[0]);
-              } else if (data.sport) {
-                setUserSports([data.sport]);
-                setNewSport(data.sport);
-              }
-
-              const resolvedName = data.name || data.userName || data.displayName || 'Player';
-              if (resolvedName) setUserName(resolvedName);
-              if (data.avatar) setUserAvatar(data.avatar);
-              if (data.following) setFollowingIds(data.following);
-              else setFollowingIds([]);
-
-              if (data.followers) setFollowersIds(data.followers);
-              else setFollowersIds([]);
-
-              setBlockedUsersList(Array.isArray(data.blockedUsers) ? data.blockedUsers : []);
-            }
-          });
-          return () => unsubscribeUserDoc();
+        if (data.themeMode === 'light' || data.themeMode === 'dark') {
+          setIsLightMode(data.themeMode === 'light');
+          AsyncStorage.setItem('@world_sports_theme_mode', data.themeMode).catch(() => {});
         }
-      } catch (e) {
-        console.error(e);
+
+        if (Array.isArray(data.sports) && data.sports.length > 0) {
+          setUserSports(data.sports);
+          setNewSport(prev => (data.sports!.includes(prev) ? prev : data.sports![0]));
+        } else if (data.sport) {
+          setUserSports([data.sport]);
+          setNewSport(data.sport);
+        } else {
+          setUserSports(ALL_AVAILABLE_SPORTS);
+        }
+
+        const resolvedName = data.name || data.userName || data.displayName || 'Player';
+        setUserName(resolvedName);
+        if (data.avatar) setUserAvatar(data.avatar);
+        setFollowingIds(Array.isArray(data.following) ? data.following : []);
+        setFollowersIds(Array.isArray(data.followers) ? data.followers : []);
+        setBlockedUsersList(Array.isArray(data.blockedUsers) ? data.blockedUsers : []);
       }
-    };
-    loadUserData();
-  }, []);
+    });
+
+    return () => unsubscribeUserDoc();
+  }, [currentUserId]);
 
   useEffect(() => {
     const unsubscribe = onSnapshot(collection(db, 'users'), (snapshot) => {
@@ -521,22 +611,6 @@ export default function RadarScreen() {
         ...(docSnap.data() as Omit<UserProfile, 'uid'>)
       }));
       setAllUsersList(users);
-
-      AsyncStorage.getItem('@saved_user_email').then(email => {
-        if (email) {
-          const myId = email.toLowerCase().replace(/[^a-z0-9]/g, '_');
-          const me = users.find(u => u.uid === myId);
-          if (me) {
-            setCurrentUser(me);
-            const resolvedName = me.name || me.userName || me.displayName;
-            if (resolvedName) setUserName(resolvedName);
-            if (me.avatar) setUserAvatar(me.avatar);
-            if (me.following) setFollowingIds(me.following);
-            if (me.followers) setFollowersIds(me.followers);
-            setBlockedUsersList(Array.isArray(me.blockedUsers) ? me.blockedUsers : []);
-          }
-        }
-      });
     });
     return () => unsubscribe();
   }, []);
@@ -593,24 +667,6 @@ export default function RadarScreen() {
     );
     setTargetUserPosts(filtered);
   }, [targetProfileUser, allPosts, isBlockedBidirectional]);
-
-  useEffect(() => {
-    if (!currentUserId || !chatTargetUser || !chatModalVisible) return;
-
-    const chatId = [currentUserId, chatTargetUser.uid].sort().join('_');
-    const messagesRef = collection(db, 'chats', chatId, 'messages');
-    const q = query(messagesRef, orderBy('createdAt', 'asc'));
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs: ChatMessage[] = snapshot.docs.map(docSnap => ({
-        id: docSnap.id,
-        ...(docSnap.data() as any)
-      }));
-      setChatMessages(msgs);
-    });
-
-    return () => unsubscribe();
-  }, [currentUserId, chatTargetUser, chatModalVisible]);
 
   useEffect(() => {
     const calculateAverageAge = async () => {
@@ -810,6 +866,26 @@ export default function RadarScreen() {
           ...gameData,
           players: [...currentPlayers, activeName]
         };
+
+        await syncJoinedMatchToLockWidget(currentUserId, {
+          matchId: gameData.id,
+          title: gameData.title || `${gameData.sport || 'Sport'} Match`,
+          sport: gameData.sport || 'Sport',
+          city: normalizeCity(gameData.city || autoCity),
+          timeLabel: gameData.time || 'Today',
+          playersCount: gameData.players.length,
+          maxPlayers: gameData.maxPlayers,
+          joinedCode: gameData.inviteCode,
+        });
+
+        await notifyGamePlayers(
+          currentPlayers,
+          'game_join',
+          `${activeName} joined your game "${gameData.title}". ⚽`,
+          gameData.id,
+          currentUserId,
+          `${gameData.title} ⚽`
+        );
       }
 
       setCodeInput('');
@@ -850,7 +926,8 @@ export default function RadarScreen() {
     setTargetActiveModalList(null);
     setSelectedUserModalId(null);
 
-    setTimeout(() => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => {
       let found: UserProfile | undefined = undefined;
       if (userId) {
         found = allUsersList.find(u => u.uid === userId);
@@ -880,6 +957,7 @@ export default function RadarScreen() {
     const isApproved = targetProfileUser.followers?.includes(currentUserId);
     const hasRequested = targetProfileUser.pendingRequests?.includes(currentUserId);
     const isPrivateAccount = targetProfileUser.isPrivate === true;
+    const activeFollowerName = userName || currentUser?.name || currentUser?.userName || currentUser?.displayName || 'Player';
 
     try {
       const myRef = doc(db, 'users', currentUserId);
@@ -904,12 +982,40 @@ export default function RadarScreen() {
           ...targetProfileUser,
           pendingRequests: [...(targetProfileUser.pendingRequests || []), currentUserId]
         });
+
+        const reqMsg = `${activeFollowerName} requested to follow you. 🔒`;
+        await addDoc(collection(db, 'users', targetProfileUser.uid, 'notifications'), {
+          senderUid: currentUserId,
+          type: 'follow_request',
+          message: reqMsg,
+          createdAt: serverTimestamp(),
+          status: 'unread'
+        });
+
+        await sendPushNotificationToUser(targetProfileUser.uid, 'Follow Request 🔒', reqMsg, {
+          type: 'follow_request',
+          senderUid: currentUserId,
+        });
       } else {
         await updateDoc(targetRef, { followers: arrayUnion(currentUserId) });
         await updateDoc(myRef, { following: arrayUnion(targetProfileUser.uid) });
         setTargetProfileUser({
           ...targetProfileUser,
           followers: [...(targetProfileUser.followers || []), currentUserId]
+        });
+
+        const followMsg = `${activeFollowerName} started following you! 🤝`;
+        await addDoc(collection(db, 'users', targetProfileUser.uid, 'notifications'), {
+          senderUid: currentUserId,
+          type: 'new_follower',
+          message: followMsg,
+          createdAt: serverTimestamp(),
+          status: 'unread'
+        });
+
+        await sendPushNotificationToUser(targetProfileUser.uid, 'New Follower 🤝', followMsg, {
+          type: 'new_follower',
+          senderUid: currentUserId,
         });
       }
     } catch (error) {
@@ -954,7 +1060,7 @@ export default function RadarScreen() {
 
     Alert.alert(
       'Block User',
-      `Block ${targetDisplayName}? You won't see each other's content or communicate with each other.`,
+      `Block ${targetDisplayName}? You won't see each other's content or interact with each other.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -986,46 +1092,6 @@ export default function RadarScreen() {
         },
       ]
     );
-  };
-
-  const handleSendMessage = async () => {
-    if (!messageInput.trim() || !currentUserId || !chatTargetUser) return;
-    if (isBlockedBidirectional(chatTargetUser.uid, chatTargetUser.name || chatTargetUser.userName || chatTargetUser.displayName)) {
-      Alert.alert('Messaging Blocked', 'You cannot send messages to this user because one of you blocked the other.');
-      return;
-    }
-
-    const chatId = [currentUserId, chatTargetUser.uid].sort().join('_');
-    const textToSend = messageInput.trim();
-    const activeSenderName = currentUser?.name || currentUser?.userName || currentUser?.displayName || userName || 'Player';
-    setMessageInput('');
-
-    try {
-      const chatDocRef = doc(db, 'chats', chatId);
-      await setDoc(chatDocRef, {
-        participants: [currentUserId, chatTargetUser.uid],
-        lastMessageText: textToSend,
-        lastUpdated: serverTimestamp()
-      }, { merge: true });
-
-      const messagesRef = collection(db, 'chats', chatId, 'messages');
-      await addDoc(messagesRef, {
-        senderId: currentUserId,
-        senderName: activeSenderName,
-        text: textToSend,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        createdAt: serverTimestamp()
-      });
-      await addDoc(collection(db, 'users', chatTargetUser.uid, 'notifications'), {
-        senderUid: currentUserId,
-        type: 'message',
-        message: `${activeSenderName} sent you a message: "${textToSend.substring(0, 30)}" 💬`,
-        createdAt: serverTimestamp(),
-        status: 'unread'
-      });
-    } catch (e) {
-      console.error('Error sending message:', e);
-    }
   };
 
   const toggleLike = async (postId: string) => {
@@ -1360,7 +1426,8 @@ export default function RadarScreen() {
   };
 
   const handleCreateGame = async () => {
-    if (!newTitle.trim() || !newVenue.trim() || !newDesc.trim() || !newSport) {
+    const sportToSave = newSport || userSports[0] || 'Football';
+    if (!newTitle.trim() || !newVenue.trim() || !newDesc.trim() || !sportToSave) {
       Alert.alert('Error', 'Please fill in all required fields.');
       return;
     }
@@ -1370,7 +1437,6 @@ export default function RadarScreen() {
       const gameLon = pickedLocation ? pickedLocation.longitude : (userCoords ? userCoords.longitude : 34.8532);
       const activeName = userName || 'Player';
       const titleToSave = newTitle.trim();
-      const sportToSave = newSport;
       const venueToSave = newVenue.trim();
       const timeToSave = newTime.trim();
       const inviteCodeToSave = generateInviteCode();
@@ -1392,7 +1458,7 @@ export default function RadarScreen() {
         pendingPlayers: [],
         accessMode: newAccessMode,
         inviteCode: inviteCodeToSave,
-        onlyCreatorCanSee: true,
+        onlyCreatorCanSee: false,
         chat: [],
         teamsResult: [],
         matchMode: 'knockout',
@@ -1409,16 +1475,23 @@ export default function RadarScreen() {
         .map(profileDoc => profileDoc.id)
         .filter(uid => !!uid && uid !== currentUserId);
 
-      await Promise.all(followerIds.map(uid =>
-        addDoc(collection(db, 'users', uid, 'notifications'), {
+      await Promise.all(followerIds.map(async (uid) => {
+        const msg = `${activeName} you follow created a new game! ⚽`;
+        await addDoc(collection(db, 'users', uid, 'notifications'), {
           senderUid: currentUserId,
           type: 'game_created',
-          message: `${activeName} you follow created a new game! ⚽`,
+          message: msg,
           gameId: newGameRef.id,
           createdAt: serverTimestamp(),
           status: 'unread'
-        })
-      ));
+        });
+
+        await sendPushNotificationToUser(uid, `New ${sportToSave} Game 📍`, msg, {
+          type: 'game_created',
+          gameId: newGameRef.id,
+          senderUid: currentUserId,
+        });
+      }));
 
       setCreateModalVisible(false);
       setPickedLocation(null);
@@ -1427,7 +1500,7 @@ export default function RadarScreen() {
       setNewDesc('');
       setNewAccessMode('public');
 
-      Alert.alert('Game Created 🔑', `Only you can see this game right now.\nGame Code: ${inviteCodeToSave}`, [
+      Alert.alert('Game Created 🔑', `Game published!\nGame Code: ${inviteCodeToSave}`, [
         { text: 'OK', onPress: () => {} },
         {
           text: 'Share Code 🔑',
@@ -1455,7 +1528,8 @@ export default function RadarScreen() {
     type: 'game_join' | 'game_leave' | 'game_deleted' | 'game_chat' | 'game_kick' | 'game_approved',
     message: string,
     gameId: string,
-    senderUid: string = currentUserId
+    senderUid: string = currentUserId,
+    pushSubTitle: string = 'New Update ⚽'
   ) => {
     const recipientIds = Array.from(new Set(
       (playerNames || [])
@@ -1470,22 +1544,31 @@ export default function RadarScreen() {
         .filter((uid): uid is string => !!uid && uid !== senderUid)
     ));
 
-    await Promise.all(recipientIds.map(uid =>
-      addDoc(collection(db, 'users', uid, 'notifications'), {
+    await Promise.all(recipientIds.map(async (uid) => {
+      await addDoc(collection(db, 'users', uid, 'notifications'), {
         senderUid,
         type,
         message,
         gameId,
         createdAt: serverTimestamp(),
         status: 'unread'
-      })
-    ));
+      });
+
+      await sendPushNotificationToUser(uid, pushSubTitle, message, {
+        type,
+        gameId,
+        senderUid,
+      });
+    }));
   };
 
   const handleJoinGame = async (game: GameItem) => {
     const activeName = userName || 'Player';
+    const activeNameLower = activeName.trim().toLowerCase();
     const playersList = game.players || [];
-    const isAlreadyJoined = playersList.some(p => resolvePlayerInfo(p, allUsersList).name === activeName);
+    const isAlreadyJoined = playersList.some(
+      p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() === activeNameLower
+    );
 
     if (isAlreadyJoined) {
       Alert.alert('Already Joined', 'You are already registered for this game.');
@@ -1493,11 +1576,15 @@ export default function RadarScreen() {
     }
 
     const pendingList = game.pendingPlayers || [];
-    const isAlreadyPending = pendingList.some(p => resolvePlayerInfo(p, allUsersList).name === activeName);
+    const isAlreadyPending = pendingList.some(
+      p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() === activeNameLower
+    );
 
     if (isAlreadyPending) {
       try {
-        const matchingPending = pendingList.find(p => resolvePlayerInfo(p, allUsersList).name === activeName);
+        const matchingPending = pendingList.find(
+          p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() === activeNameLower
+        );
         if (matchingPending) {
           await updateDoc(doc(db, 'games', game.id), {
             pendingPlayers: arrayRemove(matchingPending)
@@ -1533,13 +1620,20 @@ export default function RadarScreen() {
         })?.uid;
 
         if (adminUid && adminUid !== currentUserId) {
+          const reqMsg = `${activeName} requested to join your private game "${game.title}". 🔒`;
           await addDoc(collection(db, 'users', adminUid, 'notifications'), {
             senderUid: currentUserId,
             type: 'game_request',
-            message: `${activeName} requested to join your private game "${game.title}". 🔒`,
+            message: reqMsg,
             gameId: game.id,
             createdAt: serverTimestamp(),
             status: 'unread'
+          });
+
+          await sendPushNotificationToUser(adminUid, 'Join Request 🔒', reqMsg, {
+            type: 'game_request',
+            gameId: game.id,
+            senderUid: currentUserId,
           });
         }
 
@@ -1552,11 +1646,23 @@ export default function RadarScreen() {
 
     try {
       await setDoc(doc(db, 'games', game.id), { players: arrayUnion(activeName) }, { merge: true });
+      await syncJoinedMatchToLockWidget(currentUserId, {
+        matchId: game.id,
+        title: game.title || `${game.sport || 'Sport'} Match`,
+        sport: game.sport || 'Sport',
+        city: normalizeCity(game.city || autoCity),
+        timeLabel: game.time || 'Today',
+        playersCount: playersList.length + 1,
+        maxPlayers: game.maxPlayers,
+        joinedCode: game.inviteCode,
+      });
       await notifyGamePlayers(
         playersList,
         'game_join',
         `${activeName} joined your game "${game.title}". ⚽`,
-        game.id
+        game.id,
+        currentUserId,
+        `${game.title} ⚽`
       );
       Alert.alert('Success 🤝', 'You have joined the team!');
     } catch (e) { console.error('Error joining game or sending notifications:', e); }
@@ -1579,13 +1685,20 @@ export default function RadarScreen() {
         return uN === pName.toLowerCase() || u.uid === info.uid;
       });
       if (approvedUserObj) {
+        const approvedMsg = `Your request to join "${game.title}" was approved! 🎉`;
         await addDoc(collection(db, 'users', approvedUserObj.uid, 'notifications'), {
           senderUid: currentUserId,
           type: 'game_approved',
-          message: `Your request to join "${game.title}" was approved! 🎉`,
+          message: approvedMsg,
           gameId: game.id,
           createdAt: serverTimestamp(),
           status: 'unread'
+        });
+
+        await sendPushNotificationToUser(approvedUserObj.uid, 'Request Approved 🎉', approvedMsg, {
+          type: 'game_approved',
+          gameId: game.id,
+          senderUid: currentUserId,
         });
       }
 
@@ -1609,13 +1722,20 @@ export default function RadarScreen() {
         return uN === pName.toLowerCase() || u.uid === info.uid;
       });
       if (rejectedUserObj) {
+        const rejectedMsg = `Your request to join "${game.title}" was declined by the manager. ❌`;
         await addDoc(collection(db, 'users', rejectedUserObj.uid, 'notifications'), {
           senderUid: currentUserId,
           type: 'game_kick',
-          message: `Your request to join "${game.title}" was declined by the manager. ❌`,
+          message: rejectedMsg,
           gameId: game.id,
           createdAt: serverTimestamp(),
           status: 'unread'
+        });
+
+        await sendPushNotificationToUser(rejectedUserObj.uid, 'Request Declined ❌', rejectedMsg, {
+          type: 'game_kick',
+          gameId: game.id,
+          senderUid: currentUserId,
         });
       }
 
@@ -1645,13 +1765,20 @@ export default function RadarScreen() {
               return uN === pName.toLowerCase() || u.uid === info.uid;
             });
             if (kickedUserObj) {
+              const kickedMsg = `You were removed from the game "${game.title}" by the manager. ❌`;
               await addDoc(collection(db, 'users', kickedUserObj.uid, 'notifications'), {
                 senderUid: currentUserId,
                 type: 'game_kick',
-                message: `You were removed from the game "${game.title}" by the manager. ❌`,
+                message: kickedMsg,
                 gameId: game.id,
                 createdAt: serverTimestamp(),
                 status: 'unread'
+              });
+
+              await sendPushNotificationToUser(kickedUserObj.uid, 'Removed from Game ❌', kickedMsg, {
+                type: 'game_kick',
+                gameId: game.id,
+                senderUid: currentUserId,
               });
             }
 
@@ -1666,23 +1793,29 @@ export default function RadarScreen() {
 
   const handleLeaveGame = async (game: GameItem) => {
     const activeName = userName || 'Player';
+    const activeNameLower = activeName.trim().toLowerCase();
     try {
-      const updatedPlayers = (game.players || []).filter(p => resolvePlayerInfo(p, allUsersList).name !== activeName);
+      const updatedPlayers = (game.players || []).filter(
+        p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() !== activeNameLower
+      );
       await notifyGamePlayers(
         game.players || [],
         'game_leave',
         `${activeName} left your game "${game.title}".`,
-        game.id
+        game.id,
+        currentUserId,
+        `${game.title} ⚽`
       );
       if (updatedPlayers.length === 0) {
         await deleteDoc(doc(db, 'games', game.id));
+        await syncJoinedMatchToLockWidget(currentUserId, null);
         setSelectedGame(null);
         Alert.alert('Left Game', 'You left the game and it was removed.');
         return;
       }
 
       let newCreatorName = game.creatorName;
-      if (game.creatorName === activeName) {
+      if ((game.creatorName || '').trim().toLowerCase() === activeNameLower) {
         newCreatorName = resolvePlayerInfo(updatedPlayers[0], allUsersList).name;
       }
 
@@ -1691,6 +1824,7 @@ export default function RadarScreen() {
         creatorName: newCreatorName,
       }, { merge: true });
 
+      await syncJoinedMatchToLockWidget(currentUserId, null);
       setSelectedGame(null);
       Alert.alert('Left Game', 'You have left the game.');
     } catch (e) { console.error(e); }
@@ -1710,10 +1844,13 @@ export default function RadarScreen() {
                 game.players || [],
                 'game_deleted',
                 `The game "${game.title}" was deleted by its manager. 🗑️`,
-                game.id
+                game.id,
+                currentUserId,
+                'Game Cancelled 🗑️'
               );
             }
             await deleteDoc(doc(db, 'games', gameId));
+            await syncJoinedMatchToLockWidget(currentUserId, null);
             setSelectedGame(null);
           } catch (e) { console.error('Error deleting game or notifying players:', e); }
         }
@@ -1723,10 +1860,12 @@ export default function RadarScreen() {
 
   const handleSendTeamChatMessage = async (gameId: string) => {
     if (!chatMessage.trim()) return;
+    const trimmedMsg = chatMessage.trim();
     const newMessage: ChatMessage = {
       id: Date.now().toString(),
+      senderId: currentUserId,
       sender: userName || 'Player',
-      text: chatMessage.trim(),
+      text: trimmedMsg,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
@@ -1738,8 +1877,10 @@ export default function RadarScreen() {
         await notifyGamePlayers(
           selectedGame.players || [],
           'game_chat',
-          `${userName || 'A player'} sent a message in "${selectedGame.title}": ${chatMessage.trim().slice(0, 60)} 💬`,
-          gameId
+          `${userName || 'A player'} sent a message in "${selectedGame.title}": ${trimmedMsg.slice(0, 60)} 💬`,
+          gameId,
+          currentUserId,
+          `${selectedGame.title} 💬`
         );
       }
       setChatMessage('');
@@ -1827,8 +1968,8 @@ export default function RadarScreen() {
   const canViewPostsContent = !isAnyBlockBetweenUs && (isViewingMyOwnProfile || !isPrivateAccount || isApprovedFollower);
   const activeCustomSports = selectedSportFilters.filter(s => s !== 'All');
   const currentFilterSportStyle = activeCustomSports.length === 1
-    ? getSportIconAndColor(activeCustomSports[0])
-    : { icon: 'options-outline', color: '#EAB308', bg: '#332E0F', border: '#EAB308' };
+    ? getSportIconAndColor(activeCustomSports[0], isLightMode)
+    : { icon: 'options-outline', color: '#EAB308', bg: isLightMode ? '#FEF9C3' : '#332E0F', border: '#EAB308' };
   const filterButtonLabel = isAllSelected || activeCustomSports.length === 0
     ? 'Filter'
     : activeCustomSports.length === 1
@@ -1868,9 +2009,9 @@ export default function RadarScreen() {
               </View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.actionMenuOptionTitle}>Create Game</Text>
-                <Text style={styles.actionMenuOptionSub}>Visible only to you at first + secret code</Text>
+                <Text style={styles.actionMenuOptionSub}>Publish a game + generate secret code</Text>
               </View>
-              <Ionicons name="chevron-forward" size={18} color="#A1A1AA" />
+              <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -1888,7 +2029,7 @@ export default function RadarScreen() {
                 <Text style={styles.actionMenuOptionTitle}>Join by Code</Text>
                 <Text style={styles.actionMenuOptionSub}>Enter a 6-character game code</Text>
               </View>
-              <Ionicons name="chevron-forward" size={18} color="#A1A1AA" />
+              <Ionicons name="chevron-forward" size={18} color={theme.textMuted} />
             </TouchableOpacity>
           </View>
         </TouchableOpacity>
@@ -1900,7 +2041,7 @@ export default function RadarScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Join by Code 🔑</Text>
               <TouchableOpacity onPress={() => setJoinByCodeModalVisible(false)}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+                <Ionicons name="close" size={22} color={theme.text} />
               </TouchableOpacity>
             </View>
 
@@ -1908,7 +2049,7 @@ export default function RadarScreen() {
             <TextInput
               style={[styles.input, { textAlign: 'center', fontSize: 18, fontWeight: '900', letterSpacing: 3, color: '#EAB308' }]}
               placeholder="e.g. X7K9P2"
-              placeholderTextColor="#52525B"
+              placeholderTextColor={theme.textSubtle}
               value={codeInput}
               onChangeText={(txt) => setCodeInput(txt.toUpperCase())}
               maxLength={8}
@@ -1947,7 +2088,7 @@ export default function RadarScreen() {
                   <Text style={styles.myLocationAvatarText}>{userName ? userName[0] : 'P'}</Text>
                 )}
               </View>
-              <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(9,9,11,0.85)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginTop: 2, gap: 2 }}>
+              <View style={styles.markerNamePill}>
                 <Text style={styles.myLocationNameText}>{userName}</Text>
                 {currentUser?.isVip && <Ionicons name="checkmark-circle" size={10} color="#EAB308" />}
               </View>
@@ -1971,7 +2112,7 @@ export default function RadarScreen() {
                     <Text style={styles.friendAvatarText}>{friendName[0]}</Text>
                   )}
                 </View>
-                <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(9,9,11,0.85)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginTop: 2, gap: 2 }}>
+                <View style={styles.markerNamePill}>
                   <Text style={styles.friendMarkerName}>{friendName}</Text>
                   {friend.isVip && <Ionicons name="checkmark-circle" size={10} color="#EAB308" />}
                 </View>
@@ -1982,7 +2123,7 @@ export default function RadarScreen() {
 
         {filteredGames.map((game) => {
           const currentPlayersCount = game.players?.length || 0;
-          const { icon, color, bg, border } = getSportIconAndColor(game.sport);
+          const { icon, color, bg, border } = getSportIconAndColor(game.sport, isLightMode);
 
           return (
             <Marker
@@ -2025,17 +2166,17 @@ export default function RadarScreen() {
 
         <View style={styles.searchAndFilterRow}>
           <View style={styles.searchBarContainer}>
-            <Ionicons name="search" size={16} color="#A1A1AA" style={{ marginRight: 8 }} />
+            <Ionicons name="search" size={16} color={theme.textMuted} style={{ marginRight: 8 }} />
             <TextInput
               style={styles.searchInput}
               placeholder="Search game, venue, city, or code..."
-              placeholderTextColor="#52525B"
+              placeholderTextColor={theme.textSubtle}
               value={searchQuery}
               onChangeText={setSearchQuery}
             />
             {searchQuery.length > 0 && (
               <TouchableOpacity onPress={() => setSearchQuery('')}>
-                <Ionicons name="close-circle" size={16} color="#A1A1AA" />
+                <Ionicons name="close-circle" size={16} color={theme.textMuted} />
               </TouchableOpacity>
             )}
           </View>
@@ -2043,13 +2184,13 @@ export default function RadarScreen() {
           <TouchableOpacity
             style={[
               styles.filterButton,
-              !isAllSelected && { borderColor: currentFilterSportStyle.color, backgroundColor: currentFilterSportStyle.bg + '33' }
+              !isAllSelected && { borderColor: currentFilterSportStyle.color, backgroundColor: currentFilterSportStyle.bg }
             ]}
             onPress={() => setSportFilterModalVisible(true)}
             activeOpacity={0.8}
           >
             <Ionicons
-              name={isAllSelected ? 'options-outline' : (getSportIconAndColor(activeCustomSports[0]).icon as any)}
+              name={isAllSelected ? 'options-outline' : (getSportIconAndColor(activeCustomSports[0], isLightMode).icon as any)}
               size={15}
               color={isAllSelected ? '#EAB308' : currentFilterSportStyle.color}
             />
@@ -2062,7 +2203,7 @@ export default function RadarScreen() {
         <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 60, paddingTop: 4 }}>
           {filteredGames.length === 0 ? (
             <View style={styles.emptyBox}>
-              <Ionicons name="compass-outline" size={36} color="#71717A" />
+              <Ionicons name="compass-outline" size={36} color={theme.textSubtle} />
               <Text style={styles.emptyNoticeText}>No games found matching your search or filters.</Text>
             </View>
           ) : (
@@ -2071,10 +2212,10 @@ export default function RadarScreen() {
               const spotsLeft = game.maxPlayers - (game.players?.length || 0);
               const timeCreatedStr = getTimeAgo(game.createdAt);
               const timeRemainingStr = getRemainingTime(game.createdAt);
-              const sportStyle = getSportIconAndColor(game.sport);
+              const sportStyle = getSportIconAndColor(game.sport, isLightMode);
 
               return (
-                <TouchableOpacity key={game.id} style={[styles.gameCard, { borderColor: sportStyle.border + '55', backgroundColor: sportStyle.bg + '22' }]} onPress={() => setSelectedGame(game)}>
+                <TouchableOpacity key={game.id} style={[styles.gameCard, { borderColor: sportStyle.border + '66', backgroundColor: sportStyle.bg }]} onPress={() => setSelectedGame(game)}>
                   <View style={styles.gameHeaderRow}>
                     <Text style={[styles.sportTag, { color: sportStyle.color }]}>
                       {game.sport}
@@ -2127,7 +2268,7 @@ export default function RadarScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Filter by Sport </Text>
               <TouchableOpacity onPress={() => setSportFilterModalVisible(false)} activeOpacity={0.8}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+                <Ionicons name="close" size={22} color={theme.text} />
               </TouchableOpacity>
             </View>
 
@@ -2138,24 +2279,24 @@ export default function RadarScreen() {
                 activeOpacity={0.8}
               >
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                  <View style={[styles.filterIconCircle, { backgroundColor: '#332E0F' }]}>
+                  <View style={[styles.filterIconCircle, { backgroundColor: isLightMode ? '#FEF9C3' : '#332E0F' }]}>
                     <Ionicons name="apps" size={14} color="#EAB308" />
                   </View>
-                  <Text style={[styles.filterOptionText, isAllSelected && styles.filterOptionTextActive]}>All Sports (הכל)</Text>
+                  <Text style={[styles.filterOptionText, isAllSelected && styles.filterOptionTextActive]}>All Sports (All)</Text>
                 </View>
                 {isAllSelected && <Ionicons name="checkmark" size={18} color="#EAB308" />}
               </TouchableOpacity>
 
               {ALL_AVAILABLE_SPORTS.map(sport => {
                 const isSelected = !isAllSelected && selectedSportFilters.includes(sport);
-                const { icon, color, bg } = getSportIconAndColor(sport);
+                const { icon, color, bg } = getSportIconAndColor(sport, isLightMode);
 
                 return (
                   <TouchableOpacity
                     key={sport}
                     style={[
                       styles.filterOptionItem,
-                      isSelected && { backgroundColor: '#18181B', borderColor: color },
+                      isSelected && { backgroundColor: theme.surfaceAlt, borderColor: color },
                       isAllSelected && { opacity: 0.55 }
                     ]}
                     onPress={() => handleToggleSportFilter(sport)}
@@ -2206,7 +2347,7 @@ export default function RadarScreen() {
                   </TouchableOpacity>
                 )}
                 <TouchableOpacity onPress={() => setSelectedGame(null)}>
-                  <Ionicons name="close" size={24} color="#FAFAFA" />
+                  <Ionicons name="close" size={24} color={theme.text} />
                 </TouchableOpacity>
               </View>
             </View>
@@ -2219,9 +2360,15 @@ export default function RadarScreen() {
               });
               const timeCreatedStr = getTimeAgo(selectedGame.createdAt);
               const timeRemainingStr = getRemainingTime(selectedGame.createdAt);
-              const sportStyle = getSportIconAndColor(selectedGame.sport);
+              const sportStyle = getSportIconAndColor(selectedGame.sport, isLightMode);
 
-              const isAlreadyPending = (selectedGame.pendingPlayers || []).some(p => resolvePlayerInfo(p, allUsersList).name === userName);
+              const activeNameLower = (userName || 'Player').trim().toLowerCase();
+              const isAlreadyPending = (selectedGame.pendingPlayers || []).some(
+                p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() === activeNameLower
+              );
+              const isAlreadyJoined = (selectedGame.players || []).some(
+                p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() === activeNameLower
+              );
 
               return (
                 <ScrollView showsVerticalScrollIndicator={false}>
@@ -2241,7 +2388,7 @@ export default function RadarScreen() {
                     <View style={[styles.detailBox, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderColor: '#EAB30866' }]}>
                       <View>
                         <Text style={[styles.detailLabel, { color: '#EAB308', marginBottom: 2 }]}>🔑 Game Code (Admin Only):</Text>
-                        <Text style={{ color: '#FAFAFA', fontSize: 16, fontWeight: '900', letterSpacing: 2 }}>{selectedGame.inviteCode}</Text>
+                        <Text style={{ color: theme.text, fontSize: 16, fontWeight: '900', letterSpacing: 2 }}>{selectedGame.inviteCode}</Text>
                       </View>
                       <TouchableOpacity
                         style={{ backgroundColor: '#EAB308', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 }}
@@ -2262,7 +2409,7 @@ export default function RadarScreen() {
 
                   <View style={styles.modalTimerBox}>
                     <Text style={styles.modalTimerText}>⏳ Created {timeCreatedStr}</Text>
-                    <Text style={styles.modalTimerExpiryText}>⌛ {timeRemainingStr} before </Text>
+                    <Text style={styles.modalTimerExpiryText}>⌛ {timeRemainingStr} before expiry</Text>
                   </View>
 
                   <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10, gap: 4 }}>
@@ -2290,12 +2437,13 @@ export default function RadarScreen() {
 
                   {supportsTournamentDraw(selectedGame.sport) && (
                     <TouchableOpacity
-                      style={[styles.studioLaunchBtn, { borderColor: sportStyle.color, backgroundColor: sportStyle.bg + '44' }]}
+                      style={[styles.studioLaunchBtn, { borderColor: sportStyle.color, backgroundColor: sportStyle.bg }]}
                       activeOpacity={0.85}
                       onPress={() => {
                         setStudioGameId(selectedGame.id);
                         setSelectedGame(null);
-                        setTimeout(() => {
+                        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+                        timeoutRef.current = setTimeout(() => {
                           setDrawStudioModalVisible(true);
                         }, 120);
                       }}
@@ -2321,8 +2469,8 @@ export default function RadarScreen() {
                       {selectedGame.pendingPlayers.map((reqPlayer, rIdx) => {
                         const reqInfo = resolvePlayerInfo(reqPlayer, allUsersList);
                         return (
-                          <View key={rIdx} style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#121215', padding: 8, borderRadius: 8, marginTop: 6 }}>
-                            <Text style={{ color: '#FAFAFA', fontWeight: 'bold', fontSize: 12 }}>{reqInfo.name}</Text>
+                          <View key={rIdx} style={styles.pendingRequestCard}>
+                            <Text style={{ color: theme.text, fontWeight: 'bold', fontSize: 12 }}>{reqInfo.name}</Text>
                             <View style={{ flexDirection: 'row', gap: 6 }}>
                               <TouchableOpacity style={{ backgroundColor: '#22C55E', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 }} onPress={() => handleApproveRequest(selectedGame, reqPlayer)}>
                                 <Text style={{ color: '#09090B', fontWeight: 'bold', fontSize: 11 }}>Approve ✓</Text>
@@ -2350,7 +2498,7 @@ export default function RadarScreen() {
                         return (
                           <TouchableOpacity
                             key={`player_${index}`}
-                            style={[styles.playerChipSmallGrid, { borderColor: sportStyle.color + '66', backgroundColor: sportStyle.bg + '33' }, isMe && { borderColor: '#EAB308', backgroundColor: '#332E0F' }]}
+                            style={[styles.playerChipSmallGrid, { borderColor: sportStyle.color + '66', backgroundColor: sportStyle.bg }, isMe && { borderColor: '#EAB308', backgroundColor: isLightMode ? '#FEF9C3' : '#332E0F' }]}
                             activeOpacity={0.7}
                             onPress={() => {
                               if (info.uid) {
@@ -2420,7 +2568,7 @@ export default function RadarScreen() {
                       <TextInput
                         style={styles.chatInput}
                         placeholder="Message team..."
-                        placeholderTextColor="#52525B"
+                        placeholderTextColor={theme.textSubtle}
                         value={chatMessage}
                         onChangeText={setChatMessage}
                       />
@@ -2430,7 +2578,7 @@ export default function RadarScreen() {
                     </View>
                   </View>
 
-                  {((selectedGame.players || []).some(p => resolvePlayerInfo(p, allUsersList).name === userName)) ? (
+                  {isAlreadyJoined ? (
                     <TouchableOpacity style={styles.leaveBtn} onPress={() => handleLeaveGame(selectedGame)}>
                       <Text style={styles.leaveBtnText}>Leave Game 🚪</Text>
                     </TouchableOpacity>
@@ -2438,12 +2586,16 @@ export default function RadarScreen() {
                     <TouchableOpacity
                       style={[
                         styles.modalJoinBtn,
-                        isAlreadyPending ? { backgroundColor: '#1F1214', borderWidth: 1, borderColor: '#EF4444' } : { backgroundColor: sportStyle.color },
-                        (selectedGame.players?.length >= selectedGame.maxPlayers || selectedGame.accessMode === 'friends') && !isAlreadyPending && { backgroundColor: '#27272A' }
+                        isAlreadyPending ? { backgroundColor: isLightMode ? '#FEE2E2' : '#1F1214', borderWidth: 1, borderColor: '#EF4444' } : { backgroundColor: sportStyle.color },
+                        (selectedGame.players?.length >= selectedGame.maxPlayers || selectedGame.accessMode === 'friends') && !isAlreadyPending && { backgroundColor: theme.surfaceAlt }
                       ]}
                       onPress={() => handleJoinGame(selectedGame)}
                     >
-                      <Text style={[styles.modalJoinBtnText, isAlreadyPending && { color: '#EF4444' }]}>
+                      <Text style={[
+                        styles.modalJoinBtnText,
+                        isAlreadyPending && { color: '#EF4444' },
+                        (selectedGame.players?.length >= selectedGame.maxPlayers || selectedGame.accessMode === 'friends') && !isAlreadyPending && { color: theme.textMuted }
+                      ]}>
                         {selectedGame.accessMode === 'friends'
                           ? 'Code Required (Join by Code) 🔑'
                           : isAlreadyPending
@@ -2475,7 +2627,7 @@ export default function RadarScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.studioModalSheet}>
             {studioGame && (() => {
-              const sportStyle = getSportIconAndColor(studioGame.sport);
+              const sportStyle = getSportIconAndColor(studioGame.sport, isLightMode);
               const isAdmin = isUserAdmin(studioGame);
               const teams = studioGame.teamsResult || [];
               const matches = studioGame.tournamentMatches || [];
@@ -2501,7 +2653,7 @@ export default function RadarScreen() {
                       }}
                       activeOpacity={0.8}
                     >
-                      <Ionicons name="close" size={22} color="#FAFAFA" />
+                      <Ionicons name="close" size={22} color={theme.text} />
                     </TouchableOpacity>
                   </View>
 
@@ -2587,7 +2739,7 @@ export default function RadarScreen() {
 
                         {teams.length === 0 ? (
                           <View style={styles.columnEmptyState}>
-                            <Ionicons name="shield-outline" size={26} color="#52525B" />
+                            <Ionicons name="shield-outline" size={26} color={theme.textSubtle} />
                             <Text style={styles.columnEmptyText}>No teams drawn yet</Text>
                           </View>
                         ) : (
@@ -2653,7 +2805,7 @@ export default function RadarScreen() {
 
                         {matches.length === 0 ? (
                           <View style={styles.columnEmptyState}>
-                            <Ionicons name="trophy-outline" size={26} color="#52525B" />
+                            <Ionicons name="trophy-outline" size={26} color={theme.textSubtle} />
                             <Text style={styles.columnEmptyText}>No schedule yet</Text>
                           </View>
                         ) : (
@@ -2689,7 +2841,7 @@ export default function RadarScreen() {
                                     <Text
                                       style={[
                                         styles.studioSideText,
-                                        match.teamB === 'Bye' && { color: '#71717A', fontStyle: 'italic' }
+                                        match.teamB === 'Bye' && { color: theme.textSubtle, fontStyle: 'italic' }
                                       ]}
                                       numberOfLines={1}
                                     >
@@ -2744,7 +2896,7 @@ export default function RadarScreen() {
                 activeOpacity={0.8}
                 style={styles.closeHomeModalBtn}
               >
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+                <Ionicons name="close" size={22} color={theme.text} />
               </TouchableOpacity>
             </View>
 
@@ -2817,39 +2969,23 @@ export default function RadarScreen() {
                 {!isViewingMyOwnProfile && (
                   <View style={{ marginBottom: 16, gap: 10 }}>
                     {!isAnyBlockBetweenUs && currentUserId && (
-                      <View style={{ flexDirection: 'row', gap: 10 }}>
-                        <TouchableOpacity
-                          style={[
-                            styles.profileFollowBtn,
-                            isApprovedFollower && styles.profileFollowingBtn,
-                            hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
-                            { flex: 1 }
-                          ]}
-                          onPress={handleToggleFollowTarget}
-                          activeOpacity={0.85}
-                        >
-                          <Text style={[
-                            styles.profileFollowBtnText,
-                            isApprovedFollower && styles.profileFollowingBtnText,
-                            hasRequestedFollow && { color: '#FAFAFA' }
-                          ]}>
-                            {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
-                          </Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity
-                          style={styles.chatOpenBtn}
-                          onPress={() => {
-                            setChatTargetUser(targetProfileUser);
-                            setSelectedUserModalId(null);
-                            setChatModalVisible(true);
-                          }}
-                          activeOpacity={0.85}
-                        >
-                          <Ionicons name="chatbubbles-outline" size={18} color="#09090B" />
-                          <Text style={styles.chatOpenBtnText}>Message 💬</Text>
-                        </TouchableOpacity>
-                      </View>
+                      <TouchableOpacity
+                        style={[
+                          styles.profileFollowBtn,
+                          isApprovedFollower && styles.profileFollowingBtn,
+                          hasRequestedFollow && { backgroundColor: theme.surfaceAlt, borderWidth: 1, borderColor: theme.textSubtle }
+                        ]}
+                        onPress={handleToggleFollowTarget}
+                        activeOpacity={0.85}
+                      >
+                        <Text style={[
+                          styles.profileFollowBtnText,
+                          isApprovedFollower && styles.profileFollowingBtnText,
+                          hasRequestedFollow && { color: theme.text }
+                        ]}>
+                          {isApprovedFollower ? 'Following ✓' : hasRequestedFollow ? 'Requested ⏳' : 'Follow Player 🤝'}
+                        </Text>
+                      </TouchableOpacity>
                     )}
 
                     {!isTargetBlockingMe && currentUserId && (
@@ -2864,7 +3000,7 @@ export default function RadarScreen() {
                         <Ionicons
                           name={isTargetBlockedByMe ? 'person-add-outline' : 'ban-outline'}
                           size={12}
-                          color={isTargetBlockedByMe ? '#FAFAFA' : '#EF4444'}
+                          color={isTargetBlockedByMe ? theme.text : '#EF4444'}
                         />
                         <Text
                           style={[
@@ -2900,7 +3036,7 @@ export default function RadarScreen() {
 
                     {targetUserPosts.length === 0 ? (
                       <View style={styles.emptyPostsBox}>
-                        <Ionicons name="images-outline" size={32} color="#52525B" />
+                        <Ionicons name="images-outline" size={32} color={theme.textSubtle} />
                         <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
                       </View>
                     ) : (
@@ -2916,7 +3052,7 @@ export default function RadarScreen() {
                             >
                               {isVid ? (
                                 <View style={[styles.postThumbnailImage, { backgroundColor: '#000', position: 'relative' }]}>
-                                  {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} /> : null}
+                                  {post.imageUrl ? <ProfileVideoThumbnail uri={post.imageUrl} style={styles.postThumbnailImage} /> : null}
                                   <View style={styles.videoBadgeOverlay}>
                                     <Ionicons name="play" size={14} color="#FAFAFA" />
                                   </View>
@@ -2966,7 +3102,7 @@ export default function RadarScreen() {
                 {targetActiveModalList === 'followers' ? 'Followers 👥' : 'Following 🤝'}
               </Text>
               <TouchableOpacity onPress={() => setTargetActiveModalList(null)} activeOpacity={0.8}>
-                <Ionicons name="close" size={24} color="#FAFAFA" />
+                <Ionicons name="close" size={24} color={theme.text} />
               </TouchableOpacity>
             </View>
 
@@ -2982,7 +3118,8 @@ export default function RadarScreen() {
                     onPress={() => {
                       setTargetActiveModalList(null);
                       setSelectedUserModalId(null);
-                      setTimeout(() => {
+                      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+                      timeoutRef.current = setTimeout(() => {
                         openUserProfileById(item.uid, itemName);
                       }, 50);
                     }}
@@ -3002,78 +3139,11 @@ export default function RadarScreen() {
                       </View>
                       <Text style={styles.listCity}>📍 {normalizeCity(item.city)} |  Age: {item.age || 'N/A'}</Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={18} color="#71717A" />
+                    <Ionicons name="chevron-forward" size={18} color={theme.textSubtle} />
                   </TouchableOpacity>
                 );
               })}
             </ScrollView>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={chatModalVisible} animationType="slide" transparent={true} onRequestClose={() => setChatModalVisible(false)}>
-        <View style={styles.modalOverlayCenter}>
-          <View style={styles.modalContentCenter}>
-            <View style={styles.modalHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <View style={styles.chatHeaderAvatarBox}>
-                  {chatTargetUser?.avatar ? (
-                    <Image source={{ uri: chatTargetUser.avatar }} style={styles.avatarImg} />
-                  ) : (
-                    <Text style={{ color: '#EAB308', fontWeight: 'bold' }}>{chatTargetUser?.name || chatTargetUser?.userName || chatTargetUser?.displayName ? (chatTargetUser.name || chatTargetUser.userName || chatTargetUser.displayName)?.[0] : 'P'}</Text>
-                  )}
-                </View>
-                <View>
-                  <Text style={styles.chatHeaderTitle}>Chat</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                    <Text style={styles.chatHeaderSubTitle}>{chatTargetUser?.name || chatTargetUser?.userName || chatTargetUser?.displayName || 'Player'}</Text>
-                    {chatTargetUser?.isVip && <Ionicons name="checkmark-circle" size={13} color="#EAB308" />}
-                  </View>
-                </View>
-              </View>
-              <TouchableOpacity onPress={() => setChatModalVisible(false)} activeOpacity={0.8}>
-                <Ionicons name="close" size={24} color="#FAFAFA" />
-              </TouchableOpacity>
-            </View>
-
-            {isBlockedBidirectional(chatTargetUser?.uid, chatTargetUser?.name || chatTargetUser?.userName || chatTargetUser?.displayName) ? (
-              <View style={{ paddingVertical: 30, alignItems: 'center' }}>
-                <Ionicons name="ban" size={32} color="#EF4444" />
-                <Text style={{ color: '#FAFAFA', fontWeight: '700', marginTop: 10 }}>Messaging Unavailable</Text>
-                <Text style={{ color: '#A1A1AA', fontSize: 12, textAlign: 'center', marginTop: 4 }}>
-                  You cannot send or receive messages with this user while a block is active.
-                </Text>
-              </View>
-            ) : (
-              <>
-                <ScrollView style={{ maxHeight: 280 }} contentContainerStyle={{ padding: 6 }} showsVerticalScrollIndicator={false}>
-                  {chatMessages.map(item => {
-                    const isMe = item.senderId === currentUserId;
-                    return (
-                      <View key={item.id} style={[styles.chatBubbleRow, isMe ? styles.chatBubbleRowRight : styles.chatBubbleRowLeft]}>
-                        <View style={[styles.chatBubbleMsg, isMe ? styles.chatBubbleMe : styles.chatBubbleOther]}>
-                          <Text style={[styles.chatBubbleText, isMe && { color: '#09090B' }]}>{item.text}</Text>
-                          <Text style={[styles.chatBubbleTime, isMe && { color: '#3F3F46' }]}>{item.time || getTimeAgo(item.createdAt)}</Text>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </ScrollView>
-
-                <View style={styles.chatInputRow}>
-                  <TextInput
-                    style={styles.chatInputField}
-                    placeholder="Type a message..."
-                    placeholderTextColor="#52525B"
-                    value={messageInput}
-                    onChangeText={setMessageInput}
-                  />
-                  <TouchableOpacity style={styles.chatSendBtn} onPress={handleSendMessage} activeOpacity={0.85}>
-                    <Ionicons name="send" size={16} color="#09090B" />
-                  </TouchableOpacity>
-                </View>
-              </>
-            )}
           </View>
         </View>
       </Modal>
@@ -3084,7 +3154,7 @@ export default function RadarScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Post Details 📷</Text>
               <TouchableOpacity onPress={() => setSelectedPostModal(null)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+                <Ionicons name="close" size={22} color={theme.text} />
               </TouchableOpacity>
             </View>
 
@@ -3133,7 +3203,7 @@ export default function RadarScreen() {
                     {selectedPostModal.imageUrl ? (
                       <View style={styles.postImageBox}>
                         {isVid ? (
-                          <PostVideoPlayer key={`modal_radar_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isStoryOpen={false} />
+                          <PostVideoPlayer key={`modal_radar_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isStoryOpen={false} style={styles.postImageContent} />
                         ) : (
                           <Image source={{ uri: selectedPostModal.imageUrl }} style={styles.postImageContent} />
                         )}
@@ -3145,7 +3215,7 @@ export default function RadarScreen() {
                         <Ionicons
                           name={currentUserId && selectedPostModal.likesList?.includes(currentUserId) ? "heart" : "heart-outline"}
                           size={20}
-                          color={currentUserId && selectedPostModal.likesList?.includes(currentUserId) ? "#EF4444" : "#A1A1AA"}
+                          color={currentUserId && selectedPostModal.likesList?.includes(currentUserId) ? "#EF4444" : theme.textMuted}
                         />
                         <Text style={[styles.actionText, currentUserId && selectedPostModal.likesList?.includes(currentUserId) && { color: '#EF4444', fontWeight: 'bold' }]}>
                           {selectedPostModal.likesList?.length || 0} Likes
@@ -3153,7 +3223,7 @@ export default function RadarScreen() {
                       </TouchableOpacity>
 
                       <TouchableOpacity style={styles.actionBtn} onPress={() => { setSelectedPostModal(null); setCommentsModalPost(selectedPostModal); }} activeOpacity={0.7}>
-                        <Ionicons name="chatbubble-outline" size={18} color="#A1A1AA" />
+                        <Ionicons name="chatbubble-outline" size={18} color={theme.textMuted} />
                         <Text style={styles.actionText}>{selectedPostModal.comments?.length || 0} Comments</Text>
                       </TouchableOpacity>
                     </View>
@@ -3171,7 +3241,7 @@ export default function RadarScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Comments 💬</Text>
               <TouchableOpacity onPress={() => setCommentsModalPost(null)} activeOpacity={0.8} style={styles.closeHomeModalBtn}>
-                <Ionicons name="close" size={22} color="#FAFAFA" />
+                <Ionicons name="close" size={22} color={theme.text} />
               </TouchableOpacity>
             </View>
 
@@ -3179,7 +3249,7 @@ export default function RadarScreen() {
               <View style={{ flex: 1, width: '100%' }}>
                 <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 15 }}>
                   {commentsModalPost.comments?.length === 0 ? (
-                    <Text style={{ color: '#71717A', textAlign: 'center', marginVertical: 30, fontSize: 13 }}>No comments yet. Be the first to comment!</Text>
+                    <Text style={{ color: theme.textSubtle, textAlign: 'center', marginVertical: 30, fontSize: 13 }}>No comments yet. Be the first to comment!</Text>
                   ) : (
                     commentsModalPost.comments
                       ?.filter(c => !isBlockedBidirectional(c.userId, c.user))
@@ -3201,7 +3271,7 @@ export default function RadarScreen() {
                               </View>
                             )}
                           </TouchableOpacity>
-                          <View style={{ flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 10, borderRadius: 12 }}>
+                          <View style={styles.commentBubbleBox}>
                             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
                               <TouchableOpacity onPress={() => { setCommentsModalPost(null); openUserProfileById(c.userId, commentAuthorName); }} activeOpacity={0.85}>
                                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
@@ -3223,7 +3293,7 @@ export default function RadarScreen() {
                   <TextInput
                     style={styles.commentInput}
                     placeholder="Write a comment..."
-                    placeholderTextColor="#52525B"
+                    placeholderTextColor={theme.textSubtle}
                     value={modalCommentInput}
                     onChangeText={setModalCommentInput}
                   />
@@ -3243,17 +3313,17 @@ export default function RadarScreen() {
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Create New Game 📍</Text>
               <TouchableOpacity onPress={() => setCreateModalVisible(false)}>
-                <Ionicons name="close" size={24} color="#FAFAFA" />
+                <Ionicons name="close" size={24} color={theme.text} />
               </TouchableOpacity>
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
               <Text style={styles.label}>Game Title *</Text>
-              <TextInput style={styles.input} placeholder="e.g. Friday Match" placeholderTextColor="#52525B" value={newTitle} onChangeText={setNewTitle} />
+              <TextInput style={styles.input} placeholder="e.g. Friday Match" placeholderTextColor={theme.textSubtle} value={newTitle} onChangeText={setNewTitle} />
 
               <Text style={styles.label}>Select Sport *</Text>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 14 }}>
-                {userSports.map(sport => (
+                {(userSports.length > 0 ? userSports : ALL_AVAILABLE_SPORTS).map(sport => (
                   <TouchableOpacity key={sport} style={[styles.sportChip, newSport === sport && styles.sportChipActive]} onPress={() => setNewSport(sport)}>
                     <Text style={[styles.sportChipText, newSport === sport && styles.sportChipTextActive]}>{sport}</Text>
                   </TouchableOpacity>
@@ -3268,7 +3338,7 @@ export default function RadarScreen() {
                   activeOpacity={0.85}
                 >
                   <View style={[styles.accessIconBox, newAccessMode === 'public' && { backgroundColor: '#22C55E22', borderColor: '#22C55E' }]}>
-                    <Ionicons name="globe-outline" size={20} color={newAccessMode === 'public' ? '#22C55E' : '#A1A1AA'} />
+                    <Ionicons name="globe-outline" size={20} color={newAccessMode === 'public' ? '#22C55E' : theme.textMuted} />
                   </View>
                   <Text style={[styles.accessCardTitle, newAccessMode === 'public' && { color: '#22C55E' }]}>Public</Text>
                   <Text style={styles.accessCardDesc}>Everyone can join freely</Text>
@@ -3280,7 +3350,7 @@ export default function RadarScreen() {
                   activeOpacity={0.85}
                 >
                   <View style={[styles.accessIconBox, newAccessMode === 'private' && { backgroundColor: '#EAB30822', borderColor: '#EAB308' }]}>
-                    <Ionicons name="lock-closed-outline" size={20} color={newAccessMode === 'private' ? '#EAB308' : '#A1A1AA'} />
+                    <Ionicons name="lock-closed-outline" size={20} color={newAccessMode === 'private' ? '#EAB308' : theme.textMuted} />
                   </View>
                   <Text style={[styles.accessCardTitle, newAccessMode === 'private' && { color: '#EAB308' }]}>Private</Text>
                   <Text style={styles.accessCardDesc}>Requires admin approval</Text>
@@ -3292,7 +3362,7 @@ export default function RadarScreen() {
                   activeOpacity={0.85}
                 >
                   <View style={[styles.accessIconBox, newAccessMode === 'friends' && { backgroundColor: '#3B82F622', borderColor: '#3B82F6' }]}>
-                    <Ionicons name="key-outline" size={20} color={newAccessMode === 'friends' ? '#3B82F6' : '#A1A1AA'} />
+                    <Ionicons name="key-outline" size={20} color={newAccessMode === 'friends' ? '#3B82F6' : theme.textMuted} />
                   </View>
                   <Text style={[styles.accessCardTitle, newAccessMode === 'friends' && { color: '#3B82F6' }]}>Friends</Text>
                   <Text style={styles.accessCardDesc}>Join via game code only</Text>
@@ -3301,7 +3371,7 @@ export default function RadarScreen() {
 
               <Text style={styles.label}>Court / Location Name *</Text>
               <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
-                <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} placeholder="e.g. Central Court" placeholderTextColor="#52525B" value={newVenue} onChangeText={setNewVenue} />
+                <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} placeholder="e.g. Central Court" placeholderTextColor={theme.textSubtle} value={newVenue} onChangeText={setNewVenue} />
                 <TouchableOpacity style={styles.mapSearchBtn} onPress={() => { setCreateModalVisible(false); setIsPickingLocation(true); }}>
                   <Ionicons name="map" size={18} color="#09090B" />
                   <Text style={styles.mapSearchBtnText}>{pickedLocation ? 'Pinned ✓' : 'Pick on Map'}</Text>
@@ -3315,15 +3385,15 @@ export default function RadarScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.label}>Time *</Text>
-                  <TextInput style={styles.input} placeholder="18:00" placeholderTextColor="#52525B" value={newTime} onChangeText={setNewTime} />
+                  <TextInput style={styles.input} placeholder="18:00" placeholderTextColor={theme.textSubtle} value={newTime} onChangeText={setNewTime} />
                 </View>
               </View>
 
               <Text style={styles.label}>Max Players *</Text>
-              <TextInput style={styles.input} placeholder="10" placeholderTextColor="#52525B" keyboardType="numeric" value={newMaxPlayers} onChangeText={setNewMaxPlayers} />
+              <TextInput style={styles.input} placeholder="10" placeholderTextColor={theme.textSubtle} keyboardType="numeric" value={newMaxPlayers} onChangeText={setNewMaxPlayers} />
 
               <Text style={styles.label}>Description *</Text>
-              <TextInput style={[styles.input, { height: 70, textAlignVertical: 'top' }]} placeholder="Details..." placeholderTextColor="#52525B" multiline value={newDesc} onChangeText={setNewDesc} />
+              <TextInput style={[styles.input, { height: 70, textAlignVertical: 'top' }]} placeholder="Details..." placeholderTextColor={theme.textSubtle} multiline value={newDesc} onChangeText={setNewDesc} />
 
               <TouchableOpacity style={styles.publishBtn} onPress={handleCreateGame}>
                 <Text style={styles.publishBtnText}>Publish to Map 🚀</Text>
@@ -3337,294 +3407,280 @@ export default function RadarScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#09090B' },
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 50, paddingBottom: 12, backgroundColor: '#121215', borderBottomWidth: 1, borderBottomColor: '#27272A' },
+const createStyles = (theme: ReturnType<typeof getRadarTheme>) => StyleSheet.create({
+  container: { flex: 1, backgroundColor: theme.bg },
+  headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, paddingTop: 50, paddingBottom: 12, backgroundColor: theme.surface, borderBottomWidth: 1, borderBottomColor: theme.border },
   homeCategory: { color: '#EAB308', fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
   discoverCategory: { color: '#EAB308', fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
-  appTitle: { color: '#FAFAFA', fontSize: 22, fontWeight: '900', fontStyle: 'italic' },
+  appTitle: { color: theme.text, fontSize: 22, fontWeight: '900', fontStyle: 'italic' },
   createGameBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EAB308', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16 },
   createGameBtnText: { color: '#09090B', fontWeight: '800', fontSize: 12 },
 
-  menuOverlay: { flex: 1, backgroundColor: 'rgba(9,9,11,0.75)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
-  actionMenuCard: { width: '100%', maxWidth: 360, backgroundColor: '#121215', borderRadius: 20, padding: 16, borderWidth: 1, borderColor: '#27272A', gap: 10 },
-  actionMenuTitle: { color: '#FAFAFA', fontSize: 16, fontWeight: '900', marginBottom: 4 },
-  actionMenuOptionBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', padding: 12, borderRadius: 14 },
+  menuOverlay: { flex: 1, backgroundColor: theme.menuOverlay, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
+  actionMenuCard: { width: '100%', maxWidth: 360, backgroundColor: theme.surface, borderRadius: 20, padding: 16, borderWidth: 1, borderColor: theme.border, gap: 10 },
+  actionMenuTitle: { color: theme.text, fontSize: 16, fontWeight: '900', marginBottom: 4 },
+  actionMenuOptionBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: theme.surfaceDeep, borderWidth: 1, borderColor: theme.border, padding: 12, borderRadius: 14 },
   actionMenuIconCircle: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
-  actionMenuOptionTitle: { color: '#FAFAFA', fontSize: 14, fontWeight: '800' },
-  actionMenuOptionSub: { color: '#A1A1AA', fontSize: 11, marginTop: 2 },
+  actionMenuOptionTitle: { color: theme.text, fontSize: 14, fontWeight: '800' },
+  actionMenuOptionSub: { color: theme.textMuted, fontSize: 11, marginTop: 2 },
 
   map: { width: Dimensions.get('window').width, height: Dimensions.get('window').height * 0.45 },
 
   myLocationMarker: { alignItems: 'center' },
-  myLocationAvatarBox: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#18181B', borderWidth: 2, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 2, elevation: 5 },
+  myLocationAvatarBox: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.surfaceAlt, borderWidth: 2, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 2, elevation: 5 },
   myLocationAvatarText: { color: '#EAB308', fontWeight: 'bold', fontSize: 14 },
-  myLocationNameText: { color: '#FAFAFA', fontSize: 10, fontWeight: 'bold' },
+  myLocationNameText: { color: theme.text, fontSize: 10, fontWeight: 'bold' },
 
   friendMarkerContainer: { alignItems: 'center' },
-  friendAvatarBox: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#18181B', borderWidth: 2, borderColor: '#3B82F6', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 2, elevation: 5 },
+  friendAvatarBox: { width: 38, height: 38, borderRadius: 19, backgroundColor: theme.surfaceAlt, borderWidth: 2, borderColor: '#3B82F6', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 2, elevation: 5 },
   friendAvatarText: { color: '#3B82F6', fontWeight: 'bold', fontSize: 14 },
-  friendMarkerName: { color: '#FAFAFA', fontSize: 10, fontWeight: 'bold' },
+  friendMarkerName: { color: theme.text, fontSize: 10, fontWeight: 'bold' },
+  markerNamePill: { flexDirection: 'row', alignItems: 'center', backgroundColor: theme.pillBg, paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginTop: 2, gap: 2 },
 
   customMarkerContainer: { flexDirection: 'row', alignItems: 'center', borderRadius: 16, borderWidth: 1.5, paddingHorizontal: 6, paddingVertical: 4, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 2, elevation: 5 },
   markerIconBox: { width: 22, height: 22, borderRadius: 11, justifyContent: 'center', alignItems: 'center', marginRight: 5 },
   markerTextBox: { maxWidth: 100 },
-  markerTitleText: { color: '#FAFAFA', fontSize: 10, fontWeight: 'bold' },
+  markerTitleText: { color: theme.text, fontSize: 10, fontWeight: 'bold' },
   markerPlayersText: { fontSize: 9, fontWeight: 'bold' },
 
   pickingBanner: { position: 'absolute', top: 110, alignSelf: 'center', backgroundColor: '#EAB308', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, flexDirection: 'row', alignItems: 'center', zIndex: 50 },
   pickingBannerText: { color: '#09090B', fontWeight: 'bold', fontSize: 12 },
 
-  bottomSheet: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '52%', backgroundColor: '#121215', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 10, borderWidth: 1, borderColor: '#27272A' },
-  dragHandle: { width: 40, height: 4, backgroundColor: '#3F3F46', borderRadius: 2, alignSelf: 'center', marginBottom: 8 },
-  sheetTitle: { color: '#FAFAFA', fontSize: 17, fontWeight: '900' },
-  sheetSubtitle: { color: '#A1A1AA', fontSize: 11 },
+  bottomSheet: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '52%', backgroundColor: theme.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 10, borderWidth: 1, borderColor: theme.border },
+  dragHandle: { width: 40, height: 4, backgroundColor: theme.textSubtle, borderRadius: 2, alignSelf: 'center', marginBottom: 8 },
+  sheetTitle: { color: theme.text, fontSize: 17, fontWeight: '900' },
+  sheetSubtitle: { color: theme.textMuted, fontSize: 11 },
 
   searchAndFilterRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8, marginBottom: 8 },
-  searchBarContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 12, paddingHorizontal: 10, height: 40 },
-  searchInput: { flex: 1, color: '#FAFAFA', fontSize: 12, height: '100%' },
+  searchBarContainer: { flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: theme.surfaceDeep, borderWidth: 1, borderColor: theme.border, borderRadius: 12, paddingHorizontal: 10, height: 40 },
+  searchInput: { flex: 1, color: theme.text, fontSize: 12, height: '100%' },
 
-  filterButton: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', paddingHorizontal: 12, height: 40, borderRadius: 12 },
+  filterButton: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: theme.surfaceDeep, borderWidth: 1, borderColor: theme.border, paddingHorizontal: 12, height: 40, borderRadius: 12 },
   filterButtonText: { color: '#EAB308', fontSize: 12, fontWeight: 'bold' },
 
-  filterOptionItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', paddingHorizontal: 14, paddingVertical: 12, borderRadius: 12, marginBottom: 8 },
-  filterOptionItemActive: { backgroundColor: '#18181B', borderColor: '#EAB308' },
-  filterOptionText: { color: '#D4D4D8', fontSize: 13, fontWeight: '600' },
+  filterOptionItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: theme.surfaceDeep, borderWidth: 1, borderColor: theme.border, paddingHorizontal: 14, paddingVertical: 12, borderRadius: 12, marginBottom: 8 },
+  filterOptionItemActive: { backgroundColor: theme.surfaceAlt, borderColor: '#EAB308' },
+  filterOptionText: { color: theme.textSecondary, fontSize: 13, fontWeight: '600' },
   filterOptionTextActive: { color: '#EAB308', fontWeight: 'bold' },
 
   filterIconCircle: { width: 26, height: 26, borderRadius: 13, justifyContent: 'center', alignItems: 'center' },
 
   emptyBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30 },
-  emptyNoticeText: { color: '#71717A', textAlign: 'center', marginTop: 10 },
+  emptyNoticeText: { color: theme.textSubtle, textAlign: 'center', marginTop: 10 },
 
   gameCard: { borderRadius: 14, padding: 14, marginBottom: 12, borderWidth: 1 },
   gameHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   sportTag: { fontSize: 12, fontWeight: 'bold' },
-  distanceTag: { color: '#A1A1AA', fontSize: 12 },
-  gameTitle: { color: '#FAFAFA', fontSize: 15, fontWeight: 'bold', marginBottom: 2 },
-  venueText: { color: '#D4D4D8', fontSize: 12, marginBottom: 6 },
+  distanceTag: { color: theme.textMuted, fontSize: 12 },
+  gameTitle: { color: theme.text, fontSize: 15, fontWeight: 'bold', marginBottom: 2 },
+  venueText: { color: theme.textSecondary, fontSize: 12, marginBottom: 6 },
 
-  gameTimerRow: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#18181B', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, marginBottom: 8 },
-  timerText: { color: '#A1A1AA', fontSize: 10, fontWeight: '600' },
+  gameTimerRow: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: theme.surfaceAlt, paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, marginBottom: 8 },
+  timerText: { color: theme.textMuted, fontSize: 10, fontWeight: '600' },
   timerExpiryText: { color: '#EAB308', fontSize: 10, fontWeight: 'bold' },
 
-  modalTimerBox: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#18181B', padding: 8, borderRadius: 8, marginBottom: 10, borderWidth: 1, borderColor: '#27272A' },
-  modalTimerText: { color: '#A1A1AA', fontSize: 11, fontWeight: '600' },
+  modalTimerBox: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: theme.surfaceAlt, padding: 8, borderRadius: 8, marginBottom: 10, borderWidth: 1, borderColor: theme.border },
+  modalTimerText: { color: theme.textMuted, fontSize: 11, fontWeight: '600' },
   modalTimerExpiryText: { color: '#EAB308', fontSize: 11, fontWeight: 'bold' },
 
-  gameFooterRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: '#18181B', paddingTop: 8 },
+  gameFooterRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 8 },
   spotsTag: { color: '#22C55E', fontSize: 11, fontWeight: 'bold' },
   detailsLink: { fontSize: 12, fontWeight: 'bold' },
 
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(9,9,11,0.85)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#121215', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, height: '82%', borderWidth: 1, borderColor: '#27272A' },
-  modalContentLarge: { backgroundColor: '#121215', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, height: '90%', borderWidth: 1, borderColor: '#27272A' },
+  modalOverlay: { flex: 1, backgroundColor: theme.overlay, justifyContent: 'flex-end' },
+  modalContent: { backgroundColor: theme.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, height: '82%', borderWidth: 1, borderColor: theme.border },
+  modalContentLarge: { backgroundColor: theme.surface, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, height: '90%', borderWidth: 1, borderColor: theme.border },
 
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, width: '100%' },
-  modalTitle: { color: '#FAFAFA', fontSize: 18, fontWeight: 'bold' },
+  modalTitle: { color: theme.text, fontSize: 18, fontWeight: 'bold' },
 
-  label: { color: '#A1A1AA', fontSize: 12, fontWeight: 'bold', marginBottom: 6, alignSelf: 'flex-start' },
-  input: { backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 10, paddingHorizontal: 12, height: 44, color: '#FAFAFA', marginBottom: 14, width: '100%' },
+  label: { color: theme.textMuted, fontSize: 12, fontWeight: 'bold', marginBottom: 6, alignSelf: 'flex-start' },
+  input: { backgroundColor: theme.surfaceDeep, borderWidth: 1, borderColor: theme.border, borderRadius: 10, paddingHorizontal: 12, height: 44, color: theme.text, marginBottom: 14, width: '100%' },
 
   mapSearchBtn: { backgroundColor: '#EAB308', borderRadius: 10, height: 44, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 6 },
   mapSearchBtnText: { color: '#09090B', fontWeight: 'bold', fontSize: 12 },
 
-  sportChip: { backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, marginRight: 8 },
-  sportChipActive: { backgroundColor: '#18181B', borderColor: '#EAB308' },
-  sportChipText: { color: '#A1A1AA', fontSize: 12, fontWeight: 'bold' },
+  sportChip: { backgroundColor: theme.surfaceDeep, borderWidth: 1, borderColor: theme.border, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, marginRight: 8 },
+  sportChipActive: { backgroundColor: theme.surfaceAlt, borderColor: '#EAB308' },
+  sportChipText: { color: theme.textMuted, fontSize: 12, fontWeight: 'bold' },
   sportChipTextActive: { color: '#EAB308' },
 
   accessModesContainer: { flexDirection: 'row', gap: 8, marginBottom: 14 },
-  accessCard: { flex: 1, backgroundColor: '#09090B', borderWidth: 1.5, borderColor: '#27272A', borderRadius: 14, padding: 12, alignItems: 'center' },
-  accessCardActive: { backgroundColor: '#18181B', borderColor: '#EAB308' },
-  accessIconBox: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A', justifyContent: 'center', alignItems: 'center', marginBottom: 6 },
-  accessCardTitle: { color: '#FAFAFA', fontSize: 12, fontWeight: 'bold', marginBottom: 2 },
-  accessCardDesc: { color: '#71717A', fontSize: 9, textAlign: 'center', lineHeight: 12 },
+  accessCard: { flex: 1, backgroundColor: theme.surfaceDeep, borderWidth: 1.5, borderColor: theme.border, borderRadius: 14, padding: 12, alignItems: 'center' },
+  accessCardActive: { backgroundColor: theme.surfaceAlt, borderColor: '#EAB308' },
+  accessIconBox: { width: 34, height: 34, borderRadius: 17, backgroundColor: theme.surfaceAlt, borderWidth: 1, borderColor: theme.border, justifyContent: 'center', alignItems: 'center', marginBottom: 6 },
+  accessCardTitle: { color: theme.text, fontSize: 12, fontWeight: 'bold', marginBottom: 2 },
+  accessCardDesc: { color: theme.textSubtle, fontSize: 9, textAlign: 'center', lineHeight: 12 },
 
   publishBtn: { backgroundColor: '#EAB308', borderRadius: 12, height: 46, justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 10, width: '100%' },
   publishBtnText: { color: '#09090B', fontWeight: '900', fontSize: 15 },
 
   detailSportBadge: { alignSelf: 'flex-start', fontSize: 11, fontWeight: '900', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, overflow: 'hidden' },
-  deleteGameBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1F1214', borderWidth: 1, borderColor: '#EF4444', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
-  detailTitle: { color: '#FAFAFA', fontSize: 20, fontWeight: 'bold', marginTop: 10, marginBottom: 4 },
-  adminInfoText: { color: '#A1A1AA', fontSize: 12 },
+  deleteGameBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: theme.isLight ? '#FEE2E2' : '#1F1214', borderWidth: 1, borderColor: '#EF4444', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
+  detailTitle: { color: theme.text, fontSize: 20, fontWeight: 'bold', marginTop: 10, marginBottom: 4 },
+  adminInfoText: { color: theme.textMuted, fontSize: 12 },
 
   navigateBtn: { borderRadius: 10, height: 38, justifyContent: 'center', alignItems: 'center', marginBottom: 10, flexDirection: 'row' },
   navigateBtnText: { color: '#09090B', fontWeight: 'bold', fontSize: 13 },
 
-  detailVenue: { color: '#D4D4D8', fontSize: 13, marginBottom: 14 },
-  detailBox: { backgroundColor: '#09090B', borderRadius: 12, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: '#27272A' },
-  detailLabel: { color: '#A1A1AA', fontSize: 12, fontWeight: 'bold', marginBottom: 6 },
-  detailText: { color: '#FAFAFA', fontSize: 13 },
+  detailVenue: { color: theme.textSecondary, fontSize: 13, marginBottom: 14 },
+  detailBox: { backgroundColor: theme.surfaceDeep, borderRadius: 12, padding: 12, marginBottom: 12, borderWidth: 1, borderColor: theme.border },
+  detailLabel: { color: theme.textMuted, fontSize: 12, fontWeight: 'bold', marginBottom: 6 },
+  detailText: { color: theme.text, fontSize: 13 },
+  pendingRequestCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: theme.surface, padding: 8, borderRadius: 8, marginTop: 6 },
 
   studioLaunchBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16, borderWidth: 1.5, marginBottom: 12 },
   studioLaunchIconWrap: { width: 38, height: 38, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
   studioLaunchTitle: { fontSize: 14, fontWeight: '900' },
-  studioLaunchSub: { color: '#A1A1AA', fontSize: 11, marginTop: 2 },
+  studioLaunchSub: { color: theme.textMuted, fontSize: 11, marginTop: 2 },
 
-  studioModalSheet: { backgroundColor: '#09090B', borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 16, height: '92%', borderWidth: 1, borderColor: '#27272A' },
-  studioHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#121215', padding: 14, borderRadius: 18, borderWidth: 1, borderColor: '#27272A', marginBottom: 10 },
+  studioModalSheet: { backgroundColor: theme.surfaceDeep, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 16, height: '92%', borderWidth: 1, borderColor: theme.border },
+  studioHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: theme.surface, padding: 14, borderRadius: 18, borderWidth: 1, borderColor: theme.border, marginBottom: 10 },
   studioEyebrow: { fontSize: 10, fontWeight: '900', letterSpacing: 0.6 },
-  studioMainTitle: { color: '#FAFAFA', fontSize: 18, fontWeight: '900', marginTop: 2 },
-  studioCloseBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A', justifyContent: 'center', alignItems: 'center' },
+  studioMainTitle: { color: theme.text, fontSize: 18, fontWeight: '900', marginTop: 2 },
+  studioCloseBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: theme.surfaceAlt, borderWidth: 1, borderColor: theme.border, justifyContent: 'center', alignItems: 'center' },
 
   modeSelectorBar: { flexDirection: 'row', gap: 6, marginBottom: 12 },
-  modeChipBtn: { flex: 1, backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', paddingVertical: 8, borderRadius: 10, alignItems: 'center' },
-  modeChipText: { color: '#A1A1AA', fontSize: 11, fontWeight: '800' },
+  modeChipBtn: { flex: 1, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, paddingVertical: 8, borderRadius: 10, alignItems: 'center' },
+  modeChipText: { color: theme.textMuted, fontSize: 11, fontWeight: '800' },
   modeChipTextActive: { color: '#09090B', fontWeight: '900' },
 
   twoColumnsWrapper: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  studioColumnCard: { flex: 1, backgroundColor: '#121215', borderRadius: 18, padding: 10, borderWidth: 1.5 },
-  columnTopHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: '#27272A' },
+  studioColumnCard: { flex: 1, backgroundColor: theme.surface, borderRadius: 18, padding: 10, borderWidth: 1.5 },
+  columnTopHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: theme.border },
   columnBadgeIcon: { width: 32, height: 32, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
-  columnTitle: { color: '#FAFAFA', fontSize: 13, fontWeight: '900' },
-  columnSubtitle: { color: '#A1A1AA', fontSize: 10, fontWeight: '700', marginTop: 1 },
+  columnTitle: { color: theme.text, fontSize: 13, fontWeight: '900' },
+  columnSubtitle: { color: theme.textMuted, fontSize: 10, fontWeight: '700', marginTop: 1 },
 
-  columnActionPanel: { backgroundColor: '#09090B', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#27272A', marginBottom: 10, gap: 8 },
+  columnActionPanel: { backgroundColor: theme.surfaceDeep, borderRadius: 12, padding: 8, borderWidth: 1, borderColor: theme.border, marginBottom: 10, gap: 8 },
   teamSizeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-  teamSizeLabel: { color: '#A1A1AA', fontSize: 11, fontWeight: '700' },
-  compactSizeInput: { backgroundColor: '#121215', borderWidth: 1, borderRadius: 8, width: 42, height: 30, color: '#FAFAFA', textAlign: 'center', fontSize: 12, fontWeight: '900' },
+  teamSizeLabel: { color: theme.textMuted, fontSize: 11, fontWeight: '700' },
+  compactSizeInput: { backgroundColor: theme.surface, borderWidth: 1, borderRadius: 8, width: 42, height: 30, color: theme.text, textAlign: 'center', fontSize: 12, fontWeight: '900' },
   columnPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 36, borderRadius: 10, paddingHorizontal: 8 },
   columnPrimaryBtnText: { color: '#09090B', fontSize: 11, fontWeight: '900' },
 
-  columnEmptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 28, backgroundColor: '#09090B', borderRadius: 12, borderWidth: 1, borderColor: '#1E1E24' },
-  columnEmptyText: { color: '#71717A', fontSize: 11, marginTop: 6, textAlign: 'center' },
+  columnEmptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 28, backgroundColor: theme.surfaceDeep, borderRadius: 12, borderWidth: 1, borderColor: theme.borderSubtle },
+  columnEmptyText: { color: theme.textSubtle, fontSize: 11, marginTop: 6, textAlign: 'center' },
 
-  studioTeamBox: { backgroundColor: '#09090B', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#27272A', borderTopWidth: 3 },
+  studioTeamBox: { backgroundColor: theme.surfaceDeep, borderRadius: 12, padding: 8, borderWidth: 1, borderColor: theme.border, borderTopWidth: 3 },
   studioTeamHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
   studioTeamName: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
-  studioTeamCount: { color: '#A1A1AA', fontSize: 10, fontWeight: '800', backgroundColor: '#18181B', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5 },
-  studioPlayerPill: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5 },
-  studioPlayerPillText: { color: '#E4E4E7', fontSize: 11, fontWeight: '700', flex: 1 },
+  studioTeamCount: { color: theme.textMuted, fontSize: 10, fontWeight: '800', backgroundColor: theme.surfaceAlt, paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5 },
+  studioPlayerPill: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5 },
+  studioPlayerPillText: { color: theme.textSecondary, fontSize: 11, fontWeight: '700', flex: 1 },
 
-  studioMatchBox: { backgroundColor: '#09090B', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#27272A' },
+  studioMatchBox: { backgroundColor: theme.surfaceDeep, borderRadius: 12, padding: 8, borderWidth: 1, borderColor: theme.border },
   studioMatchTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
-  studioMatchNum: { color: '#EAB308', fontSize: 10, fontWeight: '900', backgroundColor: '#332E0F', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5 },
-  studioMatchRound: { color: '#A1A1AA', fontSize: 9, fontWeight: '700', maxWidth: '72%' },
-  studioSidePill: { backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 8, padding: 7, alignItems: 'center' },
-  studioSideText: { color: '#FAFAFA', fontSize: 12, fontWeight: '900', textAlign: 'center' },
+  studioMatchNum: { color: '#EAB308', fontSize: 10, fontWeight: '900', backgroundColor: theme.isLight ? '#FEF9C3' : '#332E0F', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5 },
+  studioMatchRound: { color: theme.textMuted, fontSize: 9, fontWeight: '700', maxWidth: '72%' },
+  studioSidePill: { backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, borderRadius: 8, padding: 7, alignItems: 'center' },
+  studioSideText: { color: theme.text, fontSize: 12, fontWeight: '900', textAlign: 'center' },
   studioVsDivider: { flexDirection: 'row', alignItems: 'center', gap: 6, marginVertical: 5 },
-  studioLine: { flex: 1, height: 1, backgroundColor: '#27272A' },
+  studioLine: { flex: 1, height: 1, backgroundColor: theme.border },
   studioVsLabel: { color: '#EF4444', fontSize: 9, fontWeight: '900' },
 
   winnerPickRow: { flexDirection: 'row', gap: 4, marginTop: 6 },
-  winnerPickBtn: { flex: 1, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#22C55E66', borderRadius: 6, paddingVertical: 4, paddingHorizontal: 4, alignItems: 'center' },
+  winnerPickBtn: { flex: 1, backgroundColor: theme.surfaceAlt, borderWidth: 1, borderColor: '#22C55E66', borderRadius: 6, paddingVertical: 4, paddingHorizontal: 4, alignItems: 'center' },
   winnerPickBtnText: { color: '#22C55E', fontSize: 9, fontWeight: '800' },
 
   playersGridContainerSmall: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   playerChipSmallGrid: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, borderWidth: 1.5, alignSelf: 'flex-start' },
   playerChipTextSmallGrid: { fontSize: 12, fontWeight: 'bold' },
 
-  listItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#09090B', padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#27272A' },
-  listAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
-  listName: { color: '#FAFAFA', fontSize: 14, fontWeight: 'bold' },
-  listCity: { color: '#A1A1AA', fontSize: 11, marginTop: 2 },
+  listItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: theme.surfaceDeep, padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: theme.border },
+  listAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.surfaceAlt, justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
+  listName: { color: theme.text, fontSize: 14, fontWeight: 'bold' },
+  listCity: { color: theme.textMuted, fontSize: 11, marginTop: 2 },
 
-  chatScrollContainer: { maxHeight: 150, backgroundColor: '#09090B', borderRadius: 10, borderWidth: 1, borderColor: '#27272A', paddingHorizontal: 8, marginBottom: 8 },
-  noChatText: { color: '#71717A', fontSize: 12, fontStyle: 'italic', textAlign: 'center', paddingVertical: 15 },
-  chatBubble: { backgroundColor: '#18181B', padding: 8, borderRadius: 10, marginBottom: 6, borderWidth: 1, borderColor: '#27272A' },
+  chatScrollContainer: { maxHeight: 150, backgroundColor: theme.surfaceDeep, borderRadius: 10, borderWidth: 1, borderColor: theme.border, paddingHorizontal: 8, marginBottom: 8 },
+  noChatText: { color: theme.textSubtle, fontSize: 12, fontStyle: 'italic', textAlign: 'center', paddingVertical: 15 },
+  chatBubble: { backgroundColor: theme.surfaceAlt, padding: 8, borderRadius: 10, marginBottom: 6, borderWidth: 1, borderColor: theme.border },
   chatSender: { fontSize: 11, fontWeight: 'bold' },
-  chatText: { color: '#FAFAFA', fontSize: 13, marginTop: 2 },
-  chatTime: { color: '#A1A1AA', fontSize: 9, alignSelf: 'flex-end', marginTop: 2 },
+  chatText: { color: theme.text, fontSize: 13, marginTop: 2 },
+  chatTime: { color: theme.textMuted, fontSize: 9, alignSelf: 'flex-end', marginTop: 2 },
   chatInputRowGame: { flexDirection: 'row', gap: 8, alignItems: 'center' },
-  chatInput: { flex: 1, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 8, height: 36, color: '#FAFAFA', paddingHorizontal: 10, fontSize: 12 },
+  chatInput: { flex: 1, backgroundColor: theme.surfaceDeep, borderWidth: 1, borderColor: theme.border, borderRadius: 8, height: 36, color: theme.text, paddingHorizontal: 10, fontSize: 12 },
+  chatSendBtn: { backgroundColor: '#EAB308', width: 38, height: 36, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
 
   modalJoinBtn: { borderRadius: 12, height: 46, justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 20 },
   modalJoinBtnText: { color: '#09090B', fontWeight: '900', fontSize: 15 },
-  leaveBtn: { backgroundColor: '#1F1214', borderWidth: 1, borderColor: '#EF4444', borderRadius: 12, height: 46, justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 20 },
+  leaveBtn: { backgroundColor: theme.isLight ? '#FEE2E2' : '#1F1214', borderWidth: 1, borderColor: '#EF4444', borderRadius: 12, height: 46, justifyContent: 'center', alignItems: 'center', marginTop: 10, marginBottom: 20 },
   leaveBtnText: { color: '#EF4444', fontWeight: '900', fontSize: 15 },
 
   zoomedAvatarOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.95)', justifyContent: 'center', alignItems: 'center' },
   closeZoomedBtn: { position: 'absolute', top: 50, right: 20, zIndex: 30, backgroundColor: '#121215', width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center', borderWidth: 1, borderColor: '#27272A' },
   zoomedAvatarImage: { width: width * 0.9, height: width * 0.9, resizeMode: 'contain', borderRadius: 20 },
 
-  modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(9,9,11,0.85)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20 },
-  modalContentHomeStyle: { backgroundColor: '#09090B', borderRadius: 28, padding: 20, borderWidth: 1, borderColor: '#27272A', width: '100%', maxWidth: 420, height: '88%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.5, shadowRadius: 16, elevation: 12 },
-  modalContentCenter: { backgroundColor: '#121215', borderRadius: 28, padding: 20, borderWidth: 1, borderColor: '#27272A', width: '100%', maxWidth: 400, maxHeight: '85%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 10 },
-  closeHomeModalBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', justifyContent: 'center', alignItems: 'center' },
+  modalOverlayCenter: { flex: 1, backgroundColor: theme.overlay, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20 },
+  modalContentHomeStyle: { backgroundColor: theme.surfaceDeep, borderRadius: 28, padding: 20, borderWidth: 1, borderColor: theme.border, width: '100%', maxWidth: 420, height: '88%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.5, shadowRadius: 16, elevation: 12 },
+  modalContentCenter: { backgroundColor: theme.surface, borderRadius: 28, padding: 20, borderWidth: 1, borderColor: theme.border, width: '100%', maxWidth: 400, maxHeight: '85%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 10 },
+  closeHomeModalBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, justifyContent: 'center', alignItems: 'center' },
 
   headerProfile: { alignItems: 'center', marginBottom: 16, paddingHorizontal: 20 },
-  avatarLarge: { width: 84, height: 84, borderRadius: 42, backgroundColor: '#18181B', borderWidth: 2, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', marginBottom: 10, overflow: 'hidden' },
+  avatarLarge: { width: 84, height: 84, borderRadius: 42, backgroundColor: theme.surfaceAlt, borderWidth: 2, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', marginBottom: 10, overflow: 'hidden' },
   avatarImage: { width: '100%', height: '100%' },
   avatarLargeText: { color: '#EAB308', fontSize: 32, fontWeight: 'bold' },
-  profileName: { color: '#FAFAFA', fontSize: 20, fontWeight: '900' },
+  profileName: { color: theme.text, fontSize: 20, fontWeight: '900' },
   sportsTagsRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: 6, marginVertical: 8 },
-  sportTagBadge: { backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
+  sportTagBadge: { backgroundColor: theme.surfaceAlt, borderWidth: 1, borderColor: '#EAB308', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   sportTagText: { color: '#EAB308', fontSize: 11, fontWeight: '700' },
-  profileCity: { color: '#A1A1AA', fontSize: 13, marginTop: 4 },
+  profileCity: { color: theme.textMuted, fontSize: 13, marginTop: 4 },
 
-  statsRow: { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', padding: 14, marginBottom: 16 },
+  statsRow: { flexDirection: 'row', justifyContent: 'space-around', backgroundColor: theme.surfaceAlt, borderRadius: 16, borderWidth: 1, borderColor: theme.border, padding: 14, marginBottom: 16 },
   statBox: { alignItems: 'center' },
   statNumber: { color: '#EAB308', fontSize: 18, fontWeight: '900' },
-  statLabel: { color: '#A1A1AA', fontSize: 12, marginTop: 2, fontWeight: '600' },
+  statLabel: { color: theme.textMuted, fontSize: 12, marginTop: 2, fontWeight: '600' },
 
   profileFollowBtn: { backgroundColor: '#EAB308', borderRadius: 12, height: 44, justifyContent: 'center', alignItems: 'center' },
   profileFollowBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
-  profileFollowingBtn: { backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308' },
+  profileFollowingBtn: { backgroundColor: theme.surfaceAlt, borderWidth: 1, borderColor: '#EAB308' },
   profileFollowingBtnText: { color: '#EAB308' },
 
-  blockProfileBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', gap: 4, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EF4444', borderRadius: 8, height: 26, paddingHorizontal: 10 },
+  blockProfileBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', alignSelf: 'center', gap: 4, backgroundColor: theme.surfaceAlt, borderWidth: 1, borderColor: '#EF4444', borderRadius: 8, height: 26, paddingHorizontal: 10 },
   blockProfileBtnText: { color: '#EF4444', fontWeight: '700', fontSize: 10 },
-  unblockProfileBtn: { backgroundColor: '#27272A', borderColor: '#52525B' },
-  unblockProfileBtnText: { color: '#FAFAFA' },
+  unblockProfileBtn: { backgroundColor: theme.surfaceAlt, borderColor: theme.textSubtle },
+  unblockProfileBtnText: { color: theme.text },
 
-  chatOpenBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, backgroundColor: '#EAB308', borderRadius: 12, height: 44, paddingHorizontal: 16 },
-  chatOpenBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
-
-  postsSectionHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 6, borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 14 },
-  sectionTitle: { color: '#FAFAFA', fontSize: 15, fontWeight: '700' },
+  postsSectionHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 6, borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 14 },
+  sectionTitle: { color: theme.text, fontSize: 15, fontWeight: '700' },
   postsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 2 },
-  postThumbnailBox: { width: (width * 0.85) / 3 - 4, height: (width * 0.85) / 3 - 4, backgroundColor: '#121215', borderRadius: 8, overflow: 'hidden' },
+  postThumbnailBox: { width: (width * 0.85) / 3 - 4, height: (width * 0.85) / 3 - 4, backgroundColor: theme.surface, borderRadius: 8, overflow: 'hidden' },
   postThumbnailImage: { width: '100%', height: '100%' },
   videoBadgeOverlay: { position: 'absolute', top: 6, right: 6, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 10, width: 22, height: 22, justifyContent: 'center', alignItems: 'center' },
-  emptyPostsBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30, backgroundColor: '#18181B', borderRadius: 14, borderWidth: 1, borderColor: '#27272A' },
-  emptyPostsText: { color: '#71717A', fontSize: 12, marginTop: 6 },
+  emptyPostsBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30, backgroundColor: theme.surfaceAlt, borderRadius: 14, borderWidth: 1, borderColor: theme.border },
+  emptyPostsText: { color: theme.textSubtle, fontSize: 12, marginTop: 6 },
 
-  privateAccountBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40, paddingHorizontal: 20, backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', marginTop: 10 },
-  privateAccountTitle: { color: '#FAFAFA', fontSize: 16, fontWeight: 'bold', marginBottom: 6 },
-  privateAccountText: { color: '#A1A1AA', fontSize: 12, textAlign: 'center', lineHeight: 18 },
+  privateAccountBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40, paddingHorizontal: 20, backgroundColor: theme.surfaceAlt, borderRadius: 16, borderWidth: 1, borderColor: theme.border, marginTop: 10 },
+  privateAccountTitle: { color: theme.text, fontSize: 16, fontWeight: 'bold', marginBottom: 6 },
+  privateAccountText: { color: theme.textMuted, fontSize: 12, textAlign: 'center', lineHeight: 18 },
 
-  chatHeaderAvatarBox: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
-  chatHeaderTitle: { color: '#FAFAFA', fontSize: 15, fontWeight: '700' },
-  chatHeaderSubTitle: { color: '#EAB308', fontSize: 11, fontWeight: '600' },
-  chatBubbleRow: { marginBottom: 10, flexDirection: 'row' },
-  chatBubbleRowLeft: { justifyContent: 'flex-start' },
-  chatBubbleRowRight: { justifyContent: 'flex-end' },
-  chatBubbleMsg: { maxWidth: '75%', padding: 12, borderRadius: 16, borderWidth: 1 },
-  chatBubbleOther: { backgroundColor: '#18181B', borderColor: '#27272A' },
-  chatBubbleMe: { backgroundColor: '#EAB308', borderColor: '#EAB308' },
-  chatBubbleText: { color: '#FAFAFA', fontSize: 13, fontWeight: '500' },
-  chatBubbleTime: { color: '#A1A1AA', fontSize: 9, marginTop: 4, alignSelf: 'flex-end' },
-  chatInputRow: { flexDirection: 'row', paddingTop: 12, borderTopWidth: 1, borderTopColor: '#27272A', gap: 8, alignItems: 'center' },
-  chatInputField: { flex: 1, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 20, height: 42, color: '#FAFAFA', paddingHorizontal: 14, fontSize: 13 },
-  chatSendBtn: { backgroundColor: '#EAB308', width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center' },
-
-  postCard: { backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 20, padding: 16, marginBottom: 16 },
+  postCard: { backgroundColor: theme.surface, borderWidth: 1, borderColor: theme.border, borderRadius: 20, padding: 16, marginBottom: 16 },
   postHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
-  postAvatarBox: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
+  postAvatarBox: { width: 42, height: 42, borderRadius: 21, backgroundColor: theme.surfaceAlt, borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
   avatarImg: { width: '100%', height: '100%' },
-  avatarPlaceholder: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center' },
+  avatarPlaceholder: { width: 42, height: 42, borderRadius: 21, backgroundColor: theme.surfaceAlt, borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center' },
   avatarPlaceholderText: { color: '#EAB308', fontSize: 16, fontWeight: 'bold' },
   postUserInfo: { marginLeft: 10, flex: 1 },
-  postUserName: { color: '#FAFAFA', fontSize: 14, fontWeight: '700' },
-  sportBadge: { backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A', paddingHorizontal: 10, paddingVertical: 3, borderRadius: 8, marginRight: 8 },
+  postUserName: { color: theme.text, fontSize: 14, fontWeight: '700' },
+  sportBadge: { backgroundColor: theme.surfaceAlt, borderWidth: 1, borderColor: theme.border, paddingHorizontal: 10, paddingVertical: 3, borderRadius: 8, marginRight: 8 },
   sportBadgeText: { color: '#EAB308', fontSize: 10, fontWeight: '700' },
-  postTime: { color: '#71717A', fontSize: 11 },
-  postText: { color: '#E4E4E7', fontSize: 14, marginBottom: 12, lineHeight: 20 },
-  postImageBox: { height: 320, backgroundColor: '#09090B', borderRadius: 14, overflow: 'hidden', marginBottom: 12, borderWidth: 1, borderColor: '#27272A', position: 'relative' },
+  postTime: { color: theme.textSubtle, fontSize: 11 },
+  postText: { color: theme.textSecondary, fontSize: 14, marginBottom: 12, lineHeight: 20 },
+  postImageBox: { height: 320, backgroundColor: theme.surfaceDeep, borderRadius: 14, overflow: 'hidden', marginBottom: 12, borderWidth: 1, borderColor: theme.border, position: 'relative' },
   postImageContent: { width: '100%', height: '100%' },
-  postActionsRow: { flexDirection: 'row', gap: 20, borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 12 },
+  postActionsRow: { flexDirection: 'row', gap: 20, borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 12 },
   actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  actionText: { color: '#A1A1AA', fontSize: 13, fontWeight: '600' },
+  actionText: { color: theme.textMuted, fontSize: 13, fontWeight: '600' },
 
-  commentsModalContent: { backgroundColor: '#121215', borderRadius: 28, padding: 20, borderWidth: 1, borderColor: '#27272A', width: '100%', maxWidth: 400, height: '75%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 10 },
+  commentsModalContent: { backgroundColor: theme.surface, borderRadius: 28, padding: 20, borderWidth: 1, borderColor: theme.border, width: '100%', maxWidth: 400, height: '75%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 10 },
   commentRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10 },
   commentAvatar: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
-  commentAvatarPlaceholder: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: '#EAB308', backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center' },
+  commentAvatarPlaceholder: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: '#EAB308', backgroundColor: theme.surfaceAlt, justifyContent: 'center', alignItems: 'center' },
+  commentBubbleBox: { flex: 1, marginLeft: 10, backgroundColor: theme.surfaceAlt, padding: 10, borderRadius: 12 },
   commentUser: { color: '#EAB308', fontSize: 12, fontWeight: '700' },
-  commentText: { color: '#D4D4D8', fontSize: 13 },
-  commentTimeText: { color: '#71717A', fontSize: 10 },
-  commentInputRow: { flexDirection: 'row', gap: 8, alignItems: 'center', borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 12, marginTop: 4 },
-  commentInput: { flex: 1, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 12, height: 42, color: '#FAFAFA', paddingHorizontal: 12, fontSize: 13 },
+  commentText: { color: theme.textSecondary, fontSize: 13 },
+  commentTimeText: { color: theme.textSubtle, fontSize: 10 },
+  commentInputRow: { flexDirection: 'row', gap: 8, alignItems: 'center', borderTopWidth: 1, borderTopColor: theme.border, paddingTop: 12, marginTop: 4 },
+  commentInput: { flex: 1, backgroundColor: theme.surfaceDeep, borderWidth: 1, borderColor: theme.border, borderRadius: 12, height: 42, color: theme.text, paddingHorizontal: 12, fontSize: 13 },
   commentSendBtn: { backgroundColor: '#EAB308', width: 38, height: 42, borderRadius: 12, justifyContent: 'center', alignItems: 'center' }
 });
