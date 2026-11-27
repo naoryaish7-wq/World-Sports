@@ -1131,7 +1131,7 @@ export default function HomeScreen() {
   };
 
   const handleSendMessage = async () => {
-    if (!messageInput.trim() || !currentUserId || !chatTargetUser) return;
+    if (!messageInput.trim() || !currentUserId || !chatTargetUser?.uid) return;
 
     if (isBlockedBidirectional(chatTargetUser.uid, chatTargetUser.name)) {
       Alert.alert('Messaging Blocked', 'You cannot send messages to this user because one of you blocked the other.');
@@ -1146,14 +1146,16 @@ export default function HomeScreen() {
       const chatDocRef = doc(db, 'chats', chatId);
       await setDoc(chatDocRef, {
         participants: [currentUserId, chatTargetUser.uid],
-        lastUpdated: new Date()
+        lastMessageText: textToSend,
+        lastUpdated: serverTimestamp()
       }, { merge: true });
 
       const messagesRef = collection(db, 'chats', chatId, 'messages');
       await addDoc(messagesRef, {
         senderId: currentUserId,
+        senderName: liveName,
         text: textToSend,
-        createdAt: new Date()
+        createdAt: serverTimestamp()
       });
 
       const msgContent = `${liveName} sent you a message: "${textToSend.substring(0, 25)}..." 💬`;
@@ -2845,9 +2847,28 @@ export default function HomeScreen() {
                   </View>
                 </View>
               </View>
-              <TouchableOpacity onPress={() => setChatModalVisible(false)} activeOpacity={0.8}>
-                <Ionicons name="close" size={24} color="#FAFAFA" />
-              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <TouchableOpacity
+                  onPress={() => {
+                    setChatModalVisible(false);
+                    router.push('/(tabs)/messages');
+                  }}
+                  activeOpacity={0.8}
+                  style={{
+                    backgroundColor: '#18181B',
+                    borderWidth: 1,
+                    borderColor: '#EAB308',
+                    paddingHorizontal: 10,
+                    paddingVertical: 5,
+                    borderRadius: 10,
+                  }}
+                >
+                  <Text style={{ color: '#EAB308', fontSize: 11, fontWeight: '800' }}>Open Hub</Text>
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setChatModalVisible(false)} activeOpacity={0.8}>
+                  <Ionicons name="close" size={24} color="#FAFAFA" />
+                </TouchableOpacity>
+              </View>
             </View>
 
             {isBlockedBidirectional(chatTargetUser?.uid, chatTargetUser?.name) ? (

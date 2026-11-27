@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, Alert, TextInput, Image, Dimensions, TouchableWithoutFeedback, Platform, Switch, Linking } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { doc, collection, onSnapshot, updateDoc, setDoc, getDoc, arrayUnion, arrayRemove, query, where, getDocs, addDoc, orderBy } from 'firebase/firestore';
+import { doc, collection, onSnapshot, updateDoc, setDoc, getDoc, arrayUnion, arrayRemove, query, where, getDocs, addDoc, orderBy, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { router } from 'expo-router';
@@ -63,7 +63,9 @@ type PostItem = {
 type ChatMessage = {
   id: string;
   senderId: string;
+  senderName?: string;
   text: string;
+  time?: string;
   createdAt?: any;
 };
 
@@ -474,20 +476,32 @@ export default function ProfileScreen() {
 
     const chatId = [currentUser.uid, chatTargetUser.uid].sort().join('_');
     const textToSend = messageInput.trim();
+    const activeSenderName = currentUser.name || 'Player';
     setMessageInput('');
 
     try {
       const chatDocRef = doc(db, 'chats', chatId);
       await setDoc(chatDocRef, {
         participants: [currentUser.uid, chatTargetUser.uid],
-        lastUpdated: new Date()
+        lastMessageText: textToSend,
+        lastUpdated: serverTimestamp()
       }, { merge: true });
 
       const messagesRef = collection(db, 'chats', chatId, 'messages');
       await addDoc(messagesRef, {
         senderId: currentUser.uid,
+        senderName: activeSenderName,
         text: textToSend,
-        createdAt: new Date()
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+        createdAt: serverTimestamp()
+      });
+
+      await addDoc(collection(db, 'users', chatTargetUser.uid, 'notifications'), {
+        senderUid: currentUser.uid,
+        type: 'message',
+        message: `${activeSenderName} sent you a message: "${textToSend.substring(0, 30)}" 💬`,
+        createdAt: serverTimestamp(),
+        status: 'unread'
       });
     } catch (e) {
       console.error('Error sending message:', e);
@@ -889,7 +903,7 @@ export default function ProfileScreen() {
           type: 'follow_request',
           message: `${currentUser.name} requested to follow you.`,
           status: 'pending',
-          createdAt: new Date()
+          createdAt: serverTimestamp()
         });
 
         setTargetProfileUser({
@@ -958,7 +972,7 @@ export default function ProfileScreen() {
       user: currentUser.name,
       avatarUrl: currentUser.avatar || '',
       text: modalCommentInput.trim(),
-      createdAt: new Date()
+      createdAt: serverTimestamp()
     };
 
     try {
@@ -1007,7 +1021,7 @@ export default function ProfileScreen() {
         
         <View style={styles.headerRow}>
           <View>
-            <Text style={styles.homeCategory}>MY PROFILE</Text>
+            <Text style={styles.homeCategory}>My Profile</Text>
             <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
           </View>
 
@@ -1855,7 +1869,7 @@ export default function ProfileScreen() {
                       <View key={item.id} style={[styles.chatBubbleRow, isMe ? styles.chatBubbleRowRight : styles.chatBubbleRowLeft]}>
                         <View style={[styles.chatBubbleMsg, isMe ? styles.chatBubbleMe : styles.chatBubbleOther]}>
                           <Text style={[styles.chatBubbleText, isMe && { color: '#09090B' }]}>{item.text}</Text>
-                          <Text style={[styles.chatBubbleTime, isMe && { color: '#3F3F46' }]}>{getTimeAgo(item.createdAt)}</Text>
+                          <Text style={[styles.chatBubbleTime, isMe && { color: '#3F3F46' }]}>{item.time || getTimeAgo(item.createdAt)}</Text>
                         </View>
                       </View>
                     );

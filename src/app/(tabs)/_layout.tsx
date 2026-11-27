@@ -75,6 +75,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="MessagesScreen"
+        options={{
+          title: 'Messages',
+          tabBarIcon: (props: any) => (
+            <Ionicons name="chatbubble" size={props.size} color={props.color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="discover"
         options={{
           title: 'Discover',

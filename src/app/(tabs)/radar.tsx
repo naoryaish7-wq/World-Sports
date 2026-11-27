@@ -4,21 +4,18 @@ import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import MapView, { Marker, PROVIDER_DEFAULT, MapPressEvent } from 'react-native-maps';
 import * as Location from 'expo-location';
-import { collection, onSnapshot, doc, getDoc, addDoc, setDoc, deleteDoc, arrayUnion, arrayRemove, query, orderBy, updateDoc, where, getDocs, serverTimestamp } from 'firebase/firestore';
+import { collection, onSnapshot, doc, addDoc, setDoc, deleteDoc, arrayUnion, arrayRemove, query, orderBy, updateDoc, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { registerForPushNotificationsAsync } from '../../services/notificationService';
 
 const { width } = Dimensions.get('window');
 
-// אם יש לך דומיין מוגדר עם Universal Links (apple-app-site-association), הזן אותו כאן (למשל 'https://worldsports.app')
-// כל עוד אין דומיין, השאר מחרוזת ריקה '' והמערכת תשתמש אוטומטית ב-worldsports://
-const UNIVERSAL_LINK_DOMAIN = '';
-
 type ChatMessage = {
   id: string;
   senderId?: string;
   sender?: string;
+  senderName?: string;
   text: string;
   time?: string;
   createdAt?: any;
@@ -74,6 +71,8 @@ type PostItem = {
   createdAt?: any;
 };
 
+type MatchModeType = 'knockout' | 'winner_stays' | 'round_robin';
+
 type TournamentMatch = {
   id: number;
   round: string;
@@ -101,8 +100,11 @@ type GameItem = {
   players: any[];
   pendingPlayers?: any[];
   accessMode?: 'public' | 'private' | 'friends';
+  inviteCode?: string;
+  onlyCreatorCanSee?: boolean;
   chat: ChatMessage[];
   teamsResult?: Array<{ id: number; players: any[] }>;
+  matchMode?: MatchModeType;
   tournamentMatches?: TournamentMatch[];
   playersPerTeam?: number;
   createdAt?: any;
@@ -117,6 +119,28 @@ const ALL_AVAILABLE_SPORTS = [
   'Cycling',
   'Swimming'
 ];
+
+const normalizeCity = (rawCity?: string): string => {
+  const value = (rawCity || '').trim();
+  if (!value) return 'Netanya';
+  const lower = value.toLowerCase();
+  if (value.includes('נתניה') || lower.includes('netanya')) return 'Netanya';
+  if (value.includes('תל אביב') || lower.includes('tel aviv') || lower.includes('tel-aviv')) return 'Tel Aviv';
+  if (value.includes('חיפה') || lower.includes('haifa')) return 'Haifa';
+  if (value.includes('ראשון לציון') || lower.includes('rishon lezion') || lower.includes('rishon')) return 'Rishon LeZion';
+  if (value.includes('ירושלים') || lower.includes('jerusalem')) return 'Jerusalem';
+  if (value.includes('באר שבע') || lower.includes('beer sheva') || lower.includes('beersheva')) return 'Beer Sheva';
+  return value.charAt(0).toUpperCase() + value.slice(1);
+};
+
+const generateInviteCode = () => {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) {
+    code += chars.charAt(Math.floor(Math.random() * chars.length));
+  }
+  return code;
+};
 
 const getSportIconAndColor = (sportName: string) => {
   const sport = (sportName || '').toLowerCase().trim();
@@ -183,7 +207,7 @@ const resolvePlayerInfo = (playerEntry: any, allUsersList: UserProfile[]) => {
     const uName = (u.name || '').toLowerCase();
     const uUserName = (u.userName || '').toLowerCase();
     const uDisplay = (u.displayName || '').toLowerCase();
-    
+
     return (
       (uUid && cleanKey.includes(uUid)) ||
       (uName && cleanKey === uName) ||
@@ -281,7 +305,7 @@ const getTimeAgo = (timestamp: any) => {
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     if (isNaN(date.getTime())) return 'Just now';
     const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
-    
+
     let interval = seconds / 31536000;
     if (interval > 1) return `${Math.floor(interval)}y ago`;
     interval = seconds / 2592000;
@@ -303,7 +327,7 @@ const getRemainingTime = (timestamp: any) => {
   try {
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     if (isNaN(date.getTime())) return '24h left';
-    
+
     const expiryTime = date.getTime() + 24 * 60 * 60 * 1000;
     const remainingMs = expiryTime - Date.now();
 
@@ -341,6 +365,11 @@ export default function RadarScreen() {
   const [selectedSportFilters, setSelectedSportFilters] = useState<string[]>(['All']);
   const [sportFilterModalVisible, setSportFilterModalVisible] = useState(false);
 
+  const [gameActionMenuVisible, setGameActionMenuVisible] = useState(false);
+  const [joinByCodeModalVisible, setJoinByCodeModalVisible] = useState(false);
+  const [codeInput, setCodeInput] = useState('');
+  const [joiningByCode, setJoiningByCode] = useState(false);
+
   const [createModalVisible, setCreateModalVisible] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newSport, setNewSport] = useState('');
@@ -349,16 +378,18 @@ export default function RadarScreen() {
   const [newMaxPlayers, setNewMaxPlayers] = useState('10');
   const [newDesc, setNewDesc] = useState('');
   const [newAccessMode, setNewAccessMode] = useState<'public' | 'private' | 'friends'>('public');
-  
+
   const [pickedLocation, setPickedLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [isPickingLocation, setIsPickingLocation] = useState(false);
 
   const [selectedGame, setSelectedGame] = useState<GameItem | null>(null);
+  const [studioGameId, setStudioGameId] = useState<string | null>(null);
+  const [drawStudioModalVisible, setDrawStudioModalVisible] = useState(false);
+  const [selectedMatchMode, setSelectedMatchMode] = useState<MatchModeType>('knockout');
   const [chatMessage, setChatMessage] = useState('');
   const chatScrollRef = useRef<any>(null);
 
   const [drawPlayersPerTeam, setDrawPlayersPerTeam] = useState('5');
-  const [activeManagerTab, setActiveManagerTab] = useState<'draw' | 'tournament'>('draw');
 
   const [selectedUserModalId, setSelectedUserModalId] = useState<string | null>(null);
   const [targetProfileUser, setTargetProfileUser] = useState<UserProfile | null>(null);
@@ -384,6 +415,14 @@ export default function RadarScreen() {
     longitudeDelta: 0.05,
   });
 
+  const studioGame = gamesList.find(g => g.id === studioGameId) || selectedGame || null;
+
+  useEffect(() => {
+    if (studioGame?.matchMode) {
+      setSelectedMatchMode(studioGame.matchMode);
+    }
+  }, [studioGame?.id, studioGame?.matchMode]);
+
   const isBlockedBidirectional = useCallback((otherUserId?: string, otherUserName?: string): boolean => {
     const cleanName = (otherUserName || '').trim().toLowerCase();
     const resolvedOther = allUsersList.find(
@@ -400,94 +439,6 @@ export default function RadarScreen() {
     return iBlockedThem || theyBlockedMe;
   }, [allUsersList, blockedUsersList, currentUserId]);
 
-  const buildGameInviteLink = (gameId: string) => {
-    const cleanDomain = UNIVERSAL_LINK_DOMAIN.trim().replace(/\/+$/, '');
-    if (cleanDomain) {
-      return `${cleanDomain}/game/${gameId}`;
-    }
-    return `worldsports://game/${gameId}`;
-  };
-
-  useEffect(() => {
-    const extractGameIdFromUrl = (rawUrl?: string | null) => {
-      if (!rawUrl) return null;
-      const match = rawUrl.match(/game\/([^/?#&]+)/i);
-      return match ? match[1] : null;
-    };
-
-    const resolveActivePlayerName = async () => {
-      if (userName && userName !== 'Player') return userName;
-      try {
-        const savedEmail = await AsyncStorage.getItem('@saved_user_email');
-        if (savedEmail) {
-          const uid = savedEmail.toLowerCase().replace(/[^a-z0-9]/g, '_');
-          const snap = await getDoc(doc(db, 'users', uid));
-          if (snap.exists()) {
-            const d = snap.data() as UserProfile;
-            return d.name || d.userName || d.displayName || savedEmail.split('@')[0] || 'Player';
-          }
-          return savedEmail.split('@')[0] || 'Player';
-        }
-      } catch (e) {
-        console.error('Error resolving active player name for deep link:', e);
-      }
-      return userName || 'Player';
-    };
-
-    const handleDeepLink = async (event: { url: string }) => {
-      const gameId = extractGameIdFromUrl(event.url);
-      if (!gameId) return;
-
-      try {
-        const gameRef = doc(db, 'games', gameId);
-        const gameSnap = await getDoc(gameRef);
-        if (!gameSnap.exists()) {
-          Alert.alert('Game Not Found', 'This game link may have expired or been removed.');
-          return;
-        }
-
-        let gameData: GameItem = { id: gameSnap.id, ...(gameSnap.data() as Omit<GameItem, 'id'>) };
-        const activePlayerName = await resolveActivePlayerName();
-
-        if (gameData.accessMode === 'friends' && activePlayerName) {
-          const currentPlayers = gameData.players || [];
-          const isAlready = currentPlayers.some(
-            p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() === activePlayerName.trim().toLowerCase()
-          );
-
-          if (!isAlready && currentPlayers.length < gameData.maxPlayers) {
-            await updateDoc(gameRef, {
-              players: arrayUnion(activePlayerName)
-            });
-            gameData = {
-              ...gameData,
-              players: [...currentPlayers, activePlayerName]
-            };
-            Alert.alert('Joined via Friend Link 🔗', `You joined "${gameData.title}" automatically!`);
-          }
-        }
-
-        setSelectedGame(gameData);
-        if (gameData.latitude && gameData.longitude) {
-          setMapRegion(prev => ({
-            ...prev,
-            latitude: gameData.latitude,
-            longitude: gameData.longitude,
-          }));
-        }
-      } catch (e) {
-        console.error('Error opening shared game link:', e);
-      }
-    };
-
-    Linking.getInitialURL().then((url) => {
-      if (url) handleDeepLink({ url });
-    });
-
-    const sub = Linking.addEventListener('url', handleDeepLink);
-    return () => sub.remove();
-  }, [userName, allUsersList]);
-
   useEffect(() => {
     (async () => {
       try {
@@ -500,11 +451,7 @@ export default function RadarScreen() {
 
           let reverseGeocode = await Location.reverseGeocodeAsync(coords);
           if (reverseGeocode.length > 0) {
-            let cityFound = reverseGeocode[0].city || reverseGeocode[0].subregion || 'Netanya';
-            if (cityFound.includes('נתניה') || cityFound.includes('Netanya')) cityFound = 'Netanya';
-            else if (cityFound.includes('תל אביב') || cityFound.includes('Tel Aviv')) cityFound = 'Tel Aviv';
-            else if (cityFound.includes('חיפה') || cityFound.includes('Haifa')) cityFound = 'Haifa';
-            else if (cityFound.includes('ראשון לציון') || cityFound.includes('Rishon LeZion')) cityFound = 'Rishon LeZion';
+            const cityFound = normalizeCity(reverseGeocode[0].city || reverseGeocode[0].subregion || 'Netanya');
             setAutoCity(cityFound);
           }
 
@@ -530,14 +477,14 @@ export default function RadarScreen() {
         if (savedEmail) {
           const userId = savedEmail.toLowerCase().replace(/[^a-z0-9]/g, '_');
           setCurrentUserId(userId);
-          
+
           registerForPushNotificationsAsync(userId);
 
           const unsubscribeUserDoc = onSnapshot(doc(db, 'users', userId), async (userSnap) => {
             if (userSnap.exists()) {
               const data = userSnap.data() as UserProfile;
               setCurrentUser({ ...data, uid: userSnap.id });
-              
+
               if (data.sports) {
                 setUserSports(data.sports);
                 setNewSport(data.sports[0]);
@@ -639,8 +586,8 @@ export default function RadarScreen() {
       return;
     }
     const tName = (targetProfileUser.name || targetProfileUser.userName || targetProfileUser.displayName || '').trim().toLowerCase();
-    const filtered = allPosts.filter(p => 
-      p.userId === targetProfileUser.uid || 
+    const filtered = allPosts.filter(p =>
+      p.userId === targetProfileUser.uid ||
       (p.userName && p.userName.trim().toLowerCase() === tName) ||
       (p.authorName && p.authorName.trim().toLowerCase() === tName)
     );
@@ -777,28 +724,24 @@ export default function RadarScreen() {
     Linking.openURL(url);
   };
 
-  const handleShareGame = async (
-    gameId: string,
+  const handleShareGameCode = async (
     gameTitle: string,
     gameSport: string,
     venueName: string,
     city: string,
     time: string,
-    creatorName: string
+    creatorName: string,
+    inviteCode?: string
   ) => {
-    const gameDeepLink = buildGameInviteLink(gameId);
+    const codePart = inviteCode ? `🔑 Game Code: ${inviteCode}` : '🔑 Game Code unavailable';
     const messageBody =
       `⚽ ${gameTitle} (${gameSport})\n` +
       `📍 ${venueName}, ${city} | ⏰ ${time}\n` +
-      `👑 ${creatorName}\n\n` +
-      `${gameDeepLink}`;
+      `👑 ${creatorName}\n` +
+      `${codePart}`;
 
     try {
-      await Share.share(
-        Platform.OS === 'ios'
-          ? { message: messageBody, url: gameDeepLink }
-          : { message: messageBody }
-      );
+      await Share.share({ message: messageBody });
     } catch (error: any) {
       Alert.alert('Error', error.message);
     }
@@ -826,6 +769,68 @@ export default function RadarScreen() {
     }
   };
 
+  const handleJoinByCode = async () => {
+    const cleanCode = codeInput.trim().toUpperCase();
+    if (!cleanCode) {
+      Alert.alert('Missing Code', 'Please enter a game code.');
+      return;
+    }
+
+    setJoiningByCode(true);
+    try {
+      const q = query(collection(db, 'games'), where('inviteCode', '==', cleanCode));
+      const snap = await getDocs(q);
+
+      if (snap.empty) {
+        Alert.alert('Invalid Code ❌', 'No active game found with this code.');
+        setJoiningByCode(false);
+        return;
+      }
+
+      const gameDoc = snap.docs[0];
+      let gameData: GameItem = { id: gameDoc.id, ...(gameDoc.data() as Omit<GameItem, 'id'>) };
+      const activeName = userName || 'Player';
+      const currentPlayers = gameData.players || [];
+
+      const isAlreadyJoined = currentPlayers.some(
+        p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() === activeName.trim().toLowerCase()
+      );
+
+      if (!isAlreadyJoined) {
+        if (currentPlayers.length >= gameData.maxPlayers) {
+          Alert.alert('Game Full 🔴', 'This game has reached maximum capacity.');
+          setJoiningByCode(false);
+          return;
+        }
+
+        await updateDoc(doc(db, 'games', gameData.id), {
+          players: arrayUnion(activeName)
+        });
+        gameData = {
+          ...gameData,
+          players: [...currentPlayers, activeName]
+        };
+      }
+
+      setCodeInput('');
+      setJoinByCodeModalVisible(false);
+      setSelectedGame(gameData);
+      if (gameData.latitude && gameData.longitude) {
+        setMapRegion(prev => ({
+          ...prev,
+          latitude: gameData.latitude,
+          longitude: gameData.longitude,
+        }));
+      }
+      Alert.alert('Joined Game 🔑', `You're in "${gameData.title}"!`);
+    } catch (e) {
+      console.error('Error joining by code:', e);
+      Alert.alert('Error', 'Could not join game by code.');
+    } finally {
+      setJoiningByCode(false);
+    }
+  };
+
   const openUserProfileById = (userId?: string, playerName?: string) => {
     const cleanPlayerName = (playerName || '').trim().toLowerCase();
     const myCurrentName = (userName || '').trim().toLowerCase();
@@ -834,10 +839,12 @@ export default function RadarScreen() {
       (userId && currentUserId && userId === currentUserId) ||
       (cleanPlayerName && myCurrentName && cleanPlayerName === myCurrentName)
     ) {
-      return; 
+      return;
     }
 
     setSelectedGame(null);
+    setStudioGameId(null);
+    setDrawStudioModalVisible(false);
     setSelectedPostModal(null);
     setCommentsModalPost(null);
     setTargetActiveModalList(null);
@@ -990,25 +997,29 @@ export default function RadarScreen() {
 
     const chatId = [currentUserId, chatTargetUser.uid].sort().join('_');
     const textToSend = messageInput.trim();
+    const activeSenderName = currentUser?.name || currentUser?.userName || currentUser?.displayName || userName || 'Player';
     setMessageInput('');
 
     try {
       const chatDocRef = doc(db, 'chats', chatId);
       await setDoc(chatDocRef, {
         participants: [currentUserId, chatTargetUser.uid],
+        lastMessageText: textToSend,
         lastUpdated: serverTimestamp()
       }, { merge: true });
 
       const messagesRef = collection(db, 'chats', chatId, 'messages');
       await addDoc(messagesRef, {
         senderId: currentUserId,
+        senderName: activeSenderName,
         text: textToSend,
+        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         createdAt: serverTimestamp()
       });
       await addDoc(collection(db, 'users', chatTargetUser.uid, 'notifications'), {
         senderUid: currentUserId,
         type: 'message',
-        message: `${userName || 'Player'} sent you a message: "${textToSend.substring(0, 25)}" 💬`,
+        message: `${activeSenderName} sent you a message: "${textToSend.substring(0, 30)}" 💬`,
         createdAt: serverTimestamp(),
         status: 'unread'
       });
@@ -1083,12 +1094,12 @@ export default function RadarScreen() {
   };
 
   const handleRunAutoDraw = async () => {
-    if (!selectedGame) return;
-    if (!supportsTournamentDraw(selectedGame.sport)) {
+    if (!studioGame) return;
+    if (!supportsTournamentDraw(studioGame.sport)) {
       Alert.alert('Not Available', 'Team draw is available only for football, basketball, and tennis.');
       return;
     }
-    const playersList = selectedGame.players || [];
+    const playersList = studioGame.players || [];
     const totalPlayers = playersList.length;
 
     if (totalPlayers === 0) {
@@ -1120,34 +1131,146 @@ export default function RadarScreen() {
     }
 
     try {
-      const gameRef = doc(db, 'games', selectedGame.id);
+      const gameRef = doc(db, 'games', studioGame.id);
       await updateDoc(gameRef, {
         teamsResult: newTeams,
-        playersPerTeam: effectiveTeamSize
+        playersPerTeam: effectiveTeamSize,
+        tournamentMatches: []
       });
-      Alert.alert('Success! 🎲', `Dynamic draw completed for ${totalPlayers} active players!`);
+      Alert.alert('Teams Shuffled! 🎲', `Created ${newTeams.length} teams from ${totalPlayers} players.`);
     } catch (e) {
       console.error('Error saving team draw:', e);
       Alert.alert('Error', 'Could not save team draw results.');
     }
   };
 
-  const handleGenerateTournamentBracket = async () => {
-    if (!selectedGame) return;
-    if (!supportsTournamentDraw(selectedGame.sport)) {
-      Alert.alert('Not Available', 'Tournament fixtures are available only for football, basketball, and tennis.');
+  const buildMatchesForMode = (
+    teams: Array<{ id: number; players: any[] }>,
+    mode: MatchModeType
+  ): TournamentMatch[] => {
+    const teamNames = teams.map(t => `Team #${t.id}`);
+    const matches: TournamentMatch[] = [];
+    let matchIdCounter = 1;
+
+    if (mode === 'winner_stays') {
+      const firstA = teamNames[0];
+      const firstB = teamNames[1];
+      matches.push({
+        id: matchIdCounter++,
+        round: 'Winner Stays • Match 1',
+        teamA: firstA,
+        teamB: firstB,
+        status: 'live'
+      });
+
+      const bench = teamNames.slice(2);
+      bench.forEach((benchTeam, idx) => {
+        matches.push({
+          id: matchIdCounter++,
+          round: `Winner Stays • Queue #${idx + 1}`,
+          teamA: 'Current Winner',
+          teamB: benchTeam,
+          status: 'upcoming'
+        });
+      });
+      return matches;
+    }
+
+    if (mode === 'round_robin') {
+      for (let i = 0; i < teamNames.length; i++) {
+        for (let j = i + 1; j < teamNames.length; j++) {
+          matches.push({
+            id: matchIdCounter++,
+            round: `League • Match #${matchIdCounter - 1}`,
+            teamA: teamNames[i],
+            teamB: teamNames[j],
+            status: 'upcoming'
+          });
+        }
+      }
+      return matches;
+    }
+
+    let currentRoundTeams = [...teamNames];
+    let roundName =
+      currentRoundTeams.length > 4
+        ? 'Quarter-Finals'
+        : currentRoundTeams.length > 2
+        ? 'Semi-Finals'
+        : 'Grand Final';
+
+    if (currentRoundTeams.length % 2 !== 0) {
+      currentRoundTeams.push('Bye');
+    }
+
+    let nextRoundTeams: string[] = [];
+    for (let i = 0; i < currentRoundTeams.length; i += 2) {
+      const teamA = currentRoundTeams[i];
+      const teamB = currentRoundTeams[i + 1];
+
+      matches.push({
+        id: matchIdCounter++,
+        round: roundName,
+        teamA,
+        teamB,
+        status: 'upcoming'
+      });
+
+      if (teamB === 'Bye') {
+        nextRoundTeams.push(teamA);
+      } else {
+        nextRoundTeams.push(`Winner of #${matchIdCounter - 1}`);
+      }
+    }
+
+    if (nextRoundTeams.length > 1) {
+      let subRoundName = nextRoundTeams.length > 2 ? 'Semi-Finals' : 'Grand Final';
+      let finalRoundTeams: string[] = [];
+
+      for (let i = 0; i < nextRoundTeams.length; i += 2) {
+        if (i + 1 < nextRoundTeams.length) {
+          matches.push({
+            id: matchIdCounter++,
+            round: subRoundName,
+            teamA: nextRoundTeams[i],
+            teamB: nextRoundTeams[i + 1],
+            status: 'upcoming'
+          });
+          finalRoundTeams.push(`Winner of #${matchIdCounter - 1}`);
+        }
+      }
+
+      if (finalRoundTeams.length >= 2) {
+        matches.push({
+          id: matchIdCounter++,
+          round: 'Grand Final',
+          teamA: finalRoundTeams[0],
+          teamB: finalRoundTeams[1],
+          status: 'upcoming'
+        });
+      }
+    }
+
+    return matches;
+  };
+
+  const handleGenerateTournamentBracket = async (modeOverride?: MatchModeType) => {
+    if (!studioGame) return;
+    if (!supportsTournamentDraw(studioGame.sport)) {
+      Alert.alert('Not Available', 'Matchups draw is available only for football, basketball, and tennis.');
       return;
     }
-    
-    let teams = selectedGame.teamsResult;
-    const playersList = selectedGame.players || [];
+
+    const activeMode = modeOverride || selectedMatchMode;
+    let teams = studioGame.teamsResult;
+    const playersList = studioGame.players || [];
 
     if (!teams || teams.length < 2) {
       if (playersList.length < 2) {
-        Alert.alert('Notice ⚠️', 'You need at least 2 players registered in the game to build a tournament bracket.');
+        Alert.alert('Notice ⚠️', 'You need at least 2 players registered in the game to draw matchups.');
         return;
       }
-      
+
       const totalPlayers = playersList.length;
       const effectiveTeamSize = totalPlayers < 2 ? 1 : Math.max(1, Math.floor(totalPlayers / 2));
       const shuffled = [...playersList];
@@ -1164,82 +1287,75 @@ export default function RadarScreen() {
     }
 
     if (teams.length < 2) {
-      Alert.alert('Error', 'Need at least 2 teams or participants to generate a tournament bracket.');
+      Alert.alert('Error', 'Need at least 2 teams to draw matchups.');
       return;
     }
 
-    const matches: TournamentMatch[] = [];
-    let matchIdCounter = 1;
-
-    let currentRoundTeams = teams.map(t => {
-      const names = (t.players || []).map(p => resolvePlayerInfo(p, allUsersList).name).join(', ');
-      return `Team #${t.id} (${names})`;
-    });
-
-    let roundName = currentRoundTeams.length > 4 ? 'Quarter-Finals 🏟️' : currentRoundTeams.length > 2 ? 'Semi-Finals ⚔️' : 'Grand Final 🏆';
-
-    if (currentRoundTeams.length % 2 !== 0) {
-      currentRoundTeams.push('Bye (Direct Advance 🚀)');
-    }
-
-    let nextRoundTeams: string[] = [];
-    for (let i = 0; i < currentRoundTeams.length; i += 2) {
-      const teamA = currentRoundTeams[i];
-      const teamB = currentRoundTeams[i+1];
-      
-      matches.push({
-        id: matchIdCounter++,
-        round: roundName,
-        teamA,
-        teamB,
-        status: 'upcoming'
-      });
-
-      if (teamB.includes('Bye')) {
-        nextRoundTeams.push(teamA);
-      } else {
-        nextRoundTeams.push(`Winner of Match #${matchIdCounter - 1}`);
-      }
-    }
-
-    if (nextRoundTeams.length > 1) {
-      let subRoundName = nextRoundTeams.length > 2 ? 'Semi-Finals ⚔️' : 'Grand Final 🏆';
-      let finalRoundTeams: string[] = [];
-
-      for (let i = 0; i < nextRoundTeams.length; i += 2) {
-        if (i + 1 < nextRoundTeams.length) {
-          matches.push({
-            id: matchIdCounter++,
-            round: subRoundName,
-            teamA: nextRoundTeams[i],
-            teamB: nextRoundTeams[i+1],
-            status: 'upcoming'
-          });
-          finalRoundTeams.push(`Winner of Match #${matchIdCounter - 1}`);
-        }
-      }
-
-      if (finalRoundTeams.length >= 2) {
-        matches.push({
-          id: matchIdCounter++,
-          round: 'Grand Final 🏆',
-          teamA: finalRoundTeams[0],
-          teamB: finalRoundTeams[1],
-          status: 'upcoming'
-        });
-      }
-    }
+    const matches = buildMatchesForMode(teams, activeMode);
 
     try {
-      const gameRef = doc(db, 'games', selectedGame.id);
+      const gameRef = doc(db, 'games', studioGame.id);
       await updateDoc(gameRef, {
         teamsResult: teams,
+        matchMode: activeMode,
         tournamentMatches: matches
       });
-      Alert.alert('Tournament Ready! 🏆', 'Structured knockout tournament brackets generated successfully from start to finish!');
     } catch (e) {
       console.error('Error generating tournament:', e);
-      Alert.alert('Error', 'Could not generate tournament bracket.');
+      Alert.alert('Error', 'Could not generate matchups.');
+    }
+  };
+
+  const handleSelectMatchMode = async (mode: MatchModeType) => {
+    setSelectedMatchMode(mode);
+    if (!studioGame || !isUserAdmin(studioGame)) return;
+    try {
+      await updateDoc(doc(db, 'games', studioGame.id), { matchMode: mode });
+      if ((studioGame.teamsResult || []).length >= 2) {
+        const updatedMatches = buildMatchesForMode(studioGame.teamsResult!, mode);
+        await updateDoc(doc(db, 'games', studioGame.id), { tournamentMatches: updatedMatches });
+      }
+    } catch (e) {
+      console.error('Error updating match mode:', e);
+    }
+  };
+
+  const handleSetWinnerStaysResult = async (matchId: number, winnerTeam: string, loserTeam: string) => {
+    if (!studioGame || !isUserAdmin(studioGame)) return;
+    const currentMatches = studioGame.tournamentMatches || [];
+    const matchIndex = currentMatches.findIndex(m => m.id === matchId);
+    if (matchIndex === -1) return;
+
+    const updatedMatches = currentMatches.map((m, idx) => {
+      if (idx === matchIndex) {
+        return { ...m, status: 'finished' as const, winner: winnerTeam };
+      }
+      if (idx === matchIndex + 1) {
+        return {
+          ...m,
+          teamA: winnerTeam,
+          status: 'live' as const
+        };
+      }
+      return m;
+    });
+
+    const nextQueuedMatch: TournamentMatch = {
+      id: currentMatches.length + 1,
+      round: `Winner Stays • Rotation #${currentMatches.length + 1}`,
+      teamA: winnerTeam,
+      teamB: loserTeam,
+      status: 'upcoming'
+    };
+
+    const finalMatches = [...updatedMatches, nextQueuedMatch];
+
+    try {
+      await updateDoc(doc(db, 'games', studioGame.id), {
+        tournamentMatches: finalMatches
+      });
+    } catch (e) {
+      console.error('Error advancing winner stays queue:', e);
     }
   };
 
@@ -1257,12 +1373,14 @@ export default function RadarScreen() {
       const sportToSave = newSport;
       const venueToSave = newVenue.trim();
       const timeToSave = newTime.trim();
+      const inviteCodeToSave = generateInviteCode();
+      const normalizedCity = normalizeCity(autoCity);
 
       const newGameRef = await addDoc(collection(db, 'games'), {
         title: titleToSave,
         sport: sportToSave,
         venueName: venueToSave,
-        city: autoCity,
+        city: normalizedCity,
         time: timeToSave,
         latitude: gameLat,
         longitude: gameLon,
@@ -1273,8 +1391,11 @@ export default function RadarScreen() {
         players: [activeName],
         pendingPlayers: [],
         accessMode: newAccessMode,
+        inviteCode: inviteCodeToSave,
+        onlyCreatorCanSee: true,
         chat: [],
         teamsResult: [],
+        matchMode: 'knockout',
         tournamentMatches: [],
         createdAt: serverTimestamp()
       });
@@ -1305,22 +1426,22 @@ export default function RadarScreen() {
       setNewVenue('');
       setNewDesc('');
       setNewAccessMode('public');
-      
-      Alert.alert('Success 📍', 'Game published to the map successfully!', [
+
+      Alert.alert('Game Created 🔑', `Only you can see this game right now.\nGame Code: ${inviteCodeToSave}`, [
         { text: 'OK', onPress: () => {} },
-        { 
-          text: 'Share Game 🔗', 
+        {
+          text: 'Share Code 🔑',
           onPress: () => {
-            handleShareGame(
-              newGameRef.id,
+            handleShareGameCode(
               titleToSave,
               sportToSave,
               venueToSave,
-              autoCity,
+              normalizedCity,
               timeToSave,
-              activeName
+              activeName,
+              inviteCodeToSave
             );
-          } 
+          }
         }
       ]);
     } catch (error) {
@@ -1365,7 +1486,7 @@ export default function RadarScreen() {
     const activeName = userName || 'Player';
     const playersList = game.players || [];
     const isAlreadyJoined = playersList.some(p => resolvePlayerInfo(p, allUsersList).name === activeName);
-    
+
     if (isAlreadyJoined) {
       Alert.alert('Already Joined', 'You are already registered for this game.');
       return;
@@ -1395,7 +1516,7 @@ export default function RadarScreen() {
     }
 
     if (game.accessMode === 'friends') {
-      Alert.alert('Friend Game Locked 🔒', 'This game is accessible via direct invite link only.');
+      Alert.alert('Friend Game Locked 🔒', 'Use the game code in Join by Code to enter this game.');
       return;
     }
 
@@ -1578,9 +1699,9 @@ export default function RadarScreen() {
   const handleDeleteGame = async (gameId: string) => {
     Alert.alert('Delete Game', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
-      { 
-        text: 'Delete', 
-        style: 'destructive', 
+      {
+        text: 'Delete',
+        style: 'destructive',
         onPress: async () => {
           try {
             const game = gamesList.find(g => g.id === gameId) || selectedGame;
@@ -1595,7 +1716,7 @@ export default function RadarScreen() {
             await deleteDoc(doc(db, 'games', gameId));
             setSelectedGame(null);
           } catch (e) { console.error('Error deleting game or notifying players:', e); }
-        } 
+        }
       }
     ]);
   };
@@ -1628,13 +1749,25 @@ export default function RadarScreen() {
     } catch (e) { console.error(e); }
   };
 
+  const isUserAdmin = useCallback((game: GameItem) => {
+    const cName = (game.creatorName || '').trim().toLowerCase();
+    const uName = (userName || '').trim().toLowerCase();
+    return cName === uName || (!!currentUserId && game.creator === currentUserId);
+  }, [userName, currentUserId]);
+
   const filteredGames = gamesList.filter(game => {
     if (isBlockedBidirectional(game.creator, game.creatorName)) return false;
 
+    const activeNameLower = (userName || '').trim().toLowerCase();
+    const isPlayerInGame = (game.players || []).some(
+      p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() === activeNameLower
+    );
+    if (game.onlyCreatorCanSee && !isUserAdmin(game) && !isPlayerInGame) {
+      return false;
+    }
+
     if (game.accessMode === 'friends') {
-      const isMyGame =
-        game.creator === currentUserId ||
-        (game.players || []).some(p => resolvePlayerInfo(p, allUsersList).name.trim().toLowerCase() === (userName || '').trim().toLowerCase());
+      const isMyGame = isUserAdmin(game) || isPlayerInGame;
       if (!isMyGame) return false;
     }
 
@@ -1659,17 +1792,12 @@ export default function RadarScreen() {
       const titleMatch = game.title.toLowerCase().includes(q);
       const venueMatch = game.venueName.toLowerCase().includes(q);
       const cityMatch = game.city.toLowerCase().includes(q);
-      if (!titleMatch && !venueMatch && !cityMatch) return false;
+      const codeMatch = (game.inviteCode || '').toLowerCase().includes(q);
+      if (!titleMatch && !venueMatch && !cityMatch && !codeMatch) return false;
     }
 
     return true;
   });
-
-  const isUserAdmin = (game: GameItem) => {
-    const cName = (game.creatorName || '').trim().toLowerCase();
-    const uName = (userName || '').trim().toLowerCase();
-    return cName === uName || game.creator === currentUserId;
-  };
 
   const nearbyMutualFriends = allUsersList.filter(u => {
     if (u.uid === currentUserId) return false;
@@ -1709,17 +1837,94 @@ export default function RadarScreen() {
 
   return (
     <View style={styles.container}>
-      
+
       <View style={styles.headerRow}>
         <View>
           <Text style={styles.homeCategory}>Find</Text>
           <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
         </View>
-        <TouchableOpacity style={styles.createGameBtn} onPress={() => setCreateModalVisible(true)}>
+        <TouchableOpacity style={styles.createGameBtn} onPress={() => setGameActionMenuVisible(true)}>
           <Ionicons name="add-circle" size={16} color="#09090B" style={{ marginRight: 4 }} />
-          <Text style={styles.createGameBtnText}>Create Game 📍</Text>
+          <Text style={styles.createGameBtnText}>Game Hub 📍</Text>
+          <Ionicons name="chevron-down" size={14} color="#09090B" style={{ marginLeft: 3 }} />
         </TouchableOpacity>
       </View>
+
+      <Modal visible={gameActionMenuVisible} transparent={true} animationType="fade" onRequestClose={() => setGameActionMenuVisible(false)}>
+        <TouchableOpacity style={styles.menuOverlay} activeOpacity={1} onPress={() => setGameActionMenuVisible(false)}>
+          <View style={styles.actionMenuCard}>
+            <Text style={styles.actionMenuTitle}>Choose Action</Text>
+
+            <TouchableOpacity
+              style={styles.actionMenuOptionBtn}
+              activeOpacity={0.85}
+              onPress={() => {
+                setGameActionMenuVisible(false);
+                setCreateModalVisible(true);
+              }}
+            >
+              <View style={[styles.actionMenuIconCircle, { backgroundColor: '#EAB30822' }]}>
+                <Ionicons name="add-circle" size={20} color="#EAB308" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.actionMenuOptionTitle}>Create Game</Text>
+                <Text style={styles.actionMenuOptionSub}>Visible only to you at first + secret code</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#A1A1AA" />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.actionMenuOptionBtn}
+              activeOpacity={0.85}
+              onPress={() => {
+                setGameActionMenuVisible(false);
+                setJoinByCodeModalVisible(true);
+              }}
+            >
+              <View style={[styles.actionMenuIconCircle, { backgroundColor: '#3B82F622' }]}>
+                <Ionicons name="key" size={20} color="#3B82F6" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.actionMenuOptionTitle}>Join by Code</Text>
+                <Text style={styles.actionMenuOptionSub}>Enter a 6-character game code</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#A1A1AA" />
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
+      <Modal visible={joinByCodeModalVisible} transparent={true} animationType="fade" onRequestClose={() => setJoinByCodeModalVisible(false)}>
+        <View style={styles.modalOverlayCenter}>
+          <View style={styles.modalContentCenter}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Join by Code 🔑</Text>
+              <TouchableOpacity onPress={() => setJoinByCodeModalVisible(false)}>
+                <Ionicons name="close" size={22} color="#FAFAFA" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.label}>Enter Game Code</Text>
+            <TextInput
+              style={[styles.input, { textAlign: 'center', fontSize: 18, fontWeight: '900', letterSpacing: 3, color: '#EAB308' }]}
+              placeholder="e.g. X7K9P2"
+              placeholderTextColor="#52525B"
+              value={codeInput}
+              onChangeText={(txt) => setCodeInput(txt.toUpperCase())}
+              maxLength={8}
+              autoCapitalize="characters"
+            />
+
+            <TouchableOpacity
+              style={[styles.publishBtn, joiningByCode && { opacity: 0.6 }]}
+              onPress={handleJoinByCode}
+              disabled={joiningByCode}
+            >
+              <Text style={styles.publishBtnText}>{joiningByCode ? 'Joining...' : 'Join Game 🚀'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
 
       <MapView
         provider={PROVIDER_DEFAULT}
@@ -1729,8 +1934,8 @@ export default function RadarScreen() {
         onPress={handleMapPressForCreating}
       >
         {userCoords && currentUser && (
-          <Marker 
-            coordinate={userCoords} 
+          <Marker
+            coordinate={userCoords}
             title="You Are Here"
             onPress={() => openUserProfileById(currentUser.uid, currentUser.name || currentUser.userName || currentUser.displayName)}
           >
@@ -1780,8 +1985,8 @@ export default function RadarScreen() {
           const { icon, color, bg, border } = getSportIconAndColor(game.sport);
 
           return (
-            <Marker 
-              key={game.id} 
+            <Marker
+              key={game.id}
               coordinate={{ latitude: game.latitude, longitude: game.longitude }}
               onPress={() => setSelectedGame(game)}
             >
@@ -1812,7 +2017,7 @@ export default function RadarScreen() {
 
       <View style={styles.bottomSheet}>
         <View style={styles.dragHandle} />
-        
+
         <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
           <Text style={styles.sheetTitle}>Nearby Games & Meetups 🏟️</Text>
           <Text style={styles.sheetSubtitle}>{filteredGames.length} active</Text>
@@ -1823,7 +2028,7 @@ export default function RadarScreen() {
             <Ionicons name="search" size={16} color="#A1A1AA" style={{ marginRight: 8 }} />
             <TextInput
               style={styles.searchInput}
-              placeholder="Search game, venue, or city..."
+              placeholder="Search game, venue, city, or code..."
               placeholderTextColor="#52525B"
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -1835,18 +2040,18 @@ export default function RadarScreen() {
             )}
           </View>
 
-          <TouchableOpacity 
+          <TouchableOpacity
             style={[
               styles.filterButton,
               !isAllSelected && { borderColor: currentFilterSportStyle.color, backgroundColor: currentFilterSportStyle.bg + '33' }
-            ]} 
+            ]}
             onPress={() => setSportFilterModalVisible(true)}
             activeOpacity={0.8}
           >
-            <Ionicons 
-              name={isAllSelected ? 'options-outline' : (getSportIconAndColor(activeCustomSports[0]).icon as any)} 
-              size={15} 
-              color={isAllSelected ? '#EAB308' : currentFilterSportStyle.color} 
+            <Ionicons
+              name={isAllSelected ? 'options-outline' : (getSportIconAndColor(activeCustomSports[0]).icon as any)}
+              size={15}
+              color={isAllSelected ? '#EAB308' : currentFilterSportStyle.color}
             />
             <Text style={[styles.filterButtonText, !isAllSelected && { color: currentFilterSportStyle.color }]}>
               {filterButtonLabel}
@@ -1871,12 +2076,15 @@ export default function RadarScreen() {
               return (
                 <TouchableOpacity key={game.id} style={[styles.gameCard, { borderColor: sportStyle.border + '55', backgroundColor: sportStyle.bg + '22' }]} onPress={() => setSelectedGame(game)}>
                   <View style={styles.gameHeaderRow}>
-                    <Text style={[styles.sportTag, { color: sportStyle.color }]}> {game.sport} {game.accessMode === 'private' ? '🔒 Private' : game.accessMode === 'friends' ? '🔗 Friends' : ''}</Text>
+                    <Text style={[styles.sportTag, { color: sportStyle.color }]}>
+                      {game.sport}
+                      {game.accessMode === 'private' ? ' 🔒 Private' : game.accessMode === 'friends' ? ' 🔑 Friends' : ''}
+                    </Text>
                     <Text style={styles.distanceTag}>📍 {distance} km away</Text>
                   </View>
                   <Text style={styles.gameTitle}>{game.title}</Text>
                   <Text style={styles.venueText}>🏟️ {game.venueName} | ⏰ {game.time} | 👑 Admin: {game.creatorName}</Text>
-                  
+
                   <View style={styles.gameTimerRow}>
                     <Text style={styles.timerText}>⏳ Created: {timeCreatedStr}</Text>
                     <Text style={styles.timerExpiryText}>⌛ Expires in: {timeRemainingStr}</Text>
@@ -1887,9 +2095,22 @@ export default function RadarScreen() {
                       {spotsLeft > 0 ? `👥 ${spotsLeft} spots left (${game.players?.length || 0}/${game.maxPlayers})` : '🔴 Full Game'}
                     </Text>
                     <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                      <TouchableOpacity onPress={() => handleShareGame(game.id, game.title, game.sport, game.venueName, game.city, game.time, game.creatorName)} style={{ padding: 4 }}>
-                        <Ionicons name="share-social-outline" size={16} color={sportStyle.color} />
-                      </TouchableOpacity>
+                      {isUserAdmin(game) && game.inviteCode && (
+                        <TouchableOpacity
+                          onPress={() => handleShareGameCode(
+                            game.title,
+                            game.sport,
+                            game.venueName,
+                            game.city,
+                            game.time,
+                            game.creatorName,
+                            game.inviteCode
+                          )}
+                          style={{ padding: 4 }}
+                        >
+                          <Ionicons name="key-outline" size={16} color={sportStyle.color} />
+                        </TouchableOpacity>
+                      )}
                       <Text style={[styles.detailsLink, { color: sportStyle.color }]}>View Details ›</Text>
                     </View>
                   </View>
@@ -1911,7 +2132,7 @@ export default function RadarScreen() {
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 10 }}>
-              <TouchableOpacity 
+              <TouchableOpacity
                 style={[styles.filterOptionItem, isAllSelected && styles.filterOptionItemActive]}
                 onPress={() => handleToggleSportFilter('All')}
                 activeOpacity={0.8}
@@ -1930,8 +2151,8 @@ export default function RadarScreen() {
                 const { icon, color, bg } = getSportIconAndColor(sport);
 
                 return (
-                  <TouchableOpacity 
-                    key={sport} 
+                  <TouchableOpacity
+                    key={sport}
                     style={[
                       styles.filterOptionItem,
                       isSelected && { backgroundColor: '#18181B', borderColor: color },
@@ -1967,11 +2188,21 @@ export default function RadarScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContentLarge}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>🏟️ Game & Tournament Hub</Text>
+              <Text style={styles.modalTitle}>🏟️ Game Hub</Text>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-                {selectedGame && (
-                  <TouchableOpacity onPress={() => handleShareGame(selectedGame.id, selectedGame.title, selectedGame.sport, selectedGame.venueName, selectedGame.city, selectedGame.time, selectedGame.creatorName)}>
-                    <Ionicons name="share-social-outline" size={20} color="#EAB308" />
+                {selectedGame && isUserAdmin(selectedGame) && selectedGame.inviteCode && (
+                  <TouchableOpacity
+                    onPress={() => handleShareGameCode(
+                      selectedGame.title,
+                      selectedGame.sport,
+                      selectedGame.venueName,
+                      selectedGame.city,
+                      selectedGame.time,
+                      selectedGame.creatorName,
+                      selectedGame.inviteCode
+                    )}
+                  >
+                    <Ionicons name="key-outline" size={20} color="#EAB308" />
                   </TouchableOpacity>
                 )}
                 <TouchableOpacity onPress={() => setSelectedGame(null)}>
@@ -1995,7 +2226,7 @@ export default function RadarScreen() {
               return (
                 <ScrollView showsVerticalScrollIndicator={false}>
                   <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <Text style={[styles.detailSportBadge, { backgroundColor: sportStyle.color, color: '#09090B' }]}>{selectedGame.sport} ({selectedGame.accessMode === 'private' ? '🔒 Private' : selectedGame.accessMode === 'friends' ? '🔗 Friends Only' : '🌍 Public'})</Text>
+                    <Text style={[styles.detailSportBadge, { backgroundColor: sportStyle.color, color: '#09090B' }]}>{selectedGame.sport} ({selectedGame.accessMode === 'private' ? '🔒 Private' : selectedGame.accessMode === 'friends' ? '🔑 Friends' : '🌍 Public'})</Text>
                     {isUserAdmin(selectedGame) && (
                       <TouchableOpacity onPress={() => handleDeleteGame(selectedGame.id)} style={styles.deleteGameBtn}>
                         <Ionicons name="trash-outline" size={16} color="#EF4444" />
@@ -2005,25 +2236,48 @@ export default function RadarScreen() {
                   </View>
 
                   <Text style={styles.detailTitle}>{selectedGame.title}</Text>
-                  
+
+                  {isUserAdmin(selectedGame) && selectedGame.inviteCode && (
+                    <View style={[styles.detailBox, { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderColor: '#EAB30866' }]}>
+                      <View>
+                        <Text style={[styles.detailLabel, { color: '#EAB308', marginBottom: 2 }]}>🔑 Game Code (Admin Only):</Text>
+                        <Text style={{ color: '#FAFAFA', fontSize: 16, fontWeight: '900', letterSpacing: 2 }}>{selectedGame.inviteCode}</Text>
+                      </View>
+                      <TouchableOpacity
+                        style={{ backgroundColor: '#EAB308', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 8 }}
+                        onPress={() => handleShareGameCode(
+                          selectedGame.title,
+                          selectedGame.sport,
+                          selectedGame.venueName,
+                          selectedGame.city,
+                          selectedGame.time,
+                          selectedGame.creatorName,
+                          selectedGame.inviteCode
+                        )}
+                      >
+                        <Text style={{ color: '#09090B', fontWeight: '800', fontSize: 12 }}>Send Code</Text>
+                      </TouchableOpacity>
+                    </View>
+                  )}
+
                   <View style={styles.modalTimerBox}>
                     <Text style={styles.modalTimerText}>⏳ Created {timeCreatedStr}</Text>
-                    <Text style={styles.modalTimerExpiryText}>⌛ {timeRemainingStr} before auto-removal</Text>
+                    <Text style={styles.modalTimerExpiryText}>⌛ {timeRemainingStr} before </Text>
                   </View>
 
                   <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 10, gap: 4 }}>
-                    <Text style={styles.adminInfoText}>👑 Game Admin:</Text>
+                    <Text style={styles.adminInfoText}> Game Admin:</Text>
                     <Text style={{ color: sportStyle.color, fontSize: 12, fontWeight: 'bold' }}>{selectedGame.creatorName}</Text>
                     {adminUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color="#EAB308" />}
                   </View>
-                  
+
                   <TouchableOpacity style={[styles.navigateBtn, { backgroundColor: sportStyle.color }]} onPress={() => openMapsNavigation(selectedGame.venueName, selectedGame.city)}>
                     <Ionicons name="navigate" size={16} color="#09090B" style={{ marginRight: 6 }} />
-                    <Text style={styles.navigateBtnText}>Navigate to Venue 🗺️</Text>
+                    <Text style={styles.navigateBtnText}>Navigate to Location 🗺️</Text>
                   </TouchableOpacity>
 
                   <Text style={styles.detailVenue}>📍 {selectedGame.venueName}, {selectedGame.city} | ⏰ {selectedGame.time}</Text>
-                  
+
                   <View style={styles.detailBox}>
                     <Text style={styles.detailLabel}>📊 Team Average Age:</Text>
                     <Text style={{ color: sportStyle.color, fontSize: 14, fontWeight: 'bold' }}> {teamAverageAge}</Text>
@@ -2033,6 +2287,33 @@ export default function RadarScreen() {
                     <Text style={styles.detailLabel}>Description & Rules:</Text>
                     <Text style={styles.detailText}>{selectedGame.description}</Text>
                   </View>
+
+                  {supportsTournamentDraw(selectedGame.sport) && (
+                    <TouchableOpacity
+                      style={[styles.studioLaunchBtn, { borderColor: sportStyle.color, backgroundColor: sportStyle.bg + '44' }]}
+                      activeOpacity={0.85}
+                      onPress={() => {
+                        setStudioGameId(selectedGame.id);
+                        setSelectedGame(null);
+                        setTimeout(() => {
+                          setDrawStudioModalVisible(true);
+                        }, 120);
+                      }}
+                    >
+                      <View style={[styles.studioLaunchIconWrap, { backgroundColor: sportStyle.color }]}>
+                        <Ionicons name="flash" size={18} color="#09090B" />
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={[styles.studioLaunchTitle, { color: sportStyle.color }]}>Teams & Matchups Studio</Text>
+                        <Text style={styles.studioLaunchSub}>
+                          {isUserAdmin(selectedGame)
+                            ? 'Draw teams & choose tournament or winner-stays format'
+                            : 'View drawn teams & match schedule'}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={20} color={sportStyle.color} />
+                    </TouchableOpacity>
+                  )}
 
                   {isUserAdmin(selectedGame) && selectedGame.accessMode === 'private' && selectedGame.pendingPlayers && selectedGame.pendingPlayers.length > 0 && (
                     <View style={styles.detailBox}>
@@ -2056,155 +2337,19 @@ export default function RadarScreen() {
                     </View>
                   )}
 
-                  {isUserAdmin(selectedGame) && supportsTournamentDraw(selectedGame.sport) && (
-                    <View style={[styles.detailBox, styles.neonTourneyContainer, { borderColor: sportStyle.color + '66' }]}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
-                        <View style={[styles.neonIconBadge, { backgroundColor: sportStyle.color }]}>
-                          <Ionicons name="flash" size={14} color="#09090B" />
-                        </View>
-                        <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 15, marginBottom: 0 }]}>⚡ Dynamic Tournament & Draw Hub</Text>
-                      </View>
-                      
-                      <View style={styles.adminTabsRow}>
-                        <TouchableOpacity 
-                          style={[styles.adminTabBtn, activeManagerTab === 'draw' && { backgroundColor: sportStyle.color, shadowColor: sportStyle.color, shadowOpacity: 0.5, shadowRadius: 8, elevation: 6 }]}
-                          onPress={() => setActiveManagerTab('draw')}
-                        >
-                          <Text style={[styles.adminTabText, activeManagerTab === 'draw' && { color: '#09090B', fontWeight: '900' }]}>🎲 Team Draw</Text>
-                        </TouchableOpacity>
-
-                        <TouchableOpacity 
-                          style={[styles.adminTabBtn, activeManagerTab === 'tournament' && { backgroundColor: sportStyle.color, shadowColor: sportStyle.color, shadowOpacity: 0.5, shadowRadius: 8, elevation: 6 }]}
-                          onPress={() => setActiveManagerTab('tournament')}
-                        >
-                          <Text style={[styles.adminTabText, activeManagerTab === 'tournament' && { color: '#09090B', fontWeight: '900' }]}>🏆 Tournament Brackets</Text>
-                        </TouchableOpacity>
-                      </View>
-
-                      {activeManagerTab === 'draw' ? (
-                        <View style={{ marginTop: 8 }}>
-                          <Text style={{ color: '#E4E4E7', fontSize: 12, marginBottom: 10, lineHeight: 18 }}>Shuffle {selectedGame.players?.length || 0} participants into balanced squads instantly:</Text>
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 4 }}>
-                            <Text style={{ color: '#A1A1AA', fontSize: 12, fontWeight: 'bold' }}>Per Team:</Text>
-                            <TextInput
-                              style={[styles.drawInput, { borderColor: sportStyle.color + '88' }]}
-                              keyboardType="numeric"
-                              value={drawPlayersPerTeam}
-                              onChangeText={setDrawPlayersPerTeam}
-                              placeholder="5"
-                              placeholderTextColor="#52525B"
-                            />
-                            <TouchableOpacity style={[styles.drawBtn, { backgroundColor: sportStyle.color, flex: 1, justifyContent: 'center' }]} onPress={handleRunAutoDraw}>
-                              <Ionicons name="shuffle" size={16} color="#09090B" style={{ marginRight: 6 }} />
-                              <Text style={[styles.drawBtnText, { fontSize: 13 }]}>Run Smart Shuffle 🚀</Text>
-                            </TouchableOpacity>
-                          </View>
-                        </View>
-                      ) : (
-                        <View style={{ marginTop: 8 }}>
-                          <Text style={{ color: '#E4E4E7', fontSize: 12, marginBottom: 10, lineHeight: 18 }}>Generate professional elimination brackets and match fixtures:</Text>
-                          <TouchableOpacity style={[styles.drawBtn, { backgroundColor: sportStyle.color, width: '100%', height: 44, justifyContent: 'center' }]} onPress={handleGenerateTournamentBracket}>
-                            <Ionicons name="git-branch" size={16} color="#09090B" style={{ marginRight: 8 }} />
-                            <Text style={[styles.drawBtnText, { fontSize: 14, fontWeight: '900' }]}>Generate Pro Tournament Brackets 🏆</Text>
-                          </TouchableOpacity>
-                        </View>
-                      )}
-                    </View>
-                  )}
-
-                  {supportsTournamentDraw(selectedGame.sport) && selectedGame.teamsResult && selectedGame.teamsResult.length > 0 && (
-                    <View style={styles.detailBox}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                        <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14, marginBottom: 0 }]}>🔥 Formed Squads ({selectedGame.teamsResult.length} Teams)</Text>
-                        <View style={{ backgroundColor: sportStyle.color + '22', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: sportStyle.color + '55' }}>
-                          <Text style={{ color: sportStyle.color, fontSize: 10, fontWeight: 'bold' }}>Balanced 🎲</Text>
-                        </View>
-                      </View>
-                      
-                      <View style={styles.teamsGridModern}>
-                        {selectedGame.teamsResult.map(team => {
-                          const teamColors = ['#22C55E', '#F97316', '#3B82F6', '#A855F7', '#EF4444', '#EAB308'];
-                          const accentCol = teamColors[(team.id - 1) % teamColors.length];
-                          return (
-                            <View key={team.id} style={[styles.teamCardModern, { borderLeftColor: accentCol }]}>
-                              <View style={styles.teamCardHeaderModern}>
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                                  <View style={[styles.teamBadgeDot, { backgroundColor: accentCol }]} />
-                                  <Text style={styles.teamCardTitleModern}>TEAM #{team.id}</Text>
-                                </View>
-                                <Text style={styles.teamMemberCountBadge}>{team.players.length} Players</Text>
-                              </View>
-                              <View style={styles.teamPlayersGridCompact}>
-                                {team.players.map((playerEntry, pIdx) => {
-                                  const info = resolvePlayerInfo(playerEntry, allUsersList);
-                                  
-                                  return (
-                                    <View key={pIdx} style={[styles.teamPlayerChipCompactGrid, { borderColor: accentCol + '66', backgroundColor: accentCol + '15' }]}>
-                                      <Text style={[styles.teamPlayerNameTextGrid, { color: accentCol }]}>{info.name}</Text>
-                                      {info.isVip && <Ionicons name="checkmark-circle" size={10} color="#EAB308" style={{ marginLeft: 2 }} />}
-                                    </View>
-                                  );
-                                })}
-                              </View>
-                            </View>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  )}
-
-                  {supportsTournamentDraw(selectedGame.sport) && selectedGame.tournamentMatches && selectedGame.tournamentMatches.length > 0 && (
-                    <View style={styles.detailBox}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-                        <Text style={[styles.detailLabel, { color: sportStyle.color, fontSize: 14, marginBottom: 0 }]}>⚔️ Elimination Stage Brackets</Text>
-                        <View style={{ backgroundColor: '#EAB30822', paddingHorizontal: 8, paddingVertical: 2, borderRadius: 6, borderWidth: 1, borderColor: '#EAB30855' }}>
-                          <Text style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}>Live Arena 🏟️</Text>
-                        </View>
-                      </View>
-
-                      <View style={{ gap: 8 }}>
-                        {selectedGame.tournamentMatches.map(match => (
-                          <View key={match.id} style={styles.matchCardProContainer}>
-                            <View style={styles.matchCardHeaderPro}>
-                              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                                <Ionicons name="trophy" size={12} color="#EAB308" />
-                                <Text style={styles.matchIdBadgeText}>MATCH #{match.id}</Text>
-                              </View>
-                              <Text style={styles.matchRoundBadgeText}>{match.round}</Text>
-                            </View>
-                            
-                            <View style={styles.matchTeamsCombatBox}>
-                              <View style={styles.combatTeamSide}>
-                                <Text style={styles.combatTeamName}>{match.teamA}</Text>
-                              </View>
-                              
-                              <View style={styles.combatVsBadge}>
-                                <Text style={styles.combatVsText}>VS</Text>
-                              </View>
-
-                              <View style={styles.combatTeamSide}>
-                                <Text style={[styles.combatTeamName, match.teamB.includes('Bye') && { color: '#71717A', fontStyle: 'italic' }]}>{match.teamB}</Text>
-                              </View>
-                            </View>
-                          </View>
-                        ))}
-                      </View>
-                    </View>
-                  )}
-
                   <View style={styles.detailBox}>
                     <Text style={styles.detailLabel}>👥 Team Members ({selectedGame.players?.length || 0} / {selectedGame.maxPlayers}) - Tap profile:</Text>
                     <View style={styles.playersGridContainerSmall}>
                       {selectedGame.players?.map((playerEntry, index) => {
                         const info = resolvePlayerInfo(playerEntry, allUsersList);
-                        
+
                         const myNameStr = (userName || '').trim().toLowerCase();
                         const isMe = info.name.toLowerCase() === myNameStr || info.name.toLowerCase() === 'me';
                         const isCreatorAdmin = index === 0 || info.name.toLowerCase() === (selectedGame.creatorName || '').trim().toLowerCase();
 
                         return (
-                          <TouchableOpacity 
-                            key={`player_${index}`} 
+                          <TouchableOpacity
+                            key={`player_${index}`}
                             style={[styles.playerChipSmallGrid, { borderColor: sportStyle.color + '66', backgroundColor: sportStyle.bg + '33' }, isMe && { borderColor: '#EAB308', backgroundColor: '#332E0F' }]}
                             activeOpacity={0.7}
                             onPress={() => {
@@ -2223,11 +2368,11 @@ export default function RadarScreen() {
                             </View>
 
                             {isUserAdmin(selectedGame) && !isMe && (
-                              <TouchableOpacity 
+                              <TouchableOpacity
                                 onPress={(e) => {
                                   e.stopPropagation();
                                   handleKickPlayer(selectedGame, playerEntry);
-                                }} 
+                                }}
                                 style={{ padding: 2, marginLeft: 4 }}
                                 activeOpacity={0.7}
                               >
@@ -2242,7 +2387,7 @@ export default function RadarScreen() {
 
                   <View style={styles.detailBox}>
                     <Text style={styles.detailLabel}>💬 Team Chat:</Text>
-                    <ScrollView 
+                    <ScrollView
                       ref={chatScrollRef}
                       style={styles.chatScrollContainer}
                       contentContainerStyle={{ paddingVertical: 6 }}
@@ -2272,12 +2417,12 @@ export default function RadarScreen() {
                       )}
                     </ScrollView>
                     <View style={styles.chatInputRowGame}>
-                      <TextInput 
-                        style={styles.chatInput} 
-                        placeholder="Message team..." 
-                        placeholderTextColor="#52525B" 
-                        value={chatMessage} 
-                        onChangeText={setChatMessage} 
+                      <TextInput
+                        style={styles.chatInput}
+                        placeholder="Message team..."
+                        placeholderTextColor="#52525B"
+                        value={chatMessage}
+                        onChangeText={setChatMessage}
                       />
                       <TouchableOpacity style={[styles.chatSendBtn, { backgroundColor: sportStyle.color }]} onPress={() => handleSendTeamChatMessage(selectedGame.id)}>
                         <Ionicons name="send" size={14} color="#09090B" />
@@ -2290,28 +2435,293 @@ export default function RadarScreen() {
                       <Text style={styles.leaveBtnText}>Leave Game 🚪</Text>
                     </TouchableOpacity>
                   ) : (
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       style={[
-                        styles.modalJoinBtn, 
-                        isAlreadyPending ? { backgroundColor: '#1F1214', borderWidth: 1, borderColor: '#EF4444' } : { backgroundColor: sportStyle.color }, 
+                        styles.modalJoinBtn,
+                        isAlreadyPending ? { backgroundColor: '#1F1214', borderWidth: 1, borderColor: '#EF4444' } : { backgroundColor: sportStyle.color },
                         (selectedGame.players?.length >= selectedGame.maxPlayers || selectedGame.accessMode === 'friends') && !isAlreadyPending && { backgroundColor: '#27272A' }
-                      ]} 
+                      ]}
                       onPress={() => handleJoinGame(selectedGame)}
                     >
                       <Text style={[styles.modalJoinBtnText, isAlreadyPending && { color: '#EF4444' }]}>
-                        {selectedGame.accessMode === 'friends' 
-                          ? 'Locked (Invite Link Only) 🔗' 
-                          : isAlreadyPending 
-                          ? 'Cancel Request ❌' 
-                          : selectedGame.accessMode === 'private' 
-                          ? 'Request to Join 🔒' 
-                          : selectedGame.players?.length >= selectedGame.maxPlayers 
-                          ? 'Game Full 🔴' 
+                        {selectedGame.accessMode === 'friends'
+                          ? 'Code Required (Join by Code) 🔑'
+                          : isAlreadyPending
+                          ? 'Cancel Request ❌'
+                          : selectedGame.accessMode === 'private'
+                          ? 'Request to Join 🔒'
+                          : selectedGame.players?.length >= selectedGame.maxPlayers
+                          ? 'Game Full 🔴'
                           : 'Join This Game 🤝'}
                       </Text>
                     </TouchableOpacity>
                   )}
                 </ScrollView>
+              );
+            })()}
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={drawStudioModalVisible && !!studioGame}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => {
+          setDrawStudioModalVisible(false);
+          setStudioGameId(null);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.studioModalSheet}>
+            {studioGame && (() => {
+              const sportStyle = getSportIconAndColor(studioGame.sport);
+              const isAdmin = isUserAdmin(studioGame);
+              const teams = studioGame.teamsResult || [];
+              const matches = studioGame.tournamentMatches || [];
+              const activeMode = studioGame.matchMode || selectedMatchMode;
+
+              return (
+                <>
+                  <View style={styles.studioHeader}>
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Ionicons name="trophy" size={14} color={sportStyle.color} />
+                        <Text style={[styles.studioEyebrow, { color: sportStyle.color }]}>
+                          {studioGame.sport.toUpperCase()} • {teams.length} TEAMS
+                        </Text>
+                      </View>
+                      <Text style={styles.studioMainTitle} numberOfLines={1}>{studioGame.title}</Text>
+                    </View>
+                    <TouchableOpacity
+                      style={styles.studioCloseBtn}
+                      onPress={() => {
+                        setDrawStudioModalVisible(false);
+                        setStudioGameId(null);
+                      }}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="close" size={22} color="#FAFAFA" />
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.modeSelectorBar}>
+                    <TouchableOpacity
+                      style={[
+                        styles.modeChipBtn,
+                        activeMode === 'knockout' && { backgroundColor: sportStyle.color, borderColor: sportStyle.color }
+                      ]}
+                      onPress={() => handleSelectMatchMode('knockout')}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={[styles.modeChipText, activeMode === 'knockout' && styles.modeChipTextActive]}>
+                        Tournament
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.modeChipBtn,
+                        activeMode === 'winner_stays' && { backgroundColor: '#EAB308', borderColor: '#EAB308' }
+                      ]}
+                      onPress={() => handleSelectMatchMode('winner_stays')}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={[styles.modeChipText, activeMode === 'winner_stays' && styles.modeChipTextActive]}>
+                        Winner Stays
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={[
+                        styles.modeChipBtn,
+                        activeMode === 'round_robin' && { backgroundColor: '#3B82F6', borderColor: '#3B82F6' }
+                      ]}
+                      onPress={() => handleSelectMatchMode('round_robin')}
+                      activeOpacity={0.85}
+                    >
+                      <Text style={[styles.modeChipText, activeMode === 'round_robin' && styles.modeChipTextActive]}>
+                        Round Robin
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <ScrollView
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={{ paddingBottom: 32 }}
+                  >
+                    <View style={styles.twoColumnsWrapper}>
+                      <View style={[styles.studioColumnCard, { borderColor: sportStyle.color + '44' }]}>
+                        <View style={styles.columnTopHeader}>
+                          <View style={[styles.columnBadgeIcon, { backgroundColor: sportStyle.color + '22' }]}>
+                            <Ionicons name="shield" size={16} color={sportStyle.color} />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.columnTitle}>Teams</Text>
+                            <Text style={styles.columnSubtitle}>{teams.length} squads</Text>
+                          </View>
+                        </View>
+
+                        {isAdmin && (
+                          <View style={styles.columnActionPanel}>
+                            <View style={styles.teamSizeRow}>
+                              <Text style={styles.teamSizeLabel}>Per team:</Text>
+                              <TextInput
+                                style={[styles.compactSizeInput, { borderColor: sportStyle.color + '88' }]}
+                                keyboardType="numeric"
+                                value={drawPlayersPerTeam}
+                                onChangeText={setDrawPlayersPerTeam}
+                                maxLength={2}
+                              />
+                            </View>
+                            <TouchableOpacity
+                              style={[styles.columnPrimaryBtn, { backgroundColor: sportStyle.color }]}
+                              onPress={handleRunAutoDraw}
+                              activeOpacity={0.85}
+                            >
+                              <Ionicons name="shuffle" size={14} color="#09090B" />
+                              <Text style={styles.columnPrimaryBtnText}>Draw Teams</Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+
+                        {teams.length === 0 ? (
+                          <View style={styles.columnEmptyState}>
+                            <Ionicons name="shield-outline" size={26} color="#52525B" />
+                            <Text style={styles.columnEmptyText}>No teams drawn yet</Text>
+                          </View>
+                        ) : (
+                          <View style={{ gap: 8 }}>
+                            {teams.map(team => {
+                              const teamColors = ['#22C55E', '#F97316', '#3B82F6', '#A855F7', '#EF4444', '#EAB308'];
+                              const accentCol = teamColors[(team.id - 1) % teamColors.length];
+                              return (
+                                <View key={team.id} style={[styles.studioTeamBox, { borderTopColor: accentCol }]}>
+                                  <View style={styles.studioTeamHeader}>
+                                    <Text style={[styles.studioTeamName, { color: accentCol }]}>Team #{team.id}</Text>
+                                    <Text style={styles.studioTeamCount}>{team.players.length}p</Text>
+                                  </View>
+                                  <View style={{ gap: 4 }}>
+                                    {team.players.map((playerEntry, pIdx) => {
+                                      const info = resolvePlayerInfo(playerEntry, allUsersList);
+                                      return (
+                                        <View key={pIdx} style={styles.studioPlayerPill}>
+                                          <Text style={styles.studioPlayerPillText} numberOfLines={1}>{info.name}</Text>
+                                          {info.isVip && <Ionicons name="checkmark-circle" size={11} color="#EAB308" />}
+                                        </View>
+                                      );
+                                    })}
+                                  </View>
+                                </View>
+                              );
+                            })}
+                          </View>
+                        )}
+                      </View>
+
+                      <View style={[styles.studioColumnCard, { borderColor: '#EAB30844' }]}>
+                        <View style={styles.columnTopHeader}>
+                          <View style={[styles.columnBadgeIcon, { backgroundColor: '#EAB30822' }]}>
+                            <Ionicons name="git-compare" size={16} color="#EAB308" />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.columnTitle}>
+                              {activeMode === 'winner_stays'
+                                ? 'Winner Stays'
+                                : activeMode === 'round_robin'
+                                ? 'League'
+                                : 'Bracket'}
+                            </Text>
+                            <Text style={styles.columnSubtitle}>{matches.length} games</Text>
+                          </View>
+                        </View>
+
+                        {isAdmin && (
+                          <View style={styles.columnActionPanel}>
+                            <TouchableOpacity
+                              style={[styles.columnPrimaryBtn, { backgroundColor: '#EAB308' }]}
+                              onPress={() => handleGenerateTournamentBracket(activeMode)}
+                              activeOpacity={0.85}
+                            >
+                              <Ionicons name="trophy" size={14} color="#09090B" />
+                              <Text style={styles.columnPrimaryBtnText}>
+                                {activeMode === 'winner_stays' ? 'Start Rotation' : 'Generate Games'}
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+
+                        {matches.length === 0 ? (
+                          <View style={styles.columnEmptyState}>
+                            <Ionicons name="trophy-outline" size={26} color="#52525B" />
+                            <Text style={styles.columnEmptyText}>No schedule yet</Text>
+                          </View>
+                        ) : (
+                          <View style={{ gap: 8 }}>
+                            {matches.map(match => {
+                              const canPickWinner =
+                                isAdmin &&
+                                activeMode === 'winner_stays' &&
+                                match.status !== 'finished' &&
+                                !match.teamA.includes('Winner') &&
+                                !match.teamB.includes('Bye');
+
+                              return (
+                                <View key={match.id} style={styles.studioMatchBox}>
+                                  <View style={styles.studioMatchTop}>
+                                    <Text style={styles.studioMatchNum}>#{match.id}</Text>
+                                    <Text style={styles.studioMatchRound} numberOfLines={1}>{match.round}</Text>
+                                  </View>
+
+                                  <View style={styles.studioSidePill}>
+                                    <Text style={styles.studioSideText} numberOfLines={1}>
+                                      {match.teamA} {match.winner === match.teamA ? '👑' : ''}
+                                    </Text>
+                                  </View>
+
+                                  <View style={styles.studioVsDivider}>
+                                    <View style={styles.studioLine} />
+                                    <Text style={styles.studioVsLabel}>VS</Text>
+                                    <View style={styles.studioLine} />
+                                  </View>
+
+                                  <View style={styles.studioSidePill}>
+                                    <Text
+                                      style={[
+                                        styles.studioSideText,
+                                        match.teamB === 'Bye' && { color: '#71717A', fontStyle: 'italic' }
+                                      ]}
+                                      numberOfLines={1}
+                                    >
+                                      {match.teamB} {match.winner === match.teamB ? '👑' : ''}
+                                    </Text>
+                                  </View>
+
+                                  {canPickWinner && (
+                                    <View style={styles.winnerPickRow}>
+                                      <TouchableOpacity
+                                        style={styles.winnerPickBtn}
+                                        onPress={() => handleSetWinnerStaysResult(match.id, match.teamA, match.teamB)}
+                                      >
+                                        <Text style={styles.winnerPickBtnText} numberOfLines={1}>{match.teamA} Wins</Text>
+                                      </TouchableOpacity>
+                                      <TouchableOpacity
+                                        style={styles.winnerPickBtn}
+                                        onPress={() => handleSetWinnerStaysResult(match.id, match.teamB, match.teamA)}
+                                      >
+                                        <Text style={styles.winnerPickBtnText} numberOfLines={1}>{match.teamB} Wins</Text>
+                                      </TouchableOpacity>
+                                    </View>
+                                  )}
+                                </View>
+                              );
+                            })}
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  </ScrollView>
+                </>
               );
             })()}
           </View>
@@ -2326,12 +2736,12 @@ export default function RadarScreen() {
                 <Text style={styles.discoverCategory}>PLAYER PROFILE</Text>
                 <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
               </View>
-              <TouchableOpacity 
+              <TouchableOpacity
                 onPress={() => {
                   setTargetActiveModalList(null);
                   setSelectedUserModalId(null);
-                }} 
-                activeOpacity={0.8} 
+                }}
+                activeOpacity={0.8}
                 style={styles.closeHomeModalBtn}
               >
                 <Ionicons name="close" size={22} color="#FAFAFA" />
@@ -2339,15 +2749,15 @@ export default function RadarScreen() {
             </View>
 
             {targetProfileUser && (
-              <ScrollView 
-                style={{ flex: 1 }} 
-                contentContainerStyle={{ paddingBottom: 40 }} 
+              <ScrollView
+                style={{ flex: 1 }}
+                contentContainerStyle={{ paddingBottom: 40 }}
                 showsVerticalScrollIndicator={false}
                 nestedScrollEnabled={true}
               >
                 <View style={styles.headerProfile}>
-                  <TouchableOpacity 
-                    style={styles.avatarLarge} 
+                  <TouchableOpacity
+                    style={styles.avatarLarge}
                     onPress={() => {
                       if (targetProfileUser.avatar && !isAnyBlockBetweenUs) {
                         setZoomedAvatarUri(targetProfileUser.avatar);
@@ -2367,7 +2777,7 @@ export default function RadarScreen() {
                     {targetProfileUser.isVip && <Ionicons name="checkmark-circle" size={18} color="#EAB308" />}
                     {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color="#EF4444" />}
                   </View>
-                  
+
                   {!isAnyBlockBetweenUs && (
                     <>
                       <View style={styles.sportsTagsRow}>
@@ -2379,7 +2789,7 @@ export default function RadarScreen() {
                       </View>
 
                       <Text style={styles.profileCity}>
-                        📍 {targetProfileUser.city || 'Netanya'}, {targetProfileUser.country || 'Israel'} |  Age: {targetProfileUser.age || 20}
+                        📍 {normalizeCity(targetProfileUser.city)}, {targetProfileUser.country || 'Israel'} |  Age: {targetProfileUser.age || 20}
                       </Text>
                     </>
                   )}
@@ -2408,18 +2818,18 @@ export default function RadarScreen() {
                   <View style={{ marginBottom: 16, gap: 10 }}>
                     {!isAnyBlockBetweenUs && currentUserId && (
                       <View style={{ flexDirection: 'row', gap: 10 }}>
-                        <TouchableOpacity 
+                        <TouchableOpacity
                           style={[
-                            styles.profileFollowBtn, 
+                            styles.profileFollowBtn,
                             isApprovedFollower && styles.profileFollowingBtn,
                             hasRequestedFollow && { backgroundColor: '#27272A', borderWidth: 1, borderColor: '#52525B' },
                             { flex: 1 }
-                          ]} 
+                          ]}
                           onPress={handleToggleFollowTarget}
                           activeOpacity={0.85}
                         >
                           <Text style={[
-                            styles.profileFollowBtnText, 
+                            styles.profileFollowBtnText,
                             isApprovedFollower && styles.profileFollowingBtnText,
                             hasRequestedFollow && { color: '#FAFAFA' }
                           ]}>
@@ -2427,8 +2837,8 @@ export default function RadarScreen() {
                           </Text>
                         </TouchableOpacity>
 
-                        <TouchableOpacity 
-                          style={styles.chatOpenBtn} 
+                        <TouchableOpacity
+                          style={styles.chatOpenBtn}
                           onPress={() => {
                             setChatTargetUser(targetProfileUser);
                             setSelectedUserModalId(null);
@@ -2498,10 +2908,10 @@ export default function RadarScreen() {
                         {targetUserPosts.map(post => {
                           const isVid = post.mediaType === 'video';
                           return (
-                            <TouchableOpacity 
-                              key={post.id} 
-                              style={styles.postThumbnailBox} 
-                              onPress={() => setSelectedPostModal(post)} 
+                            <TouchableOpacity
+                              key={post.id}
+                              style={styles.postThumbnailBox}
+                              onPress={() => setSelectedPostModal(post)}
                               activeOpacity={0.7}
                             >
                               {isVid ? (
@@ -2535,8 +2945,8 @@ export default function RadarScreen() {
 
       <Modal visible={!!zoomedAvatarUri} transparent={true} animationType="fade" onRequestClose={() => setZoomedAvatarUri(null)}>
         <View style={styles.zoomedAvatarOverlay}>
-          <TouchableOpacity 
-            style={styles.closeZoomedBtn} 
+          <TouchableOpacity
+            style={styles.closeZoomedBtn}
             onPress={() => setZoomedAvatarUri(null)}
             activeOpacity={0.8}
           >
@@ -2566,9 +2976,9 @@ export default function RadarScreen() {
                 .map((item) => {
                 const itemName = item.name || item.userName || item.displayName || 'Player';
                 return (
-                  <TouchableOpacity 
-                    key={item.uid} 
-                    style={styles.listItem} 
+                  <TouchableOpacity
+                    key={item.uid}
+                    style={styles.listItem}
                     onPress={() => {
                       setTargetActiveModalList(null);
                       setSelectedUserModalId(null);
@@ -2590,7 +3000,7 @@ export default function RadarScreen() {
                         <Text style={styles.listName}>{itemName}</Text>
                         {item.isVip && <Ionicons name="checkmark-circle" size={14} color="#EAB308" />}
                       </View>
-                      <Text style={styles.listCity}>📍 {item.city} |  Age: {item.age || 'N/A'}</Text>
+                      <Text style={styles.listCity}>📍 {normalizeCity(item.city)} |  Age: {item.age || 'N/A'}</Text>
                     </View>
                     <Ionicons name="chevron-forward" size={18} color="#71717A" />
                   </TouchableOpacity>
@@ -2643,7 +3053,7 @@ export default function RadarScreen() {
                       <View key={item.id} style={[styles.chatBubbleRow, isMe ? styles.chatBubbleRowRight : styles.chatBubbleRowLeft]}>
                         <View style={[styles.chatBubbleMsg, isMe ? styles.chatBubbleMe : styles.chatBubbleOther]}>
                           <Text style={[styles.chatBubbleText, isMe && { color: '#09090B' }]}>{item.text}</Text>
-                          <Text style={[styles.chatBubbleTime, isMe && { color: '#3F3F46' }]}>{getTimeAgo(item.createdAt)}</Text>
+                          <Text style={[styles.chatBubbleTime, isMe && { color: '#3F3F46' }]}>{item.time || getTimeAgo(item.createdAt)}</Text>
                         </View>
                       </View>
                     );
@@ -2651,7 +3061,7 @@ export default function RadarScreen() {
                 </ScrollView>
 
                 <View style={styles.chatInputRow}>
-                  <TextInput 
+                  <TextInput
                     style={styles.chatInputField}
                     placeholder="Type a message..."
                     placeholderTextColor="#52525B"
@@ -2700,7 +3110,7 @@ export default function RadarScreen() {
                           </View>
                         )}
                       </TouchableOpacity>
-                      
+
                       <View style={styles.postUserInfo}>
                         <TouchableOpacity onPress={() => { setSelectedPostModal(null); openUserProfileById(selectedPostModal.userId, ownerName); }} activeOpacity={0.85}>
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
@@ -2719,7 +3129,7 @@ export default function RadarScreen() {
                     </View>
 
                     <Text style={styles.postText}>{selectedPostModal.caption || selectedPostModal.text}</Text>
-                    
+
                     {selectedPostModal.imageUrl ? (
                       <View style={styles.postImageBox}>
                         {isVid ? (
@@ -2732,10 +3142,10 @@ export default function RadarScreen() {
 
                     <View style={styles.postActionsRow}>
                       <TouchableOpacity style={styles.actionBtn} onPress={() => toggleLike(selectedPostModal.id)} activeOpacity={0.7}>
-                        <Ionicons 
-                          name={currentUserId && selectedPostModal.likesList?.includes(currentUserId) ? "heart" : "heart-outline"} 
-                          size={20} 
-                          color={currentUserId && selectedPostModal.likesList?.includes(currentUserId) ? "#EF4444" : "#A1A1AA"} 
+                        <Ionicons
+                          name={currentUserId && selectedPostModal.likesList?.includes(currentUserId) ? "heart" : "heart-outline"}
+                          size={20}
+                          color={currentUserId && selectedPostModal.likesList?.includes(currentUserId) ? "#EF4444" : "#A1A1AA"}
                         />
                         <Text style={[styles.actionText, currentUserId && selectedPostModal.likesList?.includes(currentUserId) && { color: '#EF4444', fontWeight: 'bold' }]}>
                           {selectedPostModal.likesList?.length || 0} Likes
@@ -2810,9 +3220,9 @@ export default function RadarScreen() {
                 </ScrollView>
 
                 <View style={styles.commentInputRow}>
-                  <TextInput 
-                    style={styles.commentInput} 
-                    placeholder="Write a comment..." 
+                  <TextInput
+                    style={styles.commentInput}
+                    placeholder="Write a comment..."
                     placeholderTextColor="#52525B"
                     value={modalCommentInput}
                     onChangeText={setModalCommentInput}
@@ -2852,8 +3262,8 @@ export default function RadarScreen() {
 
               <Text style={styles.label}>Game Access Mode *</Text>
               <View style={styles.accessModesContainer}>
-                <TouchableOpacity 
-                  style={[styles.accessCard, newAccessMode === 'public' && styles.accessCardActive]} 
+                <TouchableOpacity
+                  style={[styles.accessCard, newAccessMode === 'public' && styles.accessCardActive]}
                   onPress={() => setNewAccessMode('public')}
                   activeOpacity={0.85}
                 >
@@ -2864,8 +3274,8 @@ export default function RadarScreen() {
                   <Text style={styles.accessCardDesc}>Everyone can join freely</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity 
-                  style={[styles.accessCard, newAccessMode === 'private' && styles.accessCardActive]} 
+                <TouchableOpacity
+                  style={[styles.accessCard, newAccessMode === 'private' && styles.accessCardActive]}
                   onPress={() => setNewAccessMode('private')}
                   activeOpacity={0.85}
                 >
@@ -2876,20 +3286,20 @@ export default function RadarScreen() {
                   <Text style={styles.accessCardDesc}>Requires admin approval</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity 
-                  style={[styles.accessCard, newAccessMode === 'friends' && styles.accessCardActive]} 
+                <TouchableOpacity
+                  style={[styles.accessCard, newAccessMode === 'friends' && styles.accessCardActive]}
                   onPress={() => setNewAccessMode('friends')}
                   activeOpacity={0.85}
                 >
                   <View style={[styles.accessIconBox, newAccessMode === 'friends' && { backgroundColor: '#3B82F622', borderColor: '#3B82F6' }]}>
-                    <Ionicons name="link-outline" size={20} color={newAccessMode === 'friends' ? '#3B82F6' : '#A1A1AA'} />
+                    <Ionicons name="key-outline" size={20} color={newAccessMode === 'friends' ? '#3B82F6' : '#A1A1AA'} />
                   </View>
-                  <Text style={[styles.accessCardTitle, newAccessMode === 'friends' && { color: '#3B82F6' }]}>Friends Link</Text>
-                  <Text style={styles.accessCardDesc}>Invite link access only</Text>
+                  <Text style={[styles.accessCardTitle, newAccessMode === 'friends' && { color: '#3B82F6' }]}>Friends</Text>
+                  <Text style={styles.accessCardDesc}>Join via game code only</Text>
                 </TouchableOpacity>
               </View>
 
-              <Text style={styles.label}>Court / Venue Name *</Text>
+              <Text style={styles.label}>Court / Location Name *</Text>
               <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
                 <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} placeholder="e.g. Central Court" placeholderTextColor="#52525B" value={newVenue} onChangeText={setNewVenue} />
                 <TouchableOpacity style={styles.mapSearchBtn} onPress={() => { setCreateModalVisible(false); setIsPickingLocation(true); }}>
@@ -2936,8 +3346,16 @@ const styles = StyleSheet.create({
   createGameBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EAB308', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 16 },
   createGameBtnText: { color: '#09090B', fontWeight: '800', fontSize: 12 },
 
+  menuOverlay: { flex: 1, backgroundColor: 'rgba(9,9,11,0.75)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
+  actionMenuCard: { width: '100%', maxWidth: 360, backgroundColor: '#121215', borderRadius: 20, padding: 16, borderWidth: 1, borderColor: '#27272A', gap: 10 },
+  actionMenuTitle: { color: '#FAFAFA', fontSize: 16, fontWeight: '900', marginBottom: 4 },
+  actionMenuOptionBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', padding: 12, borderRadius: 14 },
+  actionMenuIconCircle: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
+  actionMenuOptionTitle: { color: '#FAFAFA', fontSize: 14, fontWeight: '800' },
+  actionMenuOptionSub: { color: '#A1A1AA', fontSize: 11, marginTop: 2 },
+
   map: { width: Dimensions.get('window').width, height: Dimensions.get('window').height * 0.45 },
-  
+
   myLocationMarker: { alignItems: 'center' },
   myLocationAvatarBox: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#18181B', borderWidth: 2, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 2, elevation: 5 },
   myLocationAvatarText: { color: '#EAB308', fontWeight: 'bold', fontSize: 14 },
@@ -2953,7 +3371,7 @@ const styles = StyleSheet.create({
   markerTextBox: { maxWidth: 100 },
   markerTitleText: { color: '#FAFAFA', fontSize: 10, fontWeight: 'bold' },
   markerPlayersText: { fontSize: 9, fontWeight: 'bold' },
-  
+
   pickingBanner: { position: 'absolute', top: 110, alignSelf: 'center', backgroundColor: '#EAB308', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, flexDirection: 'row', alignItems: 'center', zIndex: 50 },
   pickingBannerText: { color: '#09090B', fontWeight: 'bold', fontSize: 12 },
 
@@ -2973,7 +3391,7 @@ const styles = StyleSheet.create({
   filterOptionItemActive: { backgroundColor: '#18181B', borderColor: '#EAB308' },
   filterOptionText: { color: '#D4D4D8', fontSize: 13, fontWeight: '600' },
   filterOptionTextActive: { color: '#EAB308', fontWeight: 'bold' },
-  
+
   filterIconCircle: { width: 26, height: 26, borderRadius: 13, justifyContent: 'center', alignItems: 'center' },
 
   emptyBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30 },
@@ -2985,7 +3403,7 @@ const styles = StyleSheet.create({
   distanceTag: { color: '#A1A1AA', fontSize: 12 },
   gameTitle: { color: '#FAFAFA', fontSize: 15, fontWeight: 'bold', marginBottom: 2 },
   venueText: { color: '#D4D4D8', fontSize: 12, marginBottom: 6 },
-  
+
   gameTimerRow: { flexDirection: 'row', justifyContent: 'space-between', backgroundColor: '#18181B', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, marginBottom: 8 },
   timerText: { color: '#A1A1AA', fontSize: 10, fontWeight: '600' },
   timerExpiryText: { color: '#EAB308', fontSize: 10, fontWeight: 'bold' },
@@ -3001,13 +3419,13 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(9,9,11,0.85)', justifyContent: 'flex-end' },
   modalContent: { backgroundColor: '#121215', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, height: '82%', borderWidth: 1, borderColor: '#27272A' },
   modalContentLarge: { backgroundColor: '#121215', borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 20, height: '90%', borderWidth: 1, borderColor: '#27272A' },
-  
+
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, width: '100%' },
   modalTitle: { color: '#FAFAFA', fontSize: 18, fontWeight: 'bold' },
-  
+
   label: { color: '#A1A1AA', fontSize: 12, fontWeight: 'bold', marginBottom: 6, alignSelf: 'flex-start' },
   input: { backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 10, paddingHorizontal: 12, height: 44, color: '#FAFAFA', marginBottom: 14, width: '100%' },
-  
+
   mapSearchBtn: { backgroundColor: '#EAB308', borderRadius: 10, height: 44, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 6 },
   mapSearchBtnText: { color: '#09090B', fontWeight: 'bold', fontSize: 12 },
 
@@ -3030,7 +3448,7 @@ const styles = StyleSheet.create({
   deleteGameBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#1F1214', borderWidth: 1, borderColor: '#EF4444', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 8 },
   detailTitle: { color: '#FAFAFA', fontSize: 20, fontWeight: 'bold', marginTop: 10, marginBottom: 4 },
   adminInfoText: { color: '#A1A1AA', fontSize: 12 },
-  
+
   navigateBtn: { borderRadius: 10, height: 38, justifyContent: 'center', alignItems: 'center', marginBottom: 10, flexDirection: 'row' },
   navigateBtnText: { color: '#09090B', fontWeight: 'bold', fontSize: 13 },
 
@@ -3039,40 +3457,63 @@ const styles = StyleSheet.create({
   detailLabel: { color: '#A1A1AA', fontSize: 12, fontWeight: 'bold', marginBottom: 6 },
   detailText: { color: '#FAFAFA', fontSize: 13 },
 
-  neonTourneyContainer: { backgroundColor: '#121215', borderWidth: 1.5, borderRadius: 16, padding: 14 },
-  neonIconBadge: { width: 24, height: 24, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  studioLaunchBtn: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 14, borderRadius: 16, borderWidth: 1.5, marginBottom: 12 },
+  studioLaunchIconWrap: { width: 38, height: 38, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
+  studioLaunchTitle: { fontSize: 14, fontWeight: '900' },
+  studioLaunchSub: { color: '#A1A1AA', fontSize: 11, marginTop: 2 },
 
-  adminTabsRow: { flexDirection: 'row', backgroundColor: '#09090B', borderRadius: 10, padding: 4, marginBottom: 12, borderWidth: 1, borderColor: '#27272A' },
-  adminTabBtn: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: 8 },
-  adminTabText: { color: '#A1A1AA', fontSize: 12, fontWeight: '700' },
-  
-  teamsGridModern: { gap: 8 },
-  teamCardModern: { backgroundColor: '#121215', borderRadius: 12, borderWidth: 1, borderColor: '#27272A', borderLeftWidth: 4, padding: 12 },
-  teamCardHeaderModern: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
-  teamBadgeDot: { width: 8, height: 8, borderRadius: 4 },
-  teamCardTitleModern: { color: '#FAFAFA', fontSize: 12, fontWeight: '900', letterSpacing: 0.5 },
-  teamMemberCountBadge: { color: '#A1A1AA', fontSize: 10, fontWeight: 'bold', backgroundColor: '#18181B', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  teamPlayersGridCompact: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
-  teamPlayerChipCompactGrid: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, borderWidth: 1.5, alignSelf: 'flex-start' },
-  teamPlayerNameTextGrid: { fontSize: 12, fontWeight: 'bold' },
+  studioModalSheet: { backgroundColor: '#09090B', borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: 16, height: '92%', borderWidth: 1, borderColor: '#27272A' },
+  studioHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#121215', padding: 14, borderRadius: 18, borderWidth: 1, borderColor: '#27272A', marginBottom: 10 },
+  studioEyebrow: { fontSize: 10, fontWeight: '900', letterSpacing: 0.6 },
+  studioMainTitle: { color: '#FAFAFA', fontSize: 18, fontWeight: '900', marginTop: 2 },
+  studioCloseBtn: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A', justifyContent: 'center', alignItems: 'center' },
 
-  matchCardProContainer: { backgroundColor: '#121215', borderRadius: 12, borderWidth: 1, borderColor: '#27272A', padding: 10 },
-  matchCardHeaderPro: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, borderBottomWidth: 1, borderBottomColor: '#1E1E24', paddingBottom: 6 },
-  matchIdBadgeText: { color: '#EAB308', fontSize: 11, fontWeight: '900', letterSpacing: 0.5 },
-  matchRoundBadgeText: { color: '#71717A', fontSize: 10, fontWeight: 'bold' },
-  matchTeamsCombatBox: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
-  combatTeamSide: { flex: 1, backgroundColor: '#09090B', padding: 8, borderRadius: 8, borderWidth: 1, borderColor: '#1E1E24', alignItems: 'center' },
-  combatTeamName: { color: '#FAFAFA', fontSize: 12, fontWeight: 'bold', textAlign: 'center' },
-  combatVsBadge: { width: 28, height: 28, borderRadius: 14, backgroundColor: '#1F1214', borderWidth: 1, borderColor: '#EF4444', justifyContent: 'center', alignItems: 'center' },
-  combatVsText: { color: '#EF4444', fontSize: 10, fontWeight: '900' },
+  modeSelectorBar: { flexDirection: 'row', gap: 6, marginBottom: 12 },
+  modeChipBtn: { flex: 1, backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', paddingVertical: 8, borderRadius: 10, alignItems: 'center' },
+  modeChipText: { color: '#A1A1AA', fontSize: 11, fontWeight: '800' },
+  modeChipTextActive: { color: '#09090B', fontWeight: '900' },
+
+  twoColumnsWrapper: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  studioColumnCard: { flex: 1, backgroundColor: '#121215', borderRadius: 18, padding: 10, borderWidth: 1.5 },
+  columnTopHeader: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 10, paddingBottom: 8, borderBottomWidth: 1, borderBottomColor: '#27272A' },
+  columnBadgeIcon: { width: 32, height: 32, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
+  columnTitle: { color: '#FAFAFA', fontSize: 13, fontWeight: '900' },
+  columnSubtitle: { color: '#A1A1AA', fontSize: 10, fontWeight: '700', marginTop: 1 },
+
+  columnActionPanel: { backgroundColor: '#09090B', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#27272A', marginBottom: 10, gap: 8 },
+  teamSizeRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  teamSizeLabel: { color: '#A1A1AA', fontSize: 11, fontWeight: '700' },
+  compactSizeInput: { backgroundColor: '#121215', borderWidth: 1, borderRadius: 8, width: 42, height: 30, color: '#FAFAFA', textAlign: 'center', fontSize: 12, fontWeight: '900' },
+  columnPrimaryBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, height: 36, borderRadius: 10, paddingHorizontal: 8 },
+  columnPrimaryBtnText: { color: '#09090B', fontSize: 11, fontWeight: '900' },
+
+  columnEmptyState: { alignItems: 'center', justifyContent: 'center', paddingVertical: 28, backgroundColor: '#09090B', borderRadius: 12, borderWidth: 1, borderColor: '#1E1E24' },
+  columnEmptyText: { color: '#71717A', fontSize: 11, marginTop: 6, textAlign: 'center' },
+
+  studioTeamBox: { backgroundColor: '#09090B', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#27272A', borderTopWidth: 3 },
+  studioTeamHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  studioTeamName: { fontSize: 11, fontWeight: '900', letterSpacing: 0.4 },
+  studioTeamCount: { color: '#A1A1AA', fontSize: 10, fontWeight: '800', backgroundColor: '#18181B', paddingHorizontal: 6, paddingVertical: 1, borderRadius: 5 },
+  studioPlayerPill: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 5 },
+  studioPlayerPillText: { color: '#E4E4E7', fontSize: 11, fontWeight: '700', flex: 1 },
+
+  studioMatchBox: { backgroundColor: '#09090B', borderRadius: 12, padding: 8, borderWidth: 1, borderColor: '#27272A' },
+  studioMatchTop: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 },
+  studioMatchNum: { color: '#EAB308', fontSize: 10, fontWeight: '900', backgroundColor: '#332E0F', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 5 },
+  studioMatchRound: { color: '#A1A1AA', fontSize: 9, fontWeight: '700', maxWidth: '72%' },
+  studioSidePill: { backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', borderRadius: 8, padding: 7, alignItems: 'center' },
+  studioSideText: { color: '#FAFAFA', fontSize: 12, fontWeight: '900', textAlign: 'center' },
+  studioVsDivider: { flexDirection: 'row', alignItems: 'center', gap: 6, marginVertical: 5 },
+  studioLine: { flex: 1, height: 1, backgroundColor: '#27272A' },
+  studioVsLabel: { color: '#EF4444', fontSize: 9, fontWeight: '900' },
+
+  winnerPickRow: { flexDirection: 'row', gap: 4, marginTop: 6 },
+  winnerPickBtn: { flex: 1, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#22C55E66', borderRadius: 6, paddingVertical: 4, paddingHorizontal: 4, alignItems: 'center' },
+  winnerPickBtnText: { color: '#22C55E', fontSize: 9, fontWeight: '800' },
 
   playersGridContainerSmall: { flexDirection: 'row', flexWrap: 'wrap', gap: 6 },
   playerChipSmallGrid: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10, borderWidth: 1.5, alignSelf: 'flex-start' },
   playerChipTextSmallGrid: { fontSize: 12, fontWeight: 'bold' },
-
-  drawInput: { backgroundColor: '#121215', borderWidth: 1, borderRadius: 8, width: 50, height: 38, color: '#FAFAFA', textAlign: 'center', fontSize: 13, fontWeight: 'bold' },
-  drawBtn: { flexDirection: 'row', alignItems: 'center', borderRadius: 8, paddingHorizontal: 12, height: 38 },
-  drawBtnText: { color: '#09090B', fontWeight: 'bold', fontSize: 12 },
 
   listItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#09090B', padding: 12, borderRadius: 12, marginBottom: 8, borderWidth: 1, borderColor: '#27272A' },
   listAvatar: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center', marginRight: 12, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
