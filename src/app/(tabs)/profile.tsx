@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, Alert, TextInput, Image, Dimensions, TouchableWithoutFeedback, Platform, Switch, Linking } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, Alert, TextInput, Image, Dimensions, TouchableWithoutFeedback, Platform, Switch, Linking, ActivityIndicator } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { doc, collection, onSnapshot, updateDoc, setDoc, getDoc, arrayUnion, arrayRemove, query, where, getDocs, addDoc, serverTimestamp } from 'firebase/firestore';
@@ -7,11 +7,44 @@ import { db } from '../../firebase';
 import { useAuth } from '../../context/AuthContext';
 import { router } from 'expo-router';
 import * as ImagePicker from 'expo-image-picker';
+import { uploadAsync, FileSystemUploadType } from 'expo-file-system/legacy';
 import * as Location from 'expo-location';
 import Purchases from 'react-native-purchases';
 import Constants, { ExecutionEnvironment } from 'expo-constants';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { registerForPushNotificationsAsync } from '../../services/notificationService';
+
+const CLOUDINARY_CLOUD_NAME = 'jusifi9d';
+const CLOUDINARY_UPLOAD_PRESET = 'world_sports_unsigned';
+
+const uploadAvatarToCloudinary = async (localUri: string): Promise<string> => {
+  if (!localUri) return '';
+  if (localUri.startsWith('https://')) {
+    return localUri;
+  }
+
+  const uploadUrl = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/image/upload`;
+  const response = await uploadAsync(uploadUrl, localUri, {
+    httpMethod: 'POST',
+    uploadType: FileSystemUploadType.MULTIPART,
+    fieldName: 'file',
+    parameters: {
+      upload_preset: CLOUDINARY_UPLOAD_PRESET,
+      folder: 'world_sports/avatars',
+    },
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Cloudinary upload failed (${response.status}): ${response.body}`);
+  }
+
+  const parsed = response.body ? JSON.parse(response.body) : {};
+  if (!parsed.secure_url) {
+    throw new Error('Missing secure_url in Cloudinary response');
+  }
+
+  return parsed.secure_url;
+};
 
 type ThemeMode = 'dark' | 'light';
 
@@ -221,6 +254,7 @@ export default function ProfileScreen() {
   const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [userPosts, setUserPosts] = useState<PostItem[]>([]);
   const [themeMode, setThemeMode] = useState<ThemeMode>('dark');
+  const [isSavingProfile, setIsSavingProfile] = useState(false);
   
   const [privateAccount, setPrivateAccount] = useState(false);
   const [notificationsChat, setNotificationsChat] = useState(true);
@@ -910,20 +944,21 @@ export default function ProfileScreen() {
 
   const pickImage = async () => {
     let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [1, 1],
       quality: 0.5,
     });
 
-    if (!result.canceled) {
+    if (!result.canceled && result.assets && result.assets.length > 0) {
       setEditAvatar(result.assets[0].uri);
     }
   };
 
   const handleSaveProfile = async () => {
-    if (!currentUser) return;
+    if (!currentUser || isSavingProfile) return;
     try {
+      setIsSavingProfile(true);
       const userRef = doc(db, 'users', currentUser.uid);
       const newName = editName.trim();
 
@@ -932,16 +967,20 @@ export default function ProfileScreen() {
         return;
       }
 
+      const finalAvatarUrl = editAvatar ? await uploadAvatarToCloudinary(editAvatar) : '';
+
       await updateDoc(userRef, {
         name: newName,
-        avatar: editAvatar,
+        avatar: finalAvatarUrl,
       });
+
+      setEditAvatar(finalAvatarUrl);
 
       const postsQuery = query(collection(db, 'posts'), where('userId', '==', currentUser.uid));
       const postsSnapshot = await getDocs(postsQuery);
       const postUpdatePromises = postsSnapshot.docs.map(postDoc => 
         updateDoc(doc(db, 'posts', postDoc.id), {
-          avatarUrl: editAvatar,
+          avatarUrl: finalAvatarUrl,
           userName: newName,
           authorName: newName
         })
@@ -952,7 +991,9 @@ export default function ProfileScreen() {
       Alert.alert('Success', 'Profile updated successfully! 🚀');
     } catch (error) {
       console.error('Error updating profile:', error);
-      Alert.alert('Error', 'Could not update profile.');
+      Alert.alert('Error', 'Could not upload avatar or update profile.');
+    } finally {
+      setIsSavingProfile(false);
     }
   };
 
@@ -1637,12 +1678,12 @@ export default function ProfileScreen() {
       </Modal>
 
       {/* Edit Profile Modal */}
-      <Modal visible={isEditModalVisible} animationType="slide" transparent={true} onRequestClose={() => setIsEditModalVisible(false)}>
+      <Modal visible={isEditModalVisible} animationType="slide" transparent={true} onRequestClose={() => { if (!isSavingProfile) setIsEditModalVisible(false); }}>
         <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
           <View style={[styles.modalContentCenter, themedStyles.modalContentCenter]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Edit Profile ✏️</Text>
-              <TouchableOpacity onPress={() => setIsEditModalVisible(false)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
+              <TouchableOpacity onPress={() => { if (!isSavingProfile) setIsEditModalVisible(false); }} disabled={isSavingProfile} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>
                 <Ionicons name="close" size={22} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
@@ -1657,11 +1698,11 @@ export default function ProfileScreen() {
                   )}
                 </View>
                 <View style={{ flexDirection: 'row', gap: 10 }}>
-                  <TouchableOpacity style={[styles.imagePickBtn, themedStyles.imagePickBtn]} onPress={pickImage} activeOpacity={0.8}>
+                  <TouchableOpacity style={[styles.imagePickBtn, themedStyles.imagePickBtn]} onPress={pickImage} disabled={isSavingProfile} activeOpacity={0.8}>
                     <Text style={styles.imagePickText}>Change Photo</Text>
                   </TouchableOpacity>
                   {editAvatar ? (
-                    <TouchableOpacity style={[styles.imageRemoveBtn, themedStyles.imageRemoveBtn]} onPress={() => setEditAvatar('')} activeOpacity={0.8}>
+                    <TouchableOpacity style={[styles.imageRemoveBtn, themedStyles.imageRemoveBtn]} onPress={() => setEditAvatar('')} disabled={isSavingProfile} activeOpacity={0.8}>
                       <Text style={[styles.imageRemoveText, { color: palette.danger }]}>Remove</Text>
                     </TouchableOpacity>
                   ) : null}
@@ -1669,10 +1710,14 @@ export default function ProfileScreen() {
               </View>
 
               <Text style={[styles.label, themedStyles.label]}>Username / Full Name</Text>
-              <TextInput style={[styles.input, themedStyles.input]} value={editName} onChangeText={setEditName} placeholder="Username" placeholderTextColor={palette.textMuted} />
+              <TextInput style={[styles.input, themedStyles.input]} value={editName} onChangeText={setEditName} placeholder="Username" placeholderTextColor={palette.textMuted} editable={!isSavingProfile} />
 
-              <TouchableOpacity style={styles.saveBtn} onPress={handleSaveProfile} activeOpacity={0.85}>
-                <Text style={[styles.saveBtnText, { color: palette.accentTextOnButton }]}>Save Changes 🚀</Text>
+              <TouchableOpacity style={[styles.saveBtn, isSavingProfile && { opacity: 0.7 }]} onPress={handleSaveProfile} disabled={isSavingProfile} activeOpacity={0.85}>
+                {isSavingProfile ? (
+                  <ActivityIndicator size="small" color={palette.accentTextOnButton} />
+                ) : (
+                  <Text style={[styles.saveBtnText, { color: palette.accentTextOnButton }]}>Save Changes 🚀</Text>
+                )}
               </TouchableOpacity>
             </ScrollView>
           </View>
@@ -2244,7 +2289,7 @@ const createThemedStyles = (palette: ThemePalette) =>
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#09090B' },
   scrollContent: { padding: 20, paddingTop: 50, paddingBottom: 40 },
-  
+  commentBubble: { flex: 1, marginLeft: 10, padding: 10, borderRadius: 12 },
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   homeCategory: { color: '#EAB308', fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
   appTitle: { color: '#FAFAFA', fontSize: 24, fontWeight: '900', fontStyle: 'italic', letterSpacing: 1 },
@@ -2386,7 +2431,6 @@ const styles = StyleSheet.create({
   commentRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10 },
   commentAvatar: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: '#EAB308', overflow: 'hidden' },
   commentAvatarPlaceholder: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, borderColor: '#EAB308', backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center' },
-  commentBubble: { flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 10, borderRadius: 12 },
   commentUser: { color: '#EAB308', fontSize: 12, fontWeight: '700' },
   commentText: { color: '#D4D4D8', fontSize: 13 },
   commentTimeText: { color: '#71717A', fontSize: 10 },

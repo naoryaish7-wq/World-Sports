@@ -2,14 +2,14 @@
   "expo": {
     "name": "World Sports",
     "slug": "WorldSport",
-    "version": "1.0.8",
+    "version": "1.0.9",
     "orientation": "portrait",
     "userInterfaceStyle": "dark",
     "scheme": "worldsports",
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.naor823.WorldSports",
-      "buildNumber": "6",
+      "buildNumber": "7",
       "deploymentTarget": "16.4",
       "icon": "./assets/notification-icon.png",
       "entitlements": {

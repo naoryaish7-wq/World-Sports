@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useFocusEffect } from 'expo-router';
-import { StyleSheet, Text, View, ScrollView, FlatList, Image, TouchableOpacity, TextInput, Modal, Alert, Dimensions, TouchableWithoutFeedback, PanResponder, Animated } from 'react-native';
+import { StyleSheet, Text, View, ScrollView, FlatList, Image, TouchableOpacity, TextInput, Modal, Alert, Dimensions, TouchableWithoutFeedback, PanResponder, Animated, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../context/AuthContext';
 import * as ImagePicker from 'expo-image-picker';
+import { uploadAsync, FileSystemUploadType } from 'expo-file-system/legacy';
 import { doc, onSnapshot, collection, addDoc, updateDoc, deleteDoc, serverTimestamp, query, orderBy, limit, getDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { db } from '../../firebase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -139,6 +140,19 @@ type AppNotification = {
   createdAt?: any;
 };
 
+const isValidMediaUri = (uri?: string | null): uri is string => {
+  if (!uri || typeof uri !== 'string') return false;
+  const trimmed = uri.trim();
+  if (!trimmed) return false;
+  return (
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('file://') ||
+    trimmed.startsWith('content://') ||
+    trimmed.startsWith('ph://')
+  );
+};
+
 const sendExpoPushNotification = async (targetUserId: string, title: string, body: string, data?: any) => {
   try {
     const userDocRef = doc(db, 'users', targetUserId);
@@ -179,7 +193,7 @@ const getTimeAgo = (timestamp: any) => {
   try {
     const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
     const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
-    
+
     let interval = seconds / 31536000;
     if (interval > 1) return `${Math.floor(interval)}y ago`;
     interval = seconds / 2592000;
@@ -196,8 +210,49 @@ const getTimeAgo = (timestamp: any) => {
   }
 };
 
+function SafeImage({
+  uri,
+  style,
+  placeholderText = 'P',
+  placeholderStyle,
+  textStyle,
+  resizeMode = 'cover',
+}: {
+  uri?: string | null;
+  style: any;
+  placeholderText?: string;
+  placeholderStyle?: any;
+  textStyle?: any;
+  resizeMode?: 'cover' | 'contain' | 'stretch' | 'repeat' | 'center';
+}) {
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [uri]);
+
+  if (!isValidMediaUri(uri) || hasError) {
+    return (
+      <View style={[style, styles.avatarPlaceholder, placeholderStyle]}>
+        <Text style={[styles.avatarPlaceholderText, textStyle]}>
+          {placeholderText ? placeholderText[0].toUpperCase() : 'P'}
+        </Text>
+      </View>
+    );
+  }
+
+  return (
+    <Image
+      source={{ uri }}
+      style={style}
+      resizeMode={resizeMode}
+      onError={() => setHasError(true)}
+    />
+  );
+}
+
 function PostVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean }) {
-  const player = useVideoPlayer(uri, player => {
+  const player = useVideoPlayer(isValidMediaUri(uri) ? uri : null, player => {
     player.loop = true;
     player.staysActiveInBackground = false;
     player.muted = true;
@@ -219,8 +274,8 @@ function PostVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean }) 
       if (isActive) {
         activeVideoPlayers.forEach(p => {
           if (p !== player) {
-            try { 
-              p.pause(); 
+            try {
+              p.pause();
               p.muted = true;
             } catch (e) {}
           }
@@ -230,27 +285,38 @@ function PostVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean }) 
       } else {
         player.pause();
         player.muted = true;
-        player.currentTime = 0;
       }
     } catch (e) {}
   }, [isActive, player]);
 
-  if (!isActive) {
-    return null;
+  if (!isValidMediaUri(uri)) {
+    return (
+      <View style={[styles.postImageContent, { justifyContent: 'center', alignItems: 'center', backgroundColor: '#121215' }]}>
+        <Ionicons name="videocam-off-outline" size={28} color="#A1A1AA" />
+        <Text style={{ color: '#A1A1AA', fontSize: 12, marginTop: 6 }}>Video unavailable</Text>
+      </View>
+    );
   }
 
   return (
-    <VideoView
-      style={styles.postImageContent}
-      player={player}
-      nativeControls={true}
-      contentFit="cover"
-    />
+    <View style={styles.postImageContent}>
+      <VideoView
+        style={styles.postImageContent}
+        player={player}
+        nativeControls={true}
+        contentFit="cover"
+      />
+      {!isActive && (
+        <View style={styles.videoInactiveBadge} pointerEvents="none">
+          <Ionicons name="play" size={16} color="#FAFAFA" />
+        </View>
+      )}
+    </View>
   );
 }
 
 function ProfileVideoThumbnail({ uri }: { uri: string }) {
-  const player = useVideoPlayer(uri, player => {
+  const player = useVideoPlayer(isValidMediaUri(uri) ? uri : null, player => {
     player.loop = false;
     player.staysActiveInBackground = false;
     player.muted = true;
@@ -270,6 +336,10 @@ function ProfileVideoThumbnail({ uri }: { uri: string }) {
     };
   }, [player]);
 
+  if (!isValidMediaUri(uri)) {
+    return <View style={[styles.postThumbnailImage, { backgroundColor: '#18181B' }]} />;
+  }
+
   return (
     <VideoView
       style={styles.postThumbnailImage}
@@ -281,7 +351,7 @@ function ProfileVideoThumbnail({ uri }: { uri: string }) {
 }
 
 function StoryVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean }) {
-  const player = useVideoPlayer(uri, player => {
+  const player = useVideoPlayer(isValidMediaUri(uri) ? uri : null, player => {
     player.loop = true;
     player.staysActiveInBackground = false;
     player.muted = true;
@@ -316,6 +386,15 @@ function StoryVideoPlayer({ uri, isActive }: { uri: string; isActive: boolean })
     } catch (e) {}
   }, [isActive, player]);
 
+  if (!isValidMediaUri(uri)) {
+    return (
+      <View style={[styles.fullStoryVideo, { justifyContent: 'center', alignItems: 'center' }]}>
+        <Ionicons name="videocam-off-outline" size={32} color="#A1A1AA" />
+        <Text style={{ color: '#A1A1AA', fontSize: 12, marginTop: 8 }}>Story video unavailable</Text>
+      </View>
+    );
+  }
+
   return (
     <VideoView
       style={styles.fullStoryVideo}
@@ -330,6 +409,7 @@ export default function HomeScreen() {
   const { user } = useAuth();
   const [isScreenFocused, setIsScreenFocused] = useState(true);
   const [themeMode, setThemeMode] = useState<ThemeMode>('dark');
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
 
   const palette = themeMode === 'light' ? LIGHT_THEME : DARK_THEME;
   const themedStyles = useMemo(() => createThemedStyles(palette), [palette]);
@@ -371,6 +451,46 @@ export default function HomeScreen() {
   const [activeVideoId, setActiveVideoId] = useState<string | null>(null);
 
   const appLoadTimeRef = useRef<number>(Date.now());
+
+  const uploadMediaToStorage = useCallback(
+    async (
+      localUri: string,
+      folder: 'posts' | 'stories',
+      mediaType: 'image' | 'video'
+    ): Promise<string> => {
+      if (!localUri) return '';
+      if (localUri.startsWith('https://')) {
+        return localUri;
+      }
+
+      const CLOUD_NAME = 'jusifi9d';
+      const UPLOAD_PRESET = 'world_sports_unsigned';
+      const resourceType = mediaType === 'video' ? 'video' : 'image';
+      const uploadUrl = `https://api.cloudinary.com/v1_1/${CLOUD_NAME}/${resourceType}/upload`;
+
+      const response = await uploadAsync(uploadUrl, localUri, {
+        httpMethod: 'POST',
+        uploadType: FileSystemUploadType.MULTIPART,
+        fieldName: 'file',
+        parameters: {
+          upload_preset: UPLOAD_PRESET,
+          folder: `world_sports/${folder}`,
+        },
+      });
+
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`Cloudinary upload failed (${response.status}): ${response.body}`);
+      }
+
+      const parsed = response.body ? JSON.parse(response.body) : {};
+      if (!parsed.secure_url) {
+        throw new Error('Missing secure_url in Cloudinary response');
+      }
+
+      return parsed.secure_url;
+    },
+    []
+  );
 
   const isBlockedBidirectional = useCallback((otherUserId?: string, otherUserName?: string): boolean => {
     const cleanName = (otherUserName || '').trim().toLowerCase();
@@ -575,7 +695,7 @@ export default function HomeScreen() {
 
   useEffect(() => {
     const q = query(
-      collection(db, 'posts'), 
+      collection(db, 'posts'),
       orderBy('createdAt', 'desc'),
       limit(15)
     );
@@ -613,7 +733,7 @@ export default function HomeScreen() {
       const postsList: Post[] = snapshot.docs.map((docSnap: any) => {
         const data = docSnap.data();
         const likesList = data.likesList || [];
-        
+
         const authorDoc = allUsersList.find(u => u.uid === data.userId || u.name === (data.userName || data.authorName));
         const resolvedAvatar = authorDoc?.avatar || data.avatarUrl || '';
 
@@ -644,7 +764,7 @@ export default function HomeScreen() {
 
   const [activeGroupIndex, setActiveGroupIndex] = useState<number | null>(null);
   const [activeStoryInGroupIndex, setActiveStoryInGroupIndex] = useState<number>(0);
-  
+
   const progressAnim = useRef(new Animated.Value(0)).current;
   const timerRef = useRef<Animated.CompositeAnimation | null>(null);
   const [isPaused, setIsPaused] = useState(false);
@@ -652,7 +772,7 @@ export default function HomeScreen() {
 
   const rawGroupedStories: GroupedStory[] = [];
   const myStories = stories.filter(s => s.isMine || (!!currentUserId && s.userUid === currentUserId) || (!!liveName && s.name === liveName));
-  
+
   const otherStories = stories.filter(s => {
     if (s.isMine || (!!currentUserId && s.userUid === currentUserId) || (!!liveName && s.name === liveName)) return false;
     if (isBlockedBidirectional(s.userUid, s.name)) return false;
@@ -1147,7 +1267,7 @@ export default function HomeScreen() {
         });
       } else if (isPrivateAccount) {
         await updateDoc(targetRef, { pendingRequests: arrayUnion(currentUserId) });
-        
+
         const reqMsg = `${liveName} requested to follow you.`;
         await addDoc(collection(db, 'users', targetProfileUser.uid, 'notifications'), {
           senderUid: currentUserId,
@@ -1194,9 +1314,9 @@ export default function HomeScreen() {
       'Are you sure you want to report this post for inappropriate content?',
       [
         { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Report', 
-          style: 'destructive', 
+        {
+          text: 'Report',
+          style: 'destructive',
           onPress: async () => {
             try {
               if (currentUserId) {
@@ -1212,7 +1332,7 @@ export default function HomeScreen() {
               console.error('Error reporting post:', e);
               Alert.alert('Error', 'Could not submit report.');
             }
-          } 
+          }
         }
       ]
     );
@@ -1224,9 +1344,9 @@ export default function HomeScreen() {
       'Are you sure you want to report this story for inappropriate content?',
       [
         { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Report', 
-          style: 'destructive', 
+        {
+          text: 'Report',
+          style: 'destructive',
           onPress: async () => {
             try {
               if (currentUserId) {
@@ -1242,7 +1362,7 @@ export default function HomeScreen() {
               console.error('Error reporting story:', e);
               Alert.alert('Error', 'Could not submit report.');
             }
-          } 
+          }
         }
       ]
     );
@@ -1252,7 +1372,7 @@ export default function HomeScreen() {
   const [selectedStoryUri, setSelectedStoryUri] = useState<string | null>(null);
   const [storyMediaType, setStoryMediaType] = useState<'image' | 'video'>('image');
   const [storyCaption, setStoryCaption] = useState('');
-  
+
   const [storyFontSize, setStoryFontSize] = useState<number>(20);
   const [storyTextColor, setStoryTextColor] = useState<string>('#ffffff');
   const [storyBgColor, setStoryBgColor] = useState<string>('rgba(0,0,0,0.6)');
@@ -1310,7 +1430,7 @@ export default function HomeScreen() {
       const currentLikesList = post.likesList || [];
       const hasLiked = currentLikesList.includes(currentUserId);
 
-      let updatedLikesList = hasLiked 
+      let updatedLikesList = hasLiked
         ? currentLikesList.filter(id => id !== currentUserId)
         : [...currentLikesList, currentUserId];
 
@@ -1404,7 +1524,7 @@ export default function HomeScreen() {
         const currentComments = story.storyComments || [];
         const updatedStoryComments = [...currentComments, newComment];
         await updateDoc(storyRef, { storyComments: updatedStoryComments });
-        
+
         if (story.userUid && story.userUid !== currentUserId) {
           const replyMsg = `${liveName} replied to your story: "${storyCommentInput.trim()}" 💬`;
           await addDoc(collection(db, 'users', story.userUid, 'notifications'), {
@@ -1428,9 +1548,9 @@ export default function HomeScreen() {
   const handleDeletePost = async (postId: string) => {
     Alert.alert('Delete Post', 'Are you sure you want to delete this post?', [
       { text: 'Cancel', style: 'cancel' },
-      { 
-        text: 'Delete', 
-        style: 'destructive', 
+      {
+        text: 'Delete',
+        style: 'destructive',
         onPress: async () => {
           try {
             await deleteDoc(doc(db, 'posts', postId));
@@ -1443,7 +1563,7 @@ export default function HomeScreen() {
           } catch (e) {
             console.error('Error deleting post:', e);
           }
-        } 
+        }
       }
     ]);
   };
@@ -1451,9 +1571,9 @@ export default function HomeScreen() {
   const handleDeleteStory = (storyId: string) => {
     Alert.alert('Delete Story', 'Are you sure you want to delete your story?', [
       { text: 'Cancel', style: 'cancel' },
-      { 
-        text: 'Delete', 
-        style: 'destructive', 
+      {
+        text: 'Delete',
+        style: 'destructive',
         onPress: async () => {
           try {
             await deleteDoc(doc(db, 'stories', storyId));
@@ -1461,7 +1581,7 @@ export default function HomeScreen() {
           } catch (e) {
             console.error('Error deleting story from Firestore:', e);
           }
-        } 
+        }
       }
     ]);
   };
@@ -1469,8 +1589,8 @@ export default function HomeScreen() {
   const handlePickStoryMedia = async () => {
     stopAllVideos();
 
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images', 'videos'],
       allowsEditing: true,
       aspect: [9, 16],
       quality: 0.8,
@@ -1492,13 +1612,20 @@ export default function HomeScreen() {
   };
 
   const handlePublishStory = async () => {
-    if (!selectedStoryUri) return;
+    if (!selectedStoryUri || isUploadingMedia) return;
 
     try {
+      setIsUploadingMedia(true);
+      const uploadedStoryUrl = await uploadMediaToStorage(
+        selectedStoryUri,
+        'stories',
+        storyMediaType
+      );
+
       await addDoc(collection(db, 'stories'), {
         userUid: currentUserId,
         name: liveName,
-        imageUrl: selectedStoryUri,
+        imageUrl: uploadedStoryUrl,
         mediaType: storyMediaType,
         avatarUrl: liveAvatar || '',
         caption: storyCaption.trim() ? storyCaption : '',
@@ -1523,7 +1650,9 @@ export default function HomeScreen() {
       Alert.alert('Success', 'Story published and saved for 24 hours! 📸');
     } catch (e) {
       console.error('Error publishing story:', e);
-      Alert.alert('Error', 'Could not publish story.');
+      Alert.alert('Error', 'Could not upload or publish story. Check your connection and Storage permissions.');
+    } finally {
+      setIsUploadingMedia(false);
     }
   };
 
@@ -1563,7 +1692,7 @@ export default function HomeScreen() {
   };
 
   const handleCreatePost = async () => {
-    if (!newPostText.trim() && !newPostImage) return;
+    if ((!newPostText.trim() && !newPostImage) || isUploadingMedia) return;
 
     const availableSportsList = userSports.length > 0 ? userSports : ['Football'];
     const assignedSport = selectedPostSport || availableSportsList[0];
@@ -1573,7 +1702,11 @@ export default function HomeScreen() {
     }
 
     try {
+      setIsUploadingMedia(true);
       const savedEmail = await AsyncStorage.getItem('@saved_user_email') || '';
+      const uploadedImageUrl = newPostImage
+        ? await uploadMediaToStorage(newPostImage, 'posts', newPostMediaType)
+        : '';
 
       await addDoc(collection(db, 'posts'), {
         userId: currentUserId,
@@ -1583,7 +1716,7 @@ export default function HomeScreen() {
         authorMeta: liveMeta,
         avatarUrl: liveAvatar || '',
         caption: newPostText,
-        imageUrl: newPostImage || '',
+        imageUrl: uploadedImageUrl,
         mediaType: newPostMediaType,
         sport: assignedSport,
         likesList: [],
@@ -1599,13 +1732,15 @@ export default function HomeScreen() {
       Alert.alert('Success', 'Post published successfully! 🚀');
     } catch (e) {
       console.error('Error creating post:', e);
-      Alert.alert('Error', 'Could not publish post.');
+      Alert.alert('Error', 'Could not upload media or publish post. Check your connection and Storage permissions.');
+    } finally {
+      setIsUploadingMedia(false);
     }
   };
 
   const pickPostMedia = async () => {
-    let result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.All,
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images', 'videos'],
       allowsEditing: true,
       quality: 0.8,
     });
@@ -1614,6 +1749,11 @@ export default function HomeScreen() {
       setNewPostImage(asset.uri);
       setNewPostMediaType(asset.type === 'video' ? 'video' : 'image');
     }
+  };
+
+  const handleRemovePostMedia = () => {
+    setNewPostImage(null);
+    setNewPostMediaType('image');
   };
 
   const handleAddComment = async (postId: string, isModal: boolean = false) => {
@@ -1711,7 +1851,7 @@ export default function HomeScreen() {
   const targetFollowersList = allUsersList.filter(u => targetProfileUser?.followers?.includes(u.uid));
   const targetFollowingList = allUsersList.filter(u => targetProfileUser?.following?.includes(u.uid));
   const targetSportsList = targetProfileUser?.sports || (targetProfileUser?.sport ? [targetProfileUser.sport] : ['Football']);
-  
+
   const isViewingMyOwnProfile = !!currentUserId && targetProfileUser?.uid === currentUserId;
   const isTargetBlockedByMe = targetProfileUser?.uid ? blockedUsersList.includes(targetProfileUser.uid) : false;
   const isTargetBlockingMe = Array.isArray(targetProfileUser?.blockedUsers) && currentUserId
@@ -1750,11 +1890,11 @@ export default function HomeScreen() {
 
   return (
     <View style={[styles.container, themedStyles.container]}>
-      <FlatList 
+      <FlatList
         data={filteredPosts}
         keyExtractor={(item) => item.id}
-        style={[styles.container, themedStyles.container]} 
-        contentContainerStyle={styles.scrollContent} 
+        style={[styles.container, themedStyles.container]}
+        contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         viewabilityConfig={viewabilityConfig}
         onViewableItemsChanged={onViewableItemsChanged}
@@ -1763,12 +1903,12 @@ export default function HomeScreen() {
             <View style={styles.headerRow}>
               <View>
                 <Text style={styles.homeCategory}>Home</Text>
-                <Text style={[styles.appTitle, themedStyles.appTitle]}>World <Text style={{color: palette.accent}}>Sports</Text></Text>
+                <Text style={[styles.appTitle, themedStyles.appTitle]}>World <Text style={{ color: palette.accent }}>Sports</Text></Text>
               </View>
 
               <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-                <TouchableOpacity 
-                  style={[styles.notificationBellBtn, themedStyles.notificationBellBtn]} 
+                <TouchableOpacity
+                  style={[styles.notificationBellBtn, themedStyles.notificationBellBtn]}
                   onPress={() => {
                     stopAllVideos();
                     setNotificationsModalVisible(true);
@@ -1801,13 +1941,12 @@ export default function HomeScreen() {
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.storiesContainer}>
               <TouchableOpacity style={styles.storyItem} onPress={handlePickStoryMedia} activeOpacity={0.85}>
                 <View style={[styles.myStoryRing, themedStyles.avatarPlaceholder, { borderColor: palette.accent }]}>
-                  {liveAvatar ? (
-                    <Image source={{ uri: liveAvatar }} style={styles.storyImg} />
-                  ) : (
-                    <View style={[styles.avatarPlaceholder, themedStyles.avatarPlaceholder]}>
-                      <Text style={styles.avatarPlaceholderText}>{liveName ? liveName[0].toUpperCase() : 'P'}</Text>
-                    </View>
-                  )}
+                  <SafeImage
+                    uri={liveAvatar}
+                    style={styles.storyImg}
+                    placeholderText={liveName || 'P'}
+                    placeholderStyle={themedStyles.avatarPlaceholder}
+                  />
                   <View style={[styles.plusBadge, { borderColor: palette.bgPrimary }]}>
                     <Ionicons name="add" size={12} color={palette.accentTextOnButton} />
                   </View>
@@ -1826,13 +1965,13 @@ export default function HomeScreen() {
 
                 return (
                   <View key={group.userUid} style={styles.storyItem}>
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       style={[
                         styles.storyRing,
                         themedStyles.avatarPlaceholder,
                         group.isMine && styles.myStoryRingActive,
                         hasUnwatchedStories ? { borderColor: palette.accent } : { borderColor: palette.textMuted }
-                      ]} 
+                      ]}
                       onPress={() => {
                         stopAllVideos();
                         setActiveGroupIndex(groupIndex);
@@ -1840,16 +1979,15 @@ export default function HomeScreen() {
                       }}
                       activeOpacity={0.85}
                     >
-                      {group.avatarUrl ? (
-                        <Image source={{ uri: group.avatarUrl }} style={styles.storyImg} />
-                      ) : (
-                        <View style={[styles.avatarPlaceholder, themedStyles.avatarPlaceholder]}>
-                          <Text style={styles.avatarPlaceholderText}>{group.name ? group.name[0].toUpperCase() : 'S'}</Text>
-                        </View>
-                      )}
+                      <SafeImage
+                        uri={group.avatarUrl}
+                        style={styles.storyImg}
+                        placeholderText={group.name || 'S'}
+                        placeholderStyle={themedStyles.avatarPlaceholder}
+                      />
                     </TouchableOpacity>
 
-                    <TouchableOpacity 
+                    <TouchableOpacity
                       onPress={() => {
                         if (!group.isMine) {
                           openUserProfileById(group.userUid, group.name);
@@ -1880,7 +2018,7 @@ export default function HomeScreen() {
           const postTimeAgo = getTimeAgo(post.createdAt);
           const authorUserObj = allUsersList.find(u => u.uid === post.userId || u.name === post.authorName);
           const isVideo = post.mediaType === 'video';
-          
+
           const promotedUntilTime = authorUserObj?.promotedUntil?.toMillis ? authorUserObj.promotedUntil.toMillis() : (authorUserObj?.promotedUntil?.seconds ? authorUserObj.promotedUntil.seconds * 1000 : 0);
           const isPostPromoted = authorUserObj?.isPromoted && promotedUntilTime > Date.now();
 
@@ -1888,7 +2026,7 @@ export default function HomeScreen() {
 
           return (
             <View key={post.id} style={[styles.postCard, themedStyles.postCard, isPostPromoted && { borderColor: '#3B82F6', borderWidth: 1.5 }]}>
-              
+
               <View style={styles.postHeader}>
                 <TouchableOpacity
                   style={[styles.postAvatarBox, themedStyles.avatarPlaceholder]}
@@ -1896,15 +2034,14 @@ export default function HomeScreen() {
                   hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                   activeOpacity={0.75}
                 >
-                  {post.avatarUrl ? (
-                    <Image source={{ uri: post.avatarUrl }} style={styles.avatarImg} />
-                  ) : (
-                    <View style={[styles.avatarPlaceholder, themedStyles.avatarPlaceholder]}>
-                      <Text style={styles.avatarPlaceholderText}>{post.authorName ? post.authorName[0].toUpperCase() : 'P'}</Text>
-                    </View>
-                  )}
+                  <SafeImage
+                    uri={post.avatarUrl}
+                    style={styles.avatarImg}
+                    placeholderText={post.authorName || 'P'}
+                    placeholderStyle={themedStyles.avatarPlaceholder}
+                  />
                 </TouchableOpacity>
-                
+
                 <View style={styles.postUserInfo}>
                   <TouchableOpacity
                     onPress={() => openUserProfileById(post.userId, post.authorName)}
@@ -1940,7 +2077,7 @@ export default function HomeScreen() {
               </View>
 
               <Text style={[styles.postText, themedStyles.postText]}>{post.text}</Text>
-              
+
               {post.imageUrl ? (
                 <TouchableWithoutFeedback onPress={() => {
                   if (isVideo) setActiveVideoId(post.id);
@@ -1950,7 +2087,14 @@ export default function HomeScreen() {
                     {isVideo ? (
                       <PostVideoPlayer key={post.id} uri={post.imageUrl} isActive={isVideoActive} />
                     ) : (
-                      <Image source={{ uri: post.imageUrl }} style={styles.postImageContent} />
+                      <SafeImage
+                        uri={post.imageUrl}
+                        style={styles.postImageContent}
+                        placeholderText="IMG"
+                        placeholderStyle={themedStyles.postImageBox}
+                        textStyle={{ fontSize: 14, color: palette.textMuted }}
+                        resizeMode="cover"
+                      />
                     )}
                   </View>
                 </TouchableWithoutFeedback>
@@ -1958,10 +2102,10 @@ export default function HomeScreen() {
 
               <View style={[styles.postActionsRow, themedStyles.postActionsRow]}>
                 <TouchableOpacity style={styles.actionBtn} onPress={() => toggleLike(post.id)} activeOpacity={0.7}>
-                  <Ionicons 
-                    name={post.isLiked ? "heart" : "heart-outline"} 
-                    size={20} 
-                    color={post.isLiked ? palette.danger : palette.textMuted} 
+                  <Ionicons
+                    name={post.isLiked ? "heart" : "heart-outline"}
+                    size={20}
+                    color={post.isLiked ? palette.danger : palette.textMuted}
                   />
                   <Text style={[styles.actionText, themedStyles.actionText, post.isLiked && { color: palette.danger, fontWeight: 'bold' }]}>
                     {post.likes} Likes
@@ -2004,28 +2148,30 @@ export default function HomeScreen() {
                   const isPending = notif.type === 'follow_request' && notif.status === 'pending';
 
                   return (
-                    <TouchableOpacity 
-                      key={notif.id} 
+                    <TouchableOpacity
+                      key={notif.id}
                       style={[styles.listItem, themedStyles.listItem]}
                       onPress={() => openUserProfileById(notif.senderUid, senderUser?.name)}
                       activeOpacity={0.85}
                     >
                       <View style={[styles.listAvatar, themedStyles.avatarPlaceholder]}>
-                        {senderUser?.avatar ? (
-                          <Image source={{ uri: senderUser.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
-                        ) : (
-                          <Text style={{color: palette.accent, fontWeight: 'bold'}}>{senderUser?.name ? senderUser.name[0] : 'U'}</Text>
-                        )}
+                        <SafeImage
+                          uri={senderUser?.avatar}
+                          style={{ width: 36, height: 36, borderRadius: 18 }}
+                          placeholderText={senderUser?.name || 'U'}
+                          placeholderStyle={themedStyles.avatarPlaceholder}
+                          textStyle={{ fontSize: 13 }}
+                        />
                       </View>
-                      
-                      <View style={{flex: 1, marginRight: 8}}>
+
+                      <View style={{ flex: 1, marginRight: 8 }}>
                         <Text style={[styles.listName, themedStyles.listName]}>{notif.message}</Text>
                         <Text style={[styles.listCity, themedStyles.listCity]}>{getTimeAgo(notif.createdAt)}</Text>
                       </View>
 
                       {isPending ? (
                         <View style={{ flexDirection: 'row', gap: 6 }}>
-                          <TouchableOpacity 
+                          <TouchableOpacity
                             style={{ backgroundColor: palette.accent, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 }}
                             onPress={() => handleAcceptRequest(notif.id, notif.senderUid)}
                             activeOpacity={0.8}
@@ -2033,7 +2179,7 @@ export default function HomeScreen() {
                             <Text style={{ color: palette.accentTextOnButton, fontWeight: 'bold', fontSize: 11 }}>Accept</Text>
                           </TouchableOpacity>
 
-                          <TouchableOpacity 
+                          <TouchableOpacity
                             style={[styles.secondaryActionChip, themedStyles.secondaryActionChip]}
                             onPress={() => handleRejectRequest(notif.id, notif.senderUid)}
                             activeOpacity={0.8}
@@ -2076,49 +2222,49 @@ export default function HomeScreen() {
                     commentsModalPost.comments
                       .filter(c => !isBlockedBidirectional(c.userId, c.user))
                       .map(c => {
-                      const commentTimeAgo = getTimeAgo(c.createdAt);
-                      const commentUserObj = allUsersList.find(u => u.uid === c.userId || u.name === c.user);
-                      return (
-                        <View key={c.id} style={styles.commentRow}>
-                          <TouchableOpacity
-                            onPress={() => openUserProfileById(c.userId, c.user)}
-                            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                            activeOpacity={0.75}
-                          >
-                            {c.avatarUrl ? (
-                              <Image source={{ uri: c.avatarUrl }} style={styles.commentAvatar} />
-                            ) : (
-                              <View style={[styles.commentAvatarPlaceholder, themedStyles.avatarPlaceholder]}>
-                                <Text style={{ color: palette.accent, fontSize: 10, fontWeight: 'bold' }}>{c.user ? c.user[0].toUpperCase() : 'U'}</Text>
+                        const commentTimeAgo = getTimeAgo(c.createdAt);
+                        const commentUserObj = allUsersList.find(u => u.uid === c.userId || u.name === c.user);
+                        return (
+                          <View key={c.id} style={styles.commentRow}>
+                            <TouchableOpacity
+                              onPress={() => openUserProfileById(c.userId, c.user)}
+                              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              activeOpacity={0.75}
+                            >
+                              <SafeImage
+                                uri={c.avatarUrl}
+                                style={styles.commentAvatar}
+                                placeholderText={c.user || 'U'}
+                                placeholderStyle={[styles.commentAvatarPlaceholder, themedStyles.avatarPlaceholder]}
+                                textStyle={{ fontSize: 10 }}
+                              />
+                            </TouchableOpacity>
+                            <View style={[styles.commentBubble, themedStyles.commentBubble]}>
+                              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
+                                <TouchableOpacity
+                                  onPress={() => openUserProfileById(c.userId, c.user)}
+                                  hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
+                                  activeOpacity={0.75}
+                                >
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                                    <Text style={styles.commentUser}>{c.user}</Text>
+                                    {commentUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color={palette.accent} />}
+                                  </View>
+                                </TouchableOpacity>
+                                <Text style={[styles.commentTimeText, themedStyles.postTime]}>{commentTimeAgo}</Text>
                               </View>
-                            )}
-                          </TouchableOpacity>
-                          <View style={[styles.commentBubble, themedStyles.commentBubble]}>
-                            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 2 }}>
-                              <TouchableOpacity
-                                onPress={() => openUserProfileById(c.userId, c.user)}
-                                hitSlop={{ top: 8, bottom: 8, left: 4, right: 8 }}
-                                activeOpacity={0.75}
-                              >
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                                  <Text style={styles.commentUser}>{c.user}</Text>
-                                  {commentUserObj?.isVip && <Ionicons name="checkmark-circle" size={12} color={palette.accent} />}
-                                </View>
-                              </TouchableOpacity>
-                              <Text style={[styles.commentTimeText, themedStyles.postTime]}>{commentTimeAgo}</Text>
+                              <Text style={[styles.commentText, themedStyles.commentText]}>{c.text}</Text>
                             </View>
-                            <Text style={[styles.commentText, themedStyles.commentText]}>{c.text}</Text>
                           </View>
-                        </View>
-                      );
-                    })
+                        );
+                      })
                   )}
                 </ScrollView>
 
                 <View style={[styles.commentInputRow, themedStyles.commentInputRow]}>
-                  <TextInput 
-                    style={[styles.commentInput, themedStyles.commentInput]} 
-                    placeholder="Write a comment..." 
+                  <TextInput
+                    style={[styles.commentInput, themedStyles.commentInput]}
+                    placeholder="Write a comment..."
                     placeholderTextColor={palette.textMuted}
                     value={modalCommentInput}
                     onChangeText={setModalCommentInput}
@@ -2133,9 +2279,27 @@ export default function HomeScreen() {
         </View>
       </Modal>
 
-      <Modal visible={storyModalVisible} transparent={true} animationType="slide" onRequestClose={() => setStoryModalVisible(false)}>
+      <Modal
+        visible={storyModalVisible}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => {
+          if (!isUploadingMedia) {
+            setStoryModalVisible(false);
+          }
+        }}
+      >
         <View style={[styles.storyModalOverlay, { backgroundColor: palette.storyOverlay }]}>
-          <TouchableOpacity style={[styles.closeStoryBtn, themedStyles.storyFloatingBtn]} onPress={() => setStoryModalVisible(false)} activeOpacity={0.8}>
+          <TouchableOpacity
+            style={[styles.closeStoryBtn, themedStyles.storyFloatingBtn]}
+            onPress={() => {
+              if (!isUploadingMedia) {
+                setStoryModalVisible(false);
+              }
+            }}
+            disabled={isUploadingMedia}
+            activeOpacity={0.8}
+          >
             <Ionicons name="close" size={24} color={palette.textPrimary} />
           </TouchableOpacity>
 
@@ -2143,25 +2307,31 @@ export default function HomeScreen() {
             {selectedStoryUri && (
               <View style={[styles.storyCanvasBox, themedStyles.storyCanvasBox]}>
                 {storyMediaType === 'video' ? (
-                  <PostVideoPlayer key="editor_video" uri={selectedStoryUri} isActive={false} />
+                  <StoryVideoPlayer key="editor_video" uri={selectedStoryUri} isActive={false} />
                 ) : (
-                  <Image source={{ uri: selectedStoryUri }} style={styles.storyCanvasImage} />
+                  <SafeImage
+                    uri={selectedStoryUri}
+                    style={styles.storyCanvasImage}
+                    placeholderText="IMG"
+                    placeholderStyle={themedStyles.storyCanvasBox}
+                    resizeMode="cover"
+                  />
                 )}
-                
+
                 {storyCaption ? (
-                  <Animated.View 
+                  <Animated.View
                     style={[
-                      styles.captionOverlayBox, 
+                      styles.captionOverlayBox,
                       { backgroundColor: storyBgColor },
                       { transform: [{ translateX: pan.x }, { translateY: pan.y }] }
                     ]}
                     {...panResponder.panHandlers}
                   >
-                    <Text style={[styles.captionOverlayText, { 
-                      fontSize: storyFontSize, 
-                      color: storyTextColor, 
-                      fontWeight: storyFontWeight, 
-                      fontStyle: storyFontStyle 
+                    <Text style={[styles.captionOverlayText, {
+                      fontSize: storyFontSize,
+                      color: storyTextColor,
+                      fontWeight: storyFontWeight,
+                      fontStyle: storyFontStyle
                     }]}>
                       {storyCaption}
                     </Text>
@@ -2182,15 +2352,15 @@ export default function HomeScreen() {
               </View>
 
               <View style={[styles.controlGroup, themedStyles.controlGroup]}>
-                <TouchableOpacity 
-                  style={[styles.miniBtn, themedStyles.miniBtn, storyFontWeight === 'bold' && styles.activeMiniBtn]} 
+                <TouchableOpacity
+                  style={[styles.miniBtn, themedStyles.miniBtn, storyFontWeight === 'bold' && styles.activeMiniBtn]}
                   onPress={() => setStoryFontWeight(prev => prev === 'bold' ? 'normal' : 'bold')}
                   activeOpacity={0.7}
                 >
                   <Text style={[styles.miniBtnText, themedStyles.miniBtnText, storyFontWeight === 'bold' && { color: palette.accentTextOnButton }, { fontWeight: 'bold' }]}>B</Text>
                 </TouchableOpacity>
-                <TouchableOpacity 
-                  style={[styles.miniBtn, themedStyles.miniBtn, storyFontStyle === 'italic' && styles.activeMiniBtn]} 
+                <TouchableOpacity
+                  style={[styles.miniBtn, themedStyles.miniBtn, storyFontStyle === 'italic' && styles.activeMiniBtn]}
                   onPress={() => setStoryFontStyle(prev => prev === 'italic' ? 'normal' : 'italic')}
                   activeOpacity={0.7}
                 >
@@ -2201,9 +2371,9 @@ export default function HomeScreen() {
 
             <View style={styles.colorPaletteRow}>
               {['#ffffff', '#000000', '#EAB308', '#EF4444', '#22C55E', '#3B82F6', '#EC4899'].map(color => (
-                <TouchableOpacity 
-                  key={color} 
-                  style={[styles.colorCircle, { backgroundColor: color, borderColor: palette.border }, storyTextColor === color && { borderWidth: 3, borderColor: palette.textPrimary }]} 
+                <TouchableOpacity
+                  key={color}
+                  style={[styles.colorCircle, { backgroundColor: color, borderColor: palette.border }, storyTextColor === color && { borderWidth: 3, borderColor: palette.textPrimary }]}
                   onPress={() => setStoryTextColor(color)}
                   activeOpacity={0.8}
                 />
@@ -2211,42 +2381,51 @@ export default function HomeScreen() {
             </View>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.bgOptionsRow}>
-              <TouchableOpacity 
-                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'rgba(0,0,0,0.6)' && themedStyles.activeBgChip]} 
+              <TouchableOpacity
+                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'rgba(0,0,0,0.6)' && themedStyles.activeBgChip]}
                 onPress={() => setStoryBgColor('rgba(0,0,0,0.6)')}
               >
                 <Text style={[styles.bgOptionText, themedStyles.bgOptionText]}>Dark BG</Text>
               </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'rgba(255,255,255,0.8)' && themedStyles.activeBgChip]} 
+              <TouchableOpacity
+                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'rgba(255,255,255,0.8)' && themedStyles.activeBgChip]}
                 onPress={() => setStoryBgColor('rgba(255,255,255,0.8)')}
               >
                 <Text style={[styles.bgOptionText, { color: '#000' }]}>Light BG</Text>
               </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'rgba(234,179,8,0.8)' && themedStyles.activeBgChip]} 
+              <TouchableOpacity
+                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'rgba(234,179,8,0.8)' && themedStyles.activeBgChip]}
                 onPress={() => setStoryBgColor('rgba(234,179,8,0.8)')}
               >
                 <Text style={[styles.bgOptionText, { color: '#000' }]}>Gold BG</Text>
               </TouchableOpacity>
-              <TouchableOpacity 
-                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'transparent' && themedStyles.activeBgChip]} 
+              <TouchableOpacity
+                style={[styles.bgOptionChip, themedStyles.bgOptionChip, storyBgColor === 'transparent' && themedStyles.activeBgChip]}
                 onPress={() => setStoryBgColor('transparent')}
               >
                 <Text style={[styles.bgOptionText, themedStyles.bgOptionText]}>No BG</Text>
               </TouchableOpacity>
             </ScrollView>
 
-            <TextInput 
-              style={[styles.storyTextInput, themedStyles.commentInput]} 
-              placeholder="Type text on story..." 
+            <TextInput
+              style={[styles.storyTextInput, themedStyles.commentInput]}
+              placeholder="Type text on story..."
               placeholderTextColor={palette.textMuted}
               value={storyCaption}
               onChangeText={setStoryCaption}
             />
 
-            <TouchableOpacity style={styles.publishStoryBtn} onPress={handlePublishStory} activeOpacity={0.85}>
-              <Text style={[styles.publishStoryBtnText, { color: palette.accentTextOnButton }]}>Share to Story 🚀</Text>
+            <TouchableOpacity
+              style={[styles.publishStoryBtn, isUploadingMedia && { opacity: 0.7 }]}
+              onPress={handlePublishStory}
+              disabled={isUploadingMedia}
+              activeOpacity={0.85}
+            >
+              {isUploadingMedia ? (
+                <ActivityIndicator size="small" color={palette.accentTextOnButton} />
+              ) : (
+                <Text style={[styles.publishStoryBtnText, { color: palette.accentTextOnButton }]}>Share to Story 🚀</Text>
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -2271,13 +2450,13 @@ export default function HomeScreen() {
             const isStoryVideo = currentStory.mediaType === 'video';
 
             return (
-              <TouchableWithoutFeedback 
-                onPressIn={handlePressInStory} 
+              <TouchableWithoutFeedback
+                onPressIn={handlePressInStory}
                 onPressOut={handlePressOutStory}
               >
                 <View style={styles.storyViewerScrollContentContainer}>
                   <View style={[styles.storyViewerCard, themedStyles.modalContentCenter]}>
-                    
+
                     <View style={[styles.storyProgressBarsRow, { backgroundColor: palette.border }]}>
                       {currentGroup.stories.map((st, idx) => {
                         let widthInterpolate: any = 0;
@@ -2300,18 +2479,20 @@ export default function HomeScreen() {
                     </View>
 
                     <View style={styles.storyHeaderUserRow}>
-                      <TouchableOpacity 
+                      <TouchableOpacity
                         style={styles.storyHeaderUserBtn}
                         onPress={() => openUserProfileById(currentGroup.userUid, currentGroup.name)}
                         hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                         activeOpacity={0.75}
                       >
                         <View style={[styles.storyHeaderAvatar, themedStyles.avatarPlaceholder]}>
-                          {currentGroup.avatarUrl ? (
-                            <Image source={{ uri: currentGroup.avatarUrl }} style={styles.storyImg} />
-                          ) : (
-                            <Text style={{ color: palette.accent, fontWeight: 'bold', fontSize: 11 }}>{currentGroup.name ? currentGroup.name[0] : 'P'}</Text>
-                          )}
+                          <SafeImage
+                            uri={currentGroup.avatarUrl}
+                            style={styles.storyImg}
+                            placeholderText={currentGroup.name || 'P'}
+                            placeholderStyle={themedStyles.avatarPlaceholder}
+                            textStyle={{ fontSize: 11 }}
+                          />
                         </View>
                         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                           <Text style={[styles.fullStoryName, themedStyles.postUserName]}>
@@ -2327,14 +2508,21 @@ export default function HomeScreen() {
                       {isStoryVideo ? (
                         <StoryVideoPlayer key={currentStory.id} uri={currentStory.imageUrl} isActive={isScreenFocused && activeGroupIndex !== null} />
                       ) : (
-                        <Image source={{ uri: currentStory.imageUrl }} style={styles.fullStoryImage} />
+                        <SafeImage
+                          uri={currentStory.imageUrl}
+                          style={styles.fullStoryImage}
+                          placeholderText="STORY"
+                          placeholderStyle={{ backgroundColor: '#121215' }}
+                          textStyle={{ fontSize: 14, color: palette.textMuted }}
+                          resizeMode="contain"
+                        />
                       )}
                     </View>
-                    
+
                     {currentStory.caption && (
                       <View style={[
-                        styles.captionViewerBox, 
-                        { 
+                        styles.captionViewerBox,
+                        {
                           backgroundColor: currentStory.captionStyle?.backgroundColor || 'rgba(0,0,0,0.6)',
                           transform: [
                             { translateX: currentStory.captionStyle?.offsetX || 0 },
@@ -2342,8 +2530,8 @@ export default function HomeScreen() {
                           ]
                         }
                       ]}>
-                        <Text style={[styles.captionOverlayText, { 
-                          fontSize: currentStory.captionStyle?.fontSize || 20, 
+                        <Text style={[styles.captionOverlayText, {
+                          fontSize: currentStory.captionStyle?.fontSize || 20,
                           color: currentStory.captionStyle?.color || '#ffffff',
                           fontWeight: currentStory.captionStyle?.fontWeight || 'bold',
                           fontStyle: currentStory.captionStyle?.fontStyle || 'normal'
@@ -2370,19 +2558,19 @@ export default function HomeScreen() {
                               const viewerUser = allUsersList.find(u => u.uid === viewerUid);
                               if (!viewerUser) return null;
                               return (
-                                <TouchableOpacity 
-                                  key={viewerUid} 
+                                <TouchableOpacity
+                                  key={viewerUid}
                                   style={[styles.viewerItemRow, themedStyles.viewerItemRow]}
                                   onPress={() => openUserProfileById(viewerUser.uid, viewerUser.name)}
                                   activeOpacity={0.8}
                                 >
-                                  {viewerUser.avatar ? (
-                                    <Image source={{ uri: viewerUser.avatar }} style={styles.viewerAvatar} />
-                                  ) : (
-                                    <View style={[styles.viewerAvatar, themedStyles.avatarPlaceholder, { justifyContent: 'center', alignItems: 'center' }]}>
-                                      <Text style={{ color: palette.accent, fontSize: 10, fontWeight: 'bold' }}>{viewerUser.name ? viewerUser.name[0] : 'U'}</Text>
-                                    </View>
-                                  )}
+                                  <SafeImage
+                                    uri={viewerUser.avatar}
+                                    style={styles.viewerAvatar}
+                                    placeholderText={viewerUser.name || 'U'}
+                                    placeholderStyle={themedStyles.avatarPlaceholder}
+                                    textStyle={{ fontSize: 10 }}
+                                  />
                                   <Text style={{ color: palette.textPrimary, fontSize: 11, fontWeight: '600', marginLeft: 6 }}>{viewerUser.name}</Text>
                                   {viewerUser.isVip && <Ionicons name="checkmark-circle" size={12} color={palette.accent} style={{ marginLeft: 4 }} />}
                                 </TouchableOpacity>
@@ -2390,7 +2578,7 @@ export default function HomeScreen() {
                             })
                           )}
                         </ScrollView>
-                        
+
                         <Text style={{ color: palette.accent, fontSize: 12, fontWeight: 'bold', marginTop: 6, marginBottom: 4 }}>💬 Comments ({storyCommentsList.length}):</Text>
                         {storyCommentsList.length === 0 ? (
                           <Text style={{ color: palette.textMuted, fontSize: 11, fontStyle: 'italic' }}>No comments on this story yet.</Text>
@@ -2414,7 +2602,7 @@ export default function HomeScreen() {
 
                     {!isStoryMine && (
                       <View style={styles.storyCommentInputRow}>
-                        <TextInput 
+                        <TextInput
                           style={[styles.storyCommentInputField, themedStyles.commentInput]}
                           placeholder="Reply to story..."
                           placeholderTextColor={palette.textMuted}
@@ -2422,14 +2610,14 @@ export default function HomeScreen() {
                           onChangeText={setStoryCommentInput}
                         />
                         <TouchableOpacity style={styles.storyCommentSendBtn} onPress={() => handleAddStoryComment(currentStory.id)} activeOpacity={0.85}>
-                           <Ionicons name="send" size={14} color={palette.accentTextOnButton} />
+                          <Ionicons name="send" size={14} color={palette.accentTextOnButton} />
                         </TouchableOpacity>
                       </View>
                     )}
 
                     {!isStoryMine && (
-                      <TouchableOpacity 
-                        style={[styles.reportStoryIconBtn, themedStyles.storyFloatingBtn]} 
+                      <TouchableOpacity
+                        style={[styles.reportStoryIconBtn, themedStyles.storyFloatingBtn]}
                         onPress={() => handleReportStory(currentStory.id)}
                         activeOpacity={0.8}
                       >
@@ -2438,8 +2626,8 @@ export default function HomeScreen() {
                     )}
 
                     {isStoryMine && (
-                      <TouchableOpacity 
-                        style={[styles.deleteStoryIconBtn, themedStyles.storyFloatingBtn]} 
+                      <TouchableOpacity
+                        style={[styles.deleteStoryIconBtn, themedStyles.storyFloatingBtn]}
                         onPress={() => handleDeleteStory(currentStory.id)}
                         activeOpacity={0.8}
                       >
@@ -2460,18 +2648,18 @@ export default function HomeScreen() {
       <Modal visible={!!selectedUserModalId && !targetActiveModalList && !selectedPostModal && !commentsModalPost} animationType="slide" transparent={true} onRequestClose={() => setSelectedUserModalId(null)}>
         <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
           <View style={[styles.modalContentHomeStyle, themedStyles.modalContentHomeStyle]}>
-            
+
             <View style={styles.modalHeader}>
               <View>
                 <Text style={styles.homeCategory}>Player Profile</Text>
-                <Text style={[styles.appTitle, themedStyles.appTitle]}>World <Text style={{color: palette.accent}}>Sports</Text></Text>
+                <Text style={[styles.appTitle, themedStyles.appTitle]}>World <Text style={{ color: palette.accent }}>Sports</Text></Text>
               </View>
-              <TouchableOpacity 
+              <TouchableOpacity
                 onPress={() => {
                   setTargetActiveModalList(null);
                   setSelectedUserModalId(null);
-                }} 
-                activeOpacity={0.8} 
+                }}
+                activeOpacity={0.8}
                 style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}
               >
                 <Ionicons name="close" size={22} color={palette.textPrimary} />
@@ -2479,28 +2667,30 @@ export default function HomeScreen() {
             </View>
 
             {targetProfileUser && (
-              <ScrollView 
-                style={{ flex: 1 }} 
-                contentContainerStyle={{ paddingBottom: 40 }} 
+              <ScrollView
+                style={{ flex: 1 }}
+                contentContainerStyle={{ paddingBottom: 40 }}
                 showsVerticalScrollIndicator={false}
                 nestedScrollEnabled={true}
               >
-                
+
                 <View style={styles.headerProfile}>
-                  <TouchableOpacity 
-                    style={[styles.avatarLarge, themedStyles.avatarPlaceholder]} 
+                  <TouchableOpacity
+                    style={[styles.avatarLarge, themedStyles.avatarPlaceholder]}
                     onPress={() => {
-                      if (targetProfileUser.avatar && !isAnyBlockBetweenUs) {
+                      if (targetProfileUser.avatar && !isAnyBlockBetweenUs && isValidMediaUri(targetProfileUser.avatar)) {
                         setZoomedAvatarUri(targetProfileUser.avatar);
                       }
                     }}
                     activeOpacity={0.7}
                   >
-                    {targetProfileUser.avatar && !isAnyBlockBetweenUs ? (
-                      <Image source={{ uri: targetProfileUser.avatar }} style={styles.avatarImage} />
-                    ) : (
-                      <Text style={styles.avatarLargeText}>{targetProfileUser.name ? targetProfileUser.name[0] : 'P'}</Text>
-                    )}
+                    <SafeImage
+                      uri={!isAnyBlockBetweenUs ? targetProfileUser.avatar : undefined}
+                      style={styles.avatarImage}
+                      placeholderText={targetProfileUser.name || 'P'}
+                      placeholderStyle={themedStyles.avatarPlaceholder}
+                      textStyle={styles.avatarLargeText}
+                    />
                   </TouchableOpacity>
 
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
@@ -2508,7 +2698,7 @@ export default function HomeScreen() {
                     {targetProfileUser.isVip && <Ionicons name="checkmark-circle" size={18} color={palette.accent} />}
                     {targetProfileUser.isPrivate && <Ionicons name="lock-closed" size={14} color={palette.danger} />}
                   </View>
-                  
+
                   {!isAnyBlockBetweenUs && (
                     <>
                       <View style={styles.sportsTagsRow}>
@@ -2528,18 +2718,18 @@ export default function HomeScreen() {
 
                 {!isAnyBlockBetweenUs && (
                   <View style={[styles.statsRow, themedStyles.statsRow]}>
-                    <TouchableOpacity 
-                      style={styles.statBox} 
-                      onPress={() => setTargetActiveModalList('followers')} 
+                    <TouchableOpacity
+                      style={styles.statBox}
+                      onPress={() => setTargetActiveModalList('followers')}
                       activeOpacity={0.8}
                     >
                       <Text style={[styles.statNumber, { color: palette.accent }]}>{targetProfileUser.followers?.length || 0}</Text>
                       <Text style={[styles.statLabel, themedStyles.postUserMeta]}>Followers</Text>
                     </TouchableOpacity>
 
-                    <TouchableOpacity 
-                      style={styles.statBox} 
-                      onPress={() => setTargetActiveModalList('following')} 
+                    <TouchableOpacity
+                      style={styles.statBox}
+                      onPress={() => setTargetActiveModalList('following')}
                       activeOpacity={0.8}
                     >
                       <Text style={[styles.statNumber, { color: palette.accent }]}>{targetProfileUser.following?.length || 0}</Text>
@@ -2556,17 +2746,17 @@ export default function HomeScreen() {
                 {!isViewingMyOwnProfile && (
                   <View style={{ marginBottom: 16, gap: 10 }}>
                     {!isAnyBlockBetweenUs && currentUserId && (
-                      <TouchableOpacity 
+                      <TouchableOpacity
                         style={[
-                          styles.profileFollowBtn, 
+                          styles.profileFollowBtn,
                           isApprovedFollower && [styles.profileFollowingBtn, themedStyles.profileFollowingBtn],
                           hasRequestedFollow && [styles.secondaryActionChip, themedStyles.secondaryActionChip],
-                        ]} 
+                        ]}
                         onPress={handleToggleFollowTarget}
                         activeOpacity={0.85}
                       >
                         <Text style={[
-                          styles.profileFollowBtnText, 
+                          styles.profileFollowBtnText,
                           { color: palette.accentTextOnButton },
                           isApprovedFollower && styles.profileFollowingBtnText,
                           hasRequestedFollow && { color: palette.textPrimary }
@@ -2634,17 +2824,23 @@ export default function HomeScreen() {
                         {targetUserPosts.map(post => {
                           const isVid = post.mediaType === 'video';
                           return (
-                            <TouchableOpacity 
-                              key={post.id} 
-                              style={[styles.postThumbnailBox, themedStyles.postThumbnailBox]} 
+                            <TouchableOpacity
+                              key={post.id}
+                              style={[styles.postThumbnailBox, themedStyles.postThumbnailBox]}
                               onPress={() => {
                                 stopAllVideos();
                                 setSelectedPostModal(post);
-                              }} 
+                              }}
                               activeOpacity={0.7}
                             >
                               {post.imageUrl && !isVid ? (
-                                <Image source={{ uri: post.imageUrl }} style={styles.postThumbnailImage} />
+                                <SafeImage
+                                  uri={post.imageUrl}
+                                  style={styles.postThumbnailImage}
+                                  placeholderText="IMG"
+                                  placeholderStyle={themedStyles.postThumbnailBox}
+                                  textStyle={{ fontSize: 11, color: palette.textMuted }}
+                                />
                               ) : isVid ? (
                                 <View style={[styles.postThumbnailImage, themedStyles.avatarPlaceholder, { position: 'relative' }]}>
                                   {!!post.imageUrl && <ProfileVideoThumbnail uri={post.imageUrl} />}
@@ -2701,15 +2897,14 @@ export default function HomeScreen() {
                       hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       activeOpacity={0.75}
                     >
-                      {selectedPostModal.avatarUrl ? (
-                        <Image source={{ uri: selectedPostModal.avatarUrl }} style={styles.avatarImg} />
-                      ) : (
-                        <View style={[styles.avatarPlaceholder, themedStyles.avatarPlaceholder]}>
-                          <Text style={styles.avatarPlaceholderText}>{selectedPostModal.authorName ? selectedPostModal.authorName[0].toUpperCase() : 'P'}</Text>
-                        </View>
-                      )}
+                      <SafeImage
+                        uri={selectedPostModal.avatarUrl}
+                        style={styles.avatarImg}
+                        placeholderText={selectedPostModal.authorName || 'P'}
+                        placeholderStyle={themedStyles.avatarPlaceholder}
+                      />
                     </TouchableOpacity>
-                    
+
                     <View style={styles.postUserInfo}>
                       <TouchableOpacity
                         onPress={() => openUserProfileById(selectedPostModal.userId, selectedPostModal.authorName)}
@@ -2733,14 +2928,20 @@ export default function HomeScreen() {
                   </View>
 
                   <Text style={[styles.postText, themedStyles.postText]}>{selectedPostModal.text}</Text>
-                  
+
                   {selectedPostModal.imageUrl ? (
                     <TouchableWithoutFeedback onPress={() => handleDoubleTap(selectedPostModal.id)}>
                       <View style={[styles.postImageBox, themedStyles.postImageBox]}>
                         {selectedPostModal.mediaType === 'video' ? (
                           <PostVideoPlayer key={`modal_${selectedPostModal.id}`} uri={selectedPostModal.imageUrl} isActive={true} />
                         ) : (
-                          <Image source={{ uri: selectedPostModal.imageUrl }} style={styles.postImageContent} />
+                          <SafeImage
+                            uri={selectedPostModal.imageUrl}
+                            style={styles.postImageContent}
+                            placeholderText="IMG"
+                            placeholderStyle={themedStyles.postImageBox}
+                            textStyle={{ fontSize: 14, color: palette.textMuted }}
+                          />
                         )}
                       </View>
                     </TouchableWithoutFeedback>
@@ -2748,10 +2949,10 @@ export default function HomeScreen() {
 
                   <View style={[styles.postActionsRow, themedStyles.postActionsRow]}>
                     <TouchableOpacity style={styles.actionBtn} onPress={() => toggleLike(selectedPostModal.id)} activeOpacity={0.7}>
-                      <Ionicons 
-                        name={selectedPostModal.isLiked ? "heart" : "heart-outline"} 
-                        size={20} 
-                        color={selectedPostModal.isLiked ? palette.danger : palette.textMuted} 
+                      <Ionicons
+                        name={selectedPostModal.isLiked ? "heart" : "heart-outline"}
+                        size={20}
+                        color={selectedPostModal.isLiked ? palette.danger : palette.textMuted}
                       />
                       <Text style={[styles.actionText, themedStyles.actionText, selectedPostModal.isLiked && { color: palette.danger, fontWeight: 'bold' }]}>
                         {selectedPostModal.likes} Likes
@@ -2773,15 +2974,15 @@ export default function HomeScreen() {
 
       <Modal visible={!!zoomedAvatarUri} transparent={true} animationType="fade" onRequestClose={() => setZoomedAvatarUri(null)}>
         <View style={styles.zoomedAvatarOverlay}>
-          <TouchableOpacity 
-            style={[styles.closeZoomedBtn, themedStyles.storyFloatingBtn]} 
+          <TouchableOpacity
+            style={[styles.closeZoomedBtn, themedStyles.storyFloatingBtn]}
             onPress={() => setZoomedAvatarUri(null)}
             activeOpacity={0.8}
           >
             <Ionicons name="close" size={24} color={palette.textPrimary} />
           </TouchableOpacity>
-          {zoomedAvatarUri && (
-            <Image source={{ uri: zoomedAvatarUri }} style={styles.zoomedAvatarImage} />
+          {zoomedAvatarUri && isValidMediaUri(zoomedAvatarUri) && (
+            <Image source={{ uri: zoomedAvatarUri }} style={styles.zoomedAvatarImage} resizeMode="contain" />
           )}
         </View>
       </Modal>
@@ -2802,51 +3003,62 @@ export default function HomeScreen() {
               {(targetActiveModalList === 'followers' ? targetFollowersList : targetFollowingList)
                 .filter((item: any) => !isBlockedBidirectional(item.uid, item.name))
                 .map((item: any) => (
-                <TouchableOpacity 
-                  key={item.uid} 
-                  style={[styles.listItem, themedStyles.listItem]} 
-                  onPress={() => openUserProfileById(item.uid, item.name)}
-                  activeOpacity={0.85}
-                >
-                  <View style={[styles.listAvatar, themedStyles.avatarPlaceholder]}>
-                    {item.avatar ? (
-                      <Image source={{ uri: item.avatar }} style={{ width: 36, height: 36, borderRadius: 18 }} />
-                    ) : (
-                      <Text style={{color: palette.accent, fontWeight: 'bold'}}>{item.name ? item.name[0] : 'P'}</Text>
-                    )}
-                  </View>
-                  <View style={{flex: 1}}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                      <Text style={[styles.listName, themedStyles.listName]}>{item.name}</Text>
-                      {item.isVip && <Ionicons name="checkmark-circle" size={14} color={palette.accent} />}
+                  <TouchableOpacity
+                    key={item.uid}
+                    style={[styles.listItem, themedStyles.listItem]}
+                    onPress={() => openUserProfileById(item.uid, item.name)}
+                    activeOpacity={0.85}
+                  >
+                    <View style={[styles.listAvatar, themedStyles.avatarPlaceholder]}>
+                      <SafeImage
+                        uri={item.avatar}
+                        style={{ width: 36, height: 36, borderRadius: 18 }}
+                        placeholderText={item.name || 'P'}
+                        placeholderStyle={themedStyles.avatarPlaceholder}
+                        textStyle={{ fontSize: 13 }}
+                      />
                     </View>
-                    <Text style={[styles.listCity, themedStyles.listCity]}>📍 {item.city} |  Age: {item.age || 'N/A'}</Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color={palette.textMuted} />
-                </TouchableOpacity>
-              ))}
+                    <View style={{ flex: 1 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                        <Text style={[styles.listName, themedStyles.listName]}>{item.name}</Text>
+                        {item.isVip && <Ionicons name="checkmark-circle" size={14} color={palette.accent} />}
+                      </View>
+                      <Text style={[styles.listCity, themedStyles.listCity]}>📍 {item.city} |  Age: {item.age || 'N/A'}</Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color={palette.textMuted} />
+                  </TouchableOpacity>
+                ))}
             </ScrollView>
           </View>
         </View>
       </Modal>
 
-      <Modal visible={createPostVisible} transparent={true} animationType="fade" onRequestClose={() => setCreatePostVisible(false)}>
+      <Modal
+        visible={createPostVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {
+          if (!isUploadingMedia) {
+            setCreatePostVisible(false);
+          }
+        }}
+      >
         <View style={[styles.modalOverlayCenter, themedStyles.modalOverlayCenter]}>
           <View style={[styles.modalContentCenter, themedStyles.modalContentCenter]}>
             <View style={styles.modalHeader}>
               <Text style={[styles.modalTitle, themedStyles.modalTitle]}>Create New Post 📝</Text>
-              <TouchableOpacity onPress={() => setCreatePostVisible(false)} activeOpacity={0.8}>
+              <TouchableOpacity onPress={() => !isUploadingMedia && setCreatePostVisible(false)} disabled={isUploadingMedia} activeOpacity={0.8}>
                 <Ionicons name="close" size={24} color={palette.textPrimary} />
               </TouchableOpacity>
             </View>
 
-            <TextInput 
-              style={[styles.createPostInput, themedStyles.commentInput]} 
-              placeholder="What's on your mind about football/sports?" 
-              placeholderTextColor={palette.textMuted} 
-              multiline 
-              value={newPostText} 
-              onChangeText={newText => setNewPostText(newText)} 
+            <TextInput
+              style={[styles.createPostInput, themedStyles.commentInput]}
+              placeholder="What's on your mind about sports?"
+              placeholderTextColor={palette.textMuted}
+              multiline
+              value={newPostText}
+              onChangeText={newText => setNewPostText(newText)}
             />
 
             <Text style={{ color: palette.textPrimary, fontSize: 13, fontWeight: '700', marginBottom: 6 }}>Select Sport Category:</Text>
@@ -2871,22 +3083,67 @@ export default function HomeScreen() {
                     activeOpacity={0.8}
                   >
                     <Text style={{ color: isSelected ? palette.accentTextOnButton : palette.textPrimary, fontSize: 12, fontWeight: 'bold' }}>
-                       {sp}
+                      {sp}
                     </Text>
                   </TouchableOpacity>
                 );
               })}
             </ScrollView>
 
-            <TouchableOpacity style={[styles.pickImageBtn, themedStyles.commentInput]} onPress={pickPostMedia} activeOpacity={0.8}>
-              <Ionicons name={newPostMediaType === 'video' ? 'videocam-outline' : 'image-outline'} size={18} color={palette.accent} />
-              <Text style={styles.pickImageText}>
-                {newPostImage ? (newPostMediaType === 'video' ? 'Video Attached ✓' : 'Image Attached ✓') : 'Attach Media from Gallery'}
-              </Text>
-            </TouchableOpacity>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+              <TouchableOpacity
+                style={[styles.pickImageBtn, themedStyles.commentInput, { flex: 1, marginBottom: 0 }]}
+                onPress={pickPostMedia}
+                disabled={isUploadingMedia}
+                activeOpacity={0.8}
+              >
+                <Ionicons name={newPostMediaType === 'video' ? 'videocam-outline' : 'image-outline'} size={18} color={palette.accent} />
+                <Text style={styles.pickImageText}>
+                  {newPostImage ? (newPostMediaType === 'video' ? 'Video Attached ✓' : 'Image Attached ✓') : 'Attach Media from Gallery'}
+                </Text>
+              </TouchableOpacity>
 
-            <TouchableOpacity style={styles.publishBtn} onPress={handleCreatePost} activeOpacity={0.85}>
-              <Text style={[styles.publishBtnText, { color: palette.accentTextOnButton }]}>Publish Post 🚀</Text>
+              {newPostImage ? (
+                <TouchableOpacity
+                  style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 4,
+                    backgroundColor: palette.bgElevated,
+                    borderWidth: 1,
+                    borderColor: palette.danger,
+                    borderRadius: 12,
+                    height: 46,
+                    paddingHorizontal: 12,
+                    justifyContent: 'center',
+                  }}
+                  onPress={handleRemovePostMedia}
+                  disabled={isUploadingMedia}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="close-circle-outline" size={16} color={palette.danger} />
+                  <Text style={{ color: palette.danger, fontSize: 12, fontWeight: '700' }}>Remove</Text>
+                </TouchableOpacity>
+              ) : null}
+            </View>
+
+            {newPostImage && newPostMediaType === 'image' ? (
+              <View style={{ marginBottom: 14, borderRadius: 12, overflow: 'hidden', borderWidth: 1, borderColor: palette.border, height: 110, backgroundColor: palette.bgPrimary }}>
+                <Image source={{ uri: newPostImage }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+              </View>
+            ) : null}
+
+            <TouchableOpacity
+              style={[styles.publishBtn, isUploadingMedia && { opacity: 0.7 }]}
+              onPress={handleCreatePost}
+              disabled={isUploadingMedia}
+              activeOpacity={0.85}
+            >
+              {isUploadingMedia ? (
+                <ActivityIndicator size="small" color={palette.accentTextOnButton} />
+              ) : (
+                <Text style={[styles.publishBtnText, { color: palette.accentTextOnButton }]}>Publish Post 🚀</Text>
+              )}
             </TouchableOpacity>
           </View>
         </View>
@@ -2903,6 +3160,7 @@ const createThemedStyles = (palette: ThemePalette) =>
     notificationBellBtn: { backgroundColor: palette.bgSurface, borderColor: palette.border },
     avatarPlaceholder: { backgroundColor: palette.bgElevated },
     storyName: { color: palette.textMuted },
+    modalTitle: { color: palette.textPrimary },
     emptyFeedBox: { backgroundColor: palette.bgSurface, borderColor: palette.border },
     emptyFeedText: { color: palette.textMuted },
     postCard: { backgroundColor: palette.bgSurface, borderColor: palette.border },
@@ -2950,22 +3208,22 @@ const createThemedStyles = (palette: ThemePalette) =>
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#09090B' },
   scrollContent: { padding: 20, paddingTop: 50, paddingBottom: 40 },
-  
+
   headerRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   homeCategory: { color: '#EAB308', fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
   appTitle: { color: '#FAFAFA', fontSize: 24, fontWeight: '900', fontStyle: 'italic', letterSpacing: 1 },
-  
+
   createBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#EAB308', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, shadowColor: '#EAB308', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.2, shadowRadius: 6, elevation: 4 },
   createBtnText: { color: '#09090B', fontWeight: '800', fontSize: 12 },
-  
-  notificationBellBtn: { 
-    width: 38, 
-    height: 38, 
-    borderRadius: 19, 
-    backgroundColor: '#121215', 
-    borderWidth: 1, 
-    borderColor: '#27272A', 
-    justifyContent: 'center', 
+
+  notificationBellBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#121215',
+    borderWidth: 1,
+    borderColor: '#27272A',
+    justifyContent: 'center',
     alignItems: 'center',
     position: 'relative'
   },
@@ -2975,8 +3233,8 @@ const styles = StyleSheet.create({
   myStoryRing: { width: 68, height: 68, borderRadius: 34, borderWidth: 2, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', position: 'relative', backgroundColor: '#18181B', overflow: 'hidden' },
   myStoryRingActive: { borderWidth: 2, borderColor: '#EAB308' },
   storyRing: { width: 68, height: 68, borderRadius: 34, borderWidth: 2, justifyContent: 'center', alignItems: 'center', backgroundColor: '#18181B', overflow: 'hidden' },
-  unwatchedRing: { borderColor: '#EAB308' }, 
-  watchedRing: { borderColor: '#52525B' },    
+  unwatchedRing: { borderColor: '#EAB308' },
+  watchedRing: { borderColor: '#52525B' },
   storyImg: { width: '100%', height: '100%' },
   avatarPlaceholder: { width: '100%', height: '100%', justifyContent: 'center', alignItems: 'center', backgroundColor: '#18181B' },
   avatarPlaceholderText: { color: '#EAB308', fontSize: 20, fontWeight: 'bold' },
@@ -3000,6 +3258,19 @@ const styles = StyleSheet.create({
   postText: { color: '#E4E4E7', fontSize: 14, marginBottom: 12, lineHeight: 20 },
   postImageBox: { height: 320, backgroundColor: '#09090B', borderRadius: 14, overflow: 'hidden', marginBottom: 12, borderWidth: 1, borderColor: '#27272A', position: 'relative' },
   postImageContent: { width: '100%', height: '100%' },
+  videoInactiveBadge: {
+    position: 'absolute',
+    bottom: 12,
+    right: 12,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(9,9,11,0.75)',
+    borderWidth: 1,
+    borderColor: '#EAB308',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
 
   postActionsRow: { flexDirection: 'row', gap: 20, borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 12 },
   actionBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -3013,7 +3284,7 @@ const styles = StyleSheet.create({
   commentTimeText: { color: '#71717A', fontSize: 10 },
   commentBubble: { flex: 1, marginLeft: 10, backgroundColor: '#18181B', padding: 10, borderRadius: 12 },
   secondaryActionChip: { backgroundColor: '#27272A', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8, borderWidth: 1, borderColor: '#52525B' },
-  
+
   commentsModalContent: { backgroundColor: '#121215', borderRadius: 28, padding: 20, borderWidth: 1, borderColor: '#27272A', width: '100%', maxWidth: 400, height: '75%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 10 },
   commentInputRow: { flexDirection: 'row', gap: 8, alignItems: 'center', borderTopWidth: 1, borderTopColor: '#27272A', paddingTop: 12, marginTop: 4 },
   commentInput: { flex: 1, backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 12, height: 42, color: '#FAFAFA', paddingHorizontal: 12, fontSize: 13 },
@@ -3024,7 +3295,7 @@ const styles = StyleSheet.create({
   storyViewerScrollContentContainer: { flexGrow: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 10, width: '100%' },
   storyViewerCard: { width: width * 0.96, height: height * 0.92, backgroundColor: '#121215', borderRadius: 24, overflow: 'hidden', alignItems: 'center', position: 'relative', paddingBottom: 15, borderWidth: 1, borderColor: '#27272A' },
   storyEditorCard: { width: '92%', height: '88%', backgroundColor: '#121215', borderRadius: 24, overflow: 'hidden', alignItems: 'center', padding: 16, borderWidth: 1, borderColor: '#27272A' },
-  
+
   storyCanvasBox: { width: '100%', height: '52%', position: 'relative', justifyContent: 'center', alignItems: 'center', borderRadius: 16, overflow: 'hidden', backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A' },
   storyCanvasImage: { width: '100%', height: '100%', resizeMode: 'cover' },
 
@@ -3042,18 +3313,18 @@ const styles = StyleSheet.create({
   activeBgChip: { borderColor: '#EAB308', backgroundColor: '#27272A' },
   bgOptionText: { color: '#FAFAFA', fontSize: 11, fontWeight: '700' },
 
-  fullStoryMediaBox: { 
-    width: '100%', 
-    flex: 1, 
-    backgroundColor: '#000000', 
-    justifyContent: 'center', 
-    alignItems: 'center', 
-    overflow: 'hidden' 
+  fullStoryMediaBox: {
+    width: '100%',
+    flex: 1,
+    backgroundColor: '#000000',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden'
   },
   fullStoryImage: { width: '100%', height: '100%', resizeMode: 'contain' },
   fullStoryVideo: { width: '100%', height: '100%' },
   fullStoryName: { color: '#FAFAFA', fontSize: 14, fontWeight: '700' },
-  
+
   storyHeaderUserRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%', paddingHorizontal: 16, paddingVertical: 8, zIndex: 25 },
   storyHeaderUserBtn: { flexDirection: 'row', alignItems: 'center', gap: 10, zIndex: 25 },
   storyHeaderAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
@@ -3088,12 +3359,12 @@ const styles = StyleSheet.create({
   publishStoryBtnText: { color: '#09090B', fontWeight: '900', fontSize: 15 },
 
   modalOverlayCenter: { flex: 1, backgroundColor: 'rgba(9,9,11,0.85)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20 },
-  
+
   modalContentHomeStyle: { backgroundColor: '#09090B', borderRadius: 28, padding: 20, borderWidth: 1, borderColor: '#27272A', width: '100%', maxWidth: 420, height: '88%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.5, shadowRadius: 16, elevation: 12 },
   closeHomeModalBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: '#121215', borderWidth: 1, borderColor: '#27272A', justifyContent: 'center', alignItems: 'center' },
 
   modalContentCenter: { backgroundColor: '#121215', borderRadius: 28, padding: 20, borderWidth: 1, borderColor: '#27272A', width: '100%', maxWidth: 400, maxHeight: '85%', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 16, elevation: 10 },
-  
+
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   modalTitle: { color: '#FAFAFA', fontSize: 18, fontWeight: '800' },
 
@@ -3136,7 +3407,7 @@ const styles = StyleSheet.create({
   videoBadgeOverlay: { position: 'absolute', top: 6, right: 6, backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 10, width: 22, height: 22, justifyContent: 'center', alignItems: 'center' },
   emptyPostsBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 30, backgroundColor: '#18181B', borderRadius: 14, borderWidth: 1, borderColor: '#27272A' },
   emptyPostsText: { color: '#71717A', fontSize: 12, marginTop: 6 },
-  
+
   privateAccountBox: { alignItems: 'center', justifyContent: 'center', paddingVertical: 40, paddingHorizontal: 20, backgroundColor: '#18181B', borderRadius: 16, borderWidth: 1, borderColor: '#27272A', marginTop: 10 },
   privateAccountTitle: { color: '#FAFAFA', fontSize: 16, fontWeight: 'bold', marginBottom: 6 },
   privateAccountText: { color: '#A1A1AA', fontSize: 12, textAlign: 'center', lineHeight: 18 },

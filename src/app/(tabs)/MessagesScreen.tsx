@@ -4174,7 +4174,6 @@ const renderMessageOverlays = () => (
                           <Ionicons name="checkmark-circle" size={14} color="#EAB308" />
                         )}
                       </View>
-                      <Text style={styles.roomSubtitle}>Swipe others&apos; message to reply • Tap name for profile</Text>
                     </View>
                   </TouchableOpacity>
 

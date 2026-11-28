@@ -6,8 +6,19 @@ import { db, auth } from '../firebase';
 import { router } from 'expo-router';
 import { Ionicons, FontAwesome } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
-import { GoogleSignin } from '@react-native-google-signin/google-signin';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const isExpoGo = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
+
+let GoogleSignin: any = null;
+if (!isExpoGo && Platform.OS !== 'web') {
+  try {
+    GoogleSignin = require('@react-native-google-signin/google-signin').GoogleSignin;
+  } catch (e) {
+    GoogleSignin = null;
+  }
+}
 
 const IOS_CLIENT_ID = '562029576530-hafa1usttf58rlflt06uohkruev7t3a5.apps.googleusercontent.com';
 const WEB_CLIENT_ID = '562029576530-1rqebmfjovhqlius30ntb9krpfk8g77a.apps.googleusercontent.com';
@@ -53,10 +64,12 @@ export default function LoginScreen() {
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
   useEffect(() => {
-    GoogleSignin.configure({
-      webClientId: WEB_CLIENT_ID,
-      iosClientId: IOS_CLIENT_ID,
-    });
+    if (GoogleSignin) {
+      GoogleSignin.configure({
+        webClientId: WEB_CLIENT_ID,
+        iosClientId: IOS_CLIENT_ID,
+      });
+    }
   }, []);
 
   // כניסה אוטומטית למסך הבית ברגע שהמשתמש כבר מחובר ונטען
@@ -201,6 +214,14 @@ export default function LoginScreen() {
   };
 
   const handleGoogleLogin = async () => {
+    if (!GoogleSignin) {
+      Alert.alert(
+        'Not Available in Expo Go',
+        'Google Sign-In requires a native build (EAS Build / TestFlight) and is not supported inside Expo Go.'
+      );
+      return;
+    }
+
     try {
       setIsGoogleLoading(true);
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: false });
