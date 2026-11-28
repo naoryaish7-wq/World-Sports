@@ -1792,7 +1792,7 @@ export default function ProfileScreen() {
           <View style={[styles.modalContentHomeStyle, themedStyles.modalContentHomeStyle]}>
             <View style={styles.modalHeader}>
               <View>
-                <Text style={styles.homeCategory}>PLAYER PROFILE</Text>
+                <Text style={styles.homeCategory}>Player Profile</Text>
                 <Text style={[styles.appTitle, themedStyles.appTitle]}>World <Text style={{color: palette.accent}}>Sports</Text></Text>
               </View>
               <TouchableOpacity onPress={() => setSelectedUserModalId(null)} activeOpacity={0.8} style={[styles.closeHomeModalBtn, themedStyles.closeHomeModalBtn]}>

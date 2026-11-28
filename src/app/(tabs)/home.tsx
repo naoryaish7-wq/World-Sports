@@ -2463,7 +2463,7 @@ export default function HomeScreen() {
             
             <View style={styles.modalHeader}>
               <View>
-                <Text style={styles.homeCategory}>PLAYER PROFILE</Text>
+                <Text style={styles.homeCategory}>Player Profile</Text>
                 <Text style={[styles.appTitle, themedStyles.appTitle]}>World <Text style={{color: palette.accent}}>Sports</Text></Text>
               </View>
               <TouchableOpacity 

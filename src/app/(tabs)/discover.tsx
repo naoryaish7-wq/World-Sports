@@ -779,7 +779,7 @@ export default function DiscoverScreen() {
           <Ionicons name="search" size={18} color={palette.textMuted} style={{ marginRight: 8 }} />
           <TextInput
             style={[styles.searchInput, themedStyles.searchInput]}
-            placeholder="Search players by name, city, or sport..."
+            placeholder="Search players by name..."
             placeholderTextColor={palette.textMuted}
             value={searchQuery}
             onChangeText={setSearchQuery}
@@ -877,7 +877,7 @@ export default function DiscoverScreen() {
           <View style={[styles.modalContentHomeStyle, themedStyles.modalContentHomeStyle]}>
             <View style={styles.modalHeader}>
               <View>
-                <Text style={styles.discoverCategory}>PLAYER PROFILE</Text>
+                <Text style={styles.discoverCategory}>Player Profile</Text>
                 <Text style={[styles.appTitle, themedStyles.appTitle]}>
                   World <Text style={{ color: palette.accent }}>Sports</Text>
                 </Text>

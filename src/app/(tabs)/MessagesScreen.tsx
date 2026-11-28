@@ -10,7 +10,12 @@ import {
   Alert,
   Image,
   ImageBackground,
+  KeyboardAvoidingView,
   Platform,
+  Animated,
+  PanResponder,
+  Vibration,
+  Dimensions,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
@@ -37,7 +42,17 @@ import {
 } from 'firebase/firestore';
 import { db } from '../../firebase';
 
+const { width } = Dimensions.get('window');
+
 type MessageReactions = { [emoji: string]: string[] };
+
+type ReplyInfo = {
+  messageId: string;
+  senderId?: string;
+  senderName: string;
+  text: string;
+  mediaType?: 'image' | 'video';
+};
 
 type ChatMessage = {
   id: string;
@@ -49,6 +64,7 @@ type ChatMessage = {
   mediaType?: 'image' | 'video';
   edited?: boolean;
   reactions?: MessageReactions;
+  replyTo?: ReplyInfo | null;
   createdAt?: any;
 };
 
@@ -90,15 +106,32 @@ type UserProfile = {
   notifications_storiesPosts?: boolean;
 };
 
+type PostComment = {
+  id: string;
+  userId?: string;
+  user: string;
+  avatarUrl: string;
+  text: string;
+  createdAt?: any;
+};
+
 type UserPostSummary = {
   id: string;
   userId?: string;
   userName?: string;
   authorName?: string;
+  userEmail?: string;
   imageUrl?: string;
+  videoUrl?: string;
   caption?: string;
   text?: string;
+  sport?: string;
+  avatarUrl?: string;
+  authorMeta?: string;
   mediaType?: 'image' | 'video';
+  likesList?: string[];
+  comments?: PostComment[];
+  createdAt?: any;
 };
 
 type PinnedMessageInfo = {
@@ -270,7 +303,7 @@ const BOOST_STAGES = [
     title: 'Stage 2 • Silver Pulse',
     shortBadge: 'T2  ',
     color: '#22C55E',
-    exposureSummary: 'Up to 25 members • Unlocks Chat Background.',
+    exposureSummary: 'Up to 25 members • Silver Pulse spotlight.',
   },
   {
     stage: 3,
@@ -281,7 +314,7 @@ const BOOST_STAGES = [
     title: 'Stage 3 • Gold Spotlight',
     shortBadge: 'T3  ',
     color: '#EAB308',
-    exposureSummary: 'Up to 50 members • Gold spotlight + Background.',
+    exposureSummary: 'Up to 50 members • Gold spotlight.',
   },
   {
     stage: 4,
@@ -292,7 +325,7 @@ const BOOST_STAGES = [
     title: 'Stage 4 • Platinum Riot',
     shortBadge: 'T4  ',
     color: '#C084FC',
-    exposureSummary: 'Up to 100 members • High city visibility + full perks.',
+    exposureSummary: 'Up to 100 members • High city visibility.',
   },
   {
     stage: 5,
@@ -303,7 +336,7 @@ const BOOST_STAGES = [
     title: 'Stage 5 • Diamond Overdrive',
     shortBadge: 'T5  ',
     color: '#38BDF8',
-    exposureSummary: 'Up to 200 members • Elite city promotion + full perks.',
+    exposureSummary: 'Up to 200 members • Elite city promotion.',
   },
   {
     stage: 6,
@@ -435,6 +468,29 @@ const formatTimeShort = (timestamp: any): string => {
   }
 };
 
+const getTimeAgo = (timestamp: any): string => {
+  if (!timestamp) return 'Just now';
+  try {
+    const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+    if (isNaN(date.getTime())) return 'Just now';
+    const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+
+    let interval = seconds / 31536000;
+    if (interval > 1) return `${Math.floor(interval)}y ago`;
+    interval = seconds / 2592000;
+    if (interval > 1) return `${Math.floor(interval)}mo ago`;
+    interval = seconds / 86400;
+    if (interval > 1) return `${Math.floor(interval)}d ago`;
+    interval = seconds / 3600;
+    if (interval > 1) return `${Math.floor(interval)}h ago`;
+    interval = seconds / 60;
+    if (interval > 1) return `${Math.floor(interval)}m ago`;
+    return 'Just now';
+  } catch {
+    return 'Just now';
+  }
+};
+
 const extractImageUrlFromText = (text?: string): string | null => {
   if (!text) return null;
   const match = text.match(/https?:\/\/\S+\.(?:png|jpe?g|webp|gif)(?:\?\S*)?/i);
@@ -470,6 +526,29 @@ const resolveMessageMedia = (msg: ChatMessage): {
     return { imageUri: textImg, videoUri: null };
   }
   return { imageUri: null, videoUri: null };
+};
+
+const resolvePostMedia = (post: UserPostSummary): {
+  uri: string | null;
+  type: 'image' | 'video';
+} => {
+  if (post.videoUrl) {
+    return { uri: post.videoUrl, type: 'video' };
+  }
+  if (post.mediaType === 'video' && post.imageUrl) {
+    return { uri: post.imageUrl, type: 'video' };
+  }
+  if (post.imageUrl) {
+    if (isVideoFileExtension(post.imageUrl)) {
+      return { uri: post.imageUrl, type: 'video' };
+    }
+    return { uri: post.imageUrl, type: 'image' };
+  }
+  const fromText = extractImageUrlFromText(post.caption || post.text);
+  if (fromText) {
+    return { uri: fromText, type: 'image' };
+  }
+  return { uri: null, type: 'image' };
 };
 
 const processBoostPayment = async (
@@ -571,6 +650,86 @@ function ChatVideoPreview({
   );
 }
 
+function ProfileVideoThumbnail({ uri, style }: { uri: string; style: any }) {
+  const player = useVideoPlayer(uri, p => {
+    p.loop = false;
+    p.staysActiveInBackground = false;
+    p.muted = true;
+  });
+
+  useEffect(() => {
+    try {
+      player.pause();
+      player.muted = true;
+      player.currentTime = 0;
+    } catch {}
+
+    return () => {
+      try {
+        player.pause();
+        player.muted = true;
+      } catch {}
+    };
+  }, [player]);
+
+  return (
+    <VideoView
+      style={style}
+      player={player}
+      nativeControls={false}
+      contentFit="cover"
+    />
+  );
+}
+
+function PostVideoPlayer({
+  uri,
+  isPaused,
+  style,
+}: {
+  uri: string;
+  isPaused: boolean;
+  style: any;
+}) {
+  const player = useVideoPlayer(uri, p => {
+    p.loop = true;
+    p.staysActiveInBackground = false;
+    p.muted = false;
+    if (!isPaused) {
+      try {
+        p.play();
+      } catch {}
+    }
+  });
+
+  useEffect(() => {
+    try {
+      if (isPaused) {
+        player.pause();
+      } else {
+        player.play();
+      }
+    } catch {}
+  }, [isPaused, player]);
+
+  useEffect(() => {
+    return () => {
+      try {
+        player.pause();
+      } catch {}
+    };
+  }, [player]);
+
+  return (
+    <VideoView
+      style={style}
+      player={player}
+      nativeControls={true}
+      contentFit="cover"
+    />
+  );
+}
+
 function FullscreenMediaPlayer({
   uri,
   styles,
@@ -602,6 +761,123 @@ function FullscreenMediaPlayer({
       nativeControls
       contentFit="contain"
     />
+  );
+}
+
+function SwipeableMessageBubble({
+  isMe,
+  canReply = true,
+  styles,
+  onTriggerReply,
+  onLayout,
+  children,
+}: {
+  isMe: boolean;
+  canReply?: boolean;
+  styles: ReturnType<typeof createStyles>;
+  onTriggerReply: () => void;
+  onLayout?: (e: any) => void;
+  children: React.ReactNode;
+}) {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const triggeredRef = useRef(false);
+  const mountedRef = useRef(true);
+  const onTriggerReplyRef = useRef(onTriggerReply);
+  const canReplyRef = useRef(canReply);
+
+  useEffect(() => {
+    onTriggerReplyRef.current = onTriggerReply;
+    canReplyRef.current = canReply;
+  }, [onTriggerReply, canReply]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      translateX.stopAnimation();
+    };
+  }, [translateX]);
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, gesture) =>
+          mountedRef.current &&
+          canReplyRef.current &&
+          Math.abs(gesture.dx) > 14 &&
+          Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.6,
+        onPanResponderGrant: () => {
+          triggeredRef.current = false;
+          translateX.stopAnimation();
+        },
+        onPanResponderMove: (_, gesture) => {
+          if (!mountedRef.current || !canReplyRef.current) return;
+          const clampedDx = Math.max(-72, Math.min(72, gesture.dx));
+          translateX.setValue(clampedDx);
+          if (Math.abs(clampedDx) >= 50 && !triggeredRef.current) {
+            triggeredRef.current = true;
+            try {
+              Vibration.vibrate(10);
+            } catch {}
+          }
+        },
+        onPanResponderRelease: (_, gesture) => {
+          if (!mountedRef.current) return;
+          const shouldReply = canReplyRef.current && Math.abs(gesture.dx) >= 50;
+          translateX.setValue(0);
+          if (shouldReply) {
+            onTriggerReplyRef.current();
+          }
+        },
+        onPanResponderTerminate: () => {
+          if (!mountedRef.current) return;
+          translateX.setValue(0);
+        },
+      }),
+    [translateX]
+  );
+
+  const leftIconOpacity = translateX.interpolate({
+    inputRange: [14, 50],
+    outputRange: [0, 1],
+    extrapolate: 'clamp',
+  });
+
+  const rightIconOpacity = translateX.interpolate({
+    inputRange: [-50, -14],
+    outputRange: [1, 0],
+    extrapolate: 'clamp',
+  });
+
+  return (
+    <View
+      onLayout={onLayout}
+      style={[styles.swipeWrapper, isMe ? styles.bubbleRight : styles.bubbleLeft]}
+    >
+      {canReply && (
+        <Animated.View style={[styles.swipeReplyIconLeft, { opacity: leftIconOpacity }]}>
+          <Ionicons name="arrow-undo" size={16} color="#09090B" />
+        </Animated.View>
+      )}
+
+      {canReply && (
+        <Animated.View style={[styles.swipeReplyIconRight, { opacity: rightIconOpacity }]}>
+          <Ionicons name="arrow-undo" size={16} color="#09090B" />
+        </Animated.View>
+      )}
+
+      <Animated.View
+        {...panResponder.panHandlers}
+        style={[
+          styles.swipeAnimatedBubble,
+          isMe ? styles.bubbleRight : styles.bubbleLeft,
+          { transform: [{ translateX }] },
+        ]}
+      >
+        {children}
+      </Animated.View>
+    </View>
   );
 }
 
@@ -639,6 +915,7 @@ export default function MessagesScreen() {
   const [activePersonalUser, setActivePersonalUser] = useState<UserProfile | null>(null);
   const [personalMessages, setPersonalMessages] = useState<ChatMessage[]>([]);
   const [personalMessageInput, setPersonalMessageInput] = useState('');
+  const [personalReplyTarget, setPersonalReplyTarget] = useState<ReplyInfo | null>(null);
   const [pendingPersonalMedia, setPendingPersonalMedia] = useState<PendingMediaDraft | null>(null);
   const [sendingPersonalMedia, setSendingPersonalMedia] = useState(false);
   const [personalSettingsVisible, setPersonalSettingsVisible] = useState(false);
@@ -657,6 +934,7 @@ export default function MessagesScreen() {
   const [activeGroupId, setActiveGroupId] = useState<string | null>(null);
   const [groupMessages, setGroupMessages] = useState<ChatMessage[]>([]);
   const [groupMessageInput, setGroupMessageInput] = useState('');
+  const [groupReplyTarget, setGroupReplyTarget] = useState<ReplyInfo | null>(null);
   const [pendingGroupMedia, setPendingGroupMedia] = useState<PendingMediaDraft | null>(null);
   const [sendingGroupMedia, setSendingGroupMedia] = useState(false);
   const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
@@ -670,8 +948,12 @@ export default function MessagesScreen() {
   const [purchasingBoost, setPurchasingBoost] = useState(false);
   const [leavingOrClosingGroup, setLeavingOrClosingGroup] = useState(false);
 
+  // Discover-style Player Profile state
   const [profileModalUser, setProfileModalUser] = useState<UserProfile | null>(null);
   const [targetActiveModalList, setTargetActiveModalList] = useState<'followers' | 'following' | null>(null);
+  const [selectedPostModal, setSelectedPostModal] = useState<UserPostSummary | null>(null);
+  const [commentsModalPost, setCommentsModalPost] = useState<UserPostSummary | null>(null);
+  const [modalCommentInput, setModalCommentInput] = useState('');
   const [lightboxMedia, setLightboxMedia] = useState<LightboxMedia | null>(null);
 
   const [messageActionSheet, setMessageActionSheet] = useState<{
@@ -707,14 +989,42 @@ export default function MessagesScreen() {
     personalConversations.find(c => c.chatId === personalChatId) || null;
 
   const closeAllChatRooms = useCallback(() => {
-    setActivePersonalUser(null);
-    setActiveGroupId(null);
-    setGroupSettingsModalVisible(false);
+    setMessageActionSheet(null);
     setPersonalSettingsVisible(false);
+    setGroupSettingsModalVisible(false);
     setPendingPersonalMedia(null);
     setPendingGroupMedia(null);
-    setMessageActionSheet(null);
+    setPersonalReplyTarget(null);
+    setGroupReplyTarget(null);
+    setActivePersonalUser(null);
+    setActiveGroupId(null);
   }, []);
+
+  const buildReplyPayload = useCallback(
+    (msg: ChatMessage, fallbackSenderName: string): ReplyInfo => {
+      const { imageUri, videoUri } = resolveMessageMedia(msg);
+      const mediaType: 'image' | 'video' | undefined = videoUri
+        ? 'video'
+        : imageUri
+        ? 'image'
+        : undefined;
+      const summaryText =
+        msg.text?.trim() ||
+        (mediaType === 'video' ? '🎬 Video' : mediaType === 'image' ? '🖼️ Photo' : 'Message');
+
+      return {
+        messageId: msg.id,
+        senderId: msg.senderId,
+        senderName:
+          msg.senderId === currentUserId
+            ? getDisplayName(currentUser)
+            : msg.senderName || fallbackSenderName,
+        text: summaryText,
+        ...(mediaType ? { mediaType } : {}),
+      };
+    },
+    [currentUserId, currentUser]
+  );
 
   useEffect(() => {
     let isMounted = true;
@@ -809,10 +1119,17 @@ export default function MessagesScreen() {
   );
 
   const isBlockedBidirectional = useCallback(
-    (otherUid?: string): boolean => {
-      if (!otherUid || otherUid === currentUserId) return false;
-      const iBlocked = blockedUsers.includes(otherUid);
-      const otherObj = allUsers.find(u => u.uid === otherUid);
+    (otherUid?: string, otherUserName?: string): boolean => {
+      const cleanName = (otherUserName || '').trim().toLowerCase();
+      const otherObj = allUsers.find(
+        u =>
+          (otherUid && u.uid === otherUid) ||
+          (cleanName && getDisplayName(u).trim().toLowerCase() === cleanName)
+      );
+      const resolvedUid = otherObj?.uid || otherUid;
+      if (!resolvedUid || resolvedUid === currentUserId) return false;
+
+      const iBlocked = blockedUsers.includes(resolvedUid);
       const theyBlocked =
         Array.isArray(otherObj?.blockedUsers) && currentUserId
           ? otherObj.blockedUsers.includes(currentUserId)
@@ -865,6 +1182,7 @@ export default function MessagesScreen() {
         message: string;
         status?: string;
         groupId?: string;
+        postId?: string;
       },
       prefKey?: 'chat' | 'likes' | 'follows' | 'matchActivity' | 'adminActions' | 'storiesPosts'
     ) => {
@@ -884,17 +1202,19 @@ export default function MessagesScreen() {
           message: payload.message,
           status: payload.status || 'unread',
           ...(payload.groupId ? { groupId: payload.groupId } : {}),
+          ...(payload.postId ? { postId: payload.postId } : {}),
           createdAt: serverTimestamp(),
         });
 
         await sendExpoPushNotification(
           recipientUid,
-          'World Sports ',
+          'World Sports • Activity',
           payload.message,
           {
             type: payload.type,
             senderUid: currentUserId,
             ...(payload.groupId ? { groupId: payload.groupId } : {}),
+            ...(payload.postId ? { postId: payload.postId } : {}),
           }
         );
       } catch (e) {
@@ -1158,17 +1478,27 @@ export default function MessagesScreen() {
 
   const handleOpenUserProfile = useCallback(
     (targetUid?: string, fallbackName?: string) => {
-      if (!targetUid) return;
-      const found = allUsers.find(u => u.uid === targetUid) || {
-        uid: targetUid,
-        name: fallbackName || targetUid,
-        city: userCity,
-        country: userCountry,
-        sports: ['Football'],
-        followers: [],
-        following: [],
-        pendingRequests: [],
-      };
+      const cleanName = (fallbackName || '').trim().toLowerCase();
+      if (!targetUid && !cleanName) return;
+
+      const found =
+        allUsers.find(
+          u =>
+            (targetUid && u.uid === targetUid) ||
+            (cleanName && getDisplayName(u).trim().toLowerCase() === cleanName)
+        ) || {
+          uid: targetUid || cleanName,
+          name: fallbackName || targetUid || 'Player',
+          city: userCity,
+          country: userCountry,
+          sports: ['Football'],
+          followers: [],
+          following: [],
+          pendingRequests: [],
+        };
+
+      setSelectedPostModal(null);
+      setCommentsModalPost(null);
       setTargetActiveModalList(null);
       setMessageActionSheet(null);
       setLightboxMedia(null);
@@ -1177,7 +1507,7 @@ export default function MessagesScreen() {
         closeAllChatRooms();
         setTimeout(() => {
           setProfileModalUser(found);
-        }, 140);
+        }, 220);
       } else {
         setProfileModalUser(found);
       }
@@ -1193,7 +1523,7 @@ export default function MessagesScreen() {
         closeAllChatRooms();
         setTimeout(() => {
           setLightboxMedia(media);
-        }, 140);
+        }, 220);
       } else {
         setLightboxMedia(media);
       }
@@ -1202,13 +1532,15 @@ export default function MessagesScreen() {
   );
 
   const handleCloseProfileModal = useCallback(() => {
+    setSelectedPostModal(null);
+    setCommentsModalPost(null);
     setTargetActiveModalList(null);
     setProfileModalUser(null);
   }, []);
 
   const handleToggleFollowInProfileModal = async (targetUser: UserProfile) => {
     if (!currentUserId || !targetUser?.uid || targetUser.uid === currentUserId) return;
-    if (isBlockedBidirectional(targetUser.uid)) {
+    if (isBlockedBidirectional(targetUser.uid, getDisplayName(targetUser))) {
       Alert.alert('Unavailable', 'You cannot follow this user while a block is active.');
       return;
     }
@@ -1246,7 +1578,7 @@ export default function MessagesScreen() {
           targetUser.uid,
           {
             type: 'follow_request',
-            message: `${getDisplayName(currentUser)} requested to follow you.`,
+            message: `${getDisplayName(currentUser)} requested to follow you. 🔒`,
             status: 'pending',
           },
           'follows'
@@ -1263,7 +1595,7 @@ export default function MessagesScreen() {
           targetUser.uid,
           {
             type: 'follow',
-            message: `${getDisplayName(currentUser)} started following you.`,
+            message: `${getDisplayName(currentUser)} started following you! 🤝`,
             status: 'unread',
           },
           'follows'
@@ -1284,14 +1616,26 @@ export default function MessagesScreen() {
     const alreadyBlocked = blockedUsers.includes(targetUser.uid);
 
     if (alreadyBlocked) {
-      try {
-        await updateDoc(doc(db, 'users', currentUserId), {
-          blockedUsers: arrayRemove(targetUser.uid),
-        });
-        Alert.alert('User Unblocked', `${getDisplayName(targetUser)} has been unblocked.`);
-      } catch (e) {
-        console.error('Error unblocking user:', e);
-      }
+      Alert.alert(
+        'Unblock User',
+        `Are you sure you want to unblock ${getDisplayName(targetUser)}?`,
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Unblock',
+            onPress: async () => {
+              try {
+                await updateDoc(doc(db, 'users', currentUserId), {
+                  blockedUsers: arrayRemove(targetUser.uid),
+                });
+                Alert.alert('User Unblocked', 'You can now see and interact with this user again.');
+              } catch (e) {
+                console.error('Error unblocking user:', e);
+              }
+            },
+          },
+        ]
+      );
       return;
     }
 
@@ -1316,6 +1660,8 @@ export default function MessagesScreen() {
                 followers: arrayRemove(currentUserId),
                 pendingRequests: arrayRemove(currentUserId),
               });
+              setSelectedPostModal(null);
+              setCommentsModalPost(null);
               setTargetActiveModalList(null);
               setProfileModalUser(null);
               if (activePersonalUser?.uid === targetUser.uid) {
@@ -1330,6 +1676,94 @@ export default function MessagesScreen() {
         },
       ]
     );
+  };
+
+  const toggleProfilePostLike = async (postId: string) => {
+    if (!currentUserId) return;
+    const post = allPosts.find(p => p.id === postId) || selectedPostModal || commentsModalPost;
+    if (!post) return;
+    if (isBlockedBidirectional(post.userId, post.userName || post.authorName)) return;
+
+    try {
+      const likesList = post.likesList || [];
+      const hasLiked = likesList.includes(currentUserId);
+      const updatedLikes = hasLiked
+        ? likesList.filter(id => id !== currentUserId)
+        : [...likesList, currentUserId];
+
+      await updateDoc(doc(db, 'posts', postId), { likesList: updatedLikes });
+
+      if (selectedPostModal?.id === postId) {
+        setSelectedPostModal({ ...selectedPostModal, likesList: updatedLikes });
+      }
+      if (commentsModalPost?.id === postId) {
+        setCommentsModalPost({ ...commentsModalPost, likesList: updatedLikes });
+      }
+
+      if (!hasLiked && post.userId && post.userId !== currentUserId) {
+        await sendSyncedNotification(
+          post.userId,
+          {
+            type: 'post_like',
+            message: `${getDisplayName(currentUser)} liked your post! ❤️`,
+            postId,
+            status: 'unread',
+          },
+          'likes'
+        );
+      }
+    } catch (e) {
+      console.error('Error toggling post like in profile:', e);
+    }
+  };
+
+  const handleAddProfilePostComment = async (postId: string) => {
+    if (!modalCommentInput.trim() || !currentUserId) return;
+    const post = allPosts.find(p => p.id === postId) || commentsModalPost || selectedPostModal;
+    if (!post) return;
+    if (isBlockedBidirectional(post.userId, post.userName || post.authorName)) {
+      Alert.alert('Blocked', 'You cannot comment on posts from this user because a block is active.');
+      return;
+    }
+
+    const trimmed = modalCommentInput.trim();
+    const commenterName = getDisplayName(currentUser);
+    const newComment: PostComment = {
+      id: Date.now().toString(),
+      userId: currentUserId,
+      user: commenterName,
+      avatarUrl: currentUser?.avatar || '',
+      text: trimmed,
+      createdAt: serverTimestamp(),
+    };
+
+    try {
+      const updatedComments = [...(post.comments || []), newComment];
+      await updateDoc(doc(db, 'posts', postId), { comments: updatedComments });
+
+      setModalCommentInput('');
+      if (commentsModalPost?.id === postId) {
+        setCommentsModalPost(prev => (prev ? { ...prev, comments: updatedComments } : null));
+      }
+      if (selectedPostModal?.id === postId) {
+        setSelectedPostModal(prev => (prev ? { ...prev, comments: updatedComments } : null));
+      }
+
+      if (post.userId && post.userId !== currentUserId) {
+        await sendSyncedNotification(
+          post.userId,
+          {
+            type: 'post_comment',
+            message: `${commenterName} commented on your post: "${trimmed.slice(0, 60)}" 💬`,
+            postId,
+            status: 'unread',
+          },
+          'likes'
+        );
+      }
+    } catch (e) {
+      console.error('Error adding comment in profile:', e);
+    }
   };
 
   const handlePickPersonalWallpaper = async (chatId: string) => {
@@ -1399,16 +1833,16 @@ export default function MessagesScreen() {
     }
   };
 
-  const handleJumpToPersonalPinnedMessage = (msgId: string) => {
-    const yOffset = personalMessageOffsetsRef.current[msgId];
-    if (typeof yOffset === 'number' && personalScrollRef.current) {
-      personalScrollRef.current.scrollTo({ y: Math.max(0, yOffset - 16), animated: true });
-      setHighlightedPersonalMsgId(msgId);
-      setTimeout(() => {
-        setHighlightedPersonalMsgId(prev => (prev === msgId ? null : prev));
-      }, 1600);
-    }
-  };
+const handleJumpToPersonalMessage = (msgId: string) => {
+  const yOffset = personalMessageOffsetsRef.current[msgId];
+  if (typeof yOffset === 'number' && personalScrollRef.current) {
+    personalScrollRef.current.scrollTo({ y: Math.max(0, yOffset - 16), animated: true });
+    setHighlightedPersonalMsgId(msgId);
+    setTimeout(() => {
+      setHighlightedPersonalMsgId(prev => (prev === msgId ? null : prev));
+    }, 1600);
+  }
+};
 
   const handleOpenGroupSettings = (
     group: CityGroupChat,
@@ -1772,7 +2206,7 @@ export default function MessagesScreen() {
     }
   };
 
-  const handleJumpToPinnedMessage = (msgId: string) => {
+  const handleJumpToGroupMessage = (msgId: string) => {
     const yOffset = messageOffsetsRef.current[msgId];
     if (typeof yOffset === 'number' && groupScrollRef.current) {
       groupScrollRef.current.scrollTo({ y: Math.max(0, yOffset - 16), animated: true });
@@ -1904,7 +2338,7 @@ export default function MessagesScreen() {
     },
     emoji: string
   ) => {
-    if (!currentUserId) return;
+    if (!currentUserId || payload.message.senderId === currentUserId) return;
     const msgRef =
       payload.scope === 'personal' && payload.chatId
         ? doc(db, 'chats', payload.chatId, 'messages', payload.message.id)
@@ -2039,25 +2473,34 @@ export default function MessagesScreen() {
     }
   };
 
-  const handleReportMessage = async (msg: ChatMessage, groupId?: string) => {
-    if (!currentUserId) return;
-    try {
-      await addDoc(collection(db, 'messageReports'), {
-        reporterId: currentUserId,
-        reporterName: getDisplayName(currentUser),
-        reportedSenderId: msg.senderId || '',
-        reportedSenderName: msg.senderName || 'Player',
-        messageId: msg.id,
-        messageText: msg.text || '',
-        ...(groupId ? { groupId } : {}),
-        createdAt: serverTimestamp(),
-      });
-      Alert.alert('Report Sent', 'Thank you. This message has been reported for review.');
-    } catch (e) {
-      console.error('Error reporting message:', e);
-      Alert.alert('Error', 'Could not submit report.');
-    }
-  };
+const handleReportMessage = async (msg: ChatMessage, groupId?: string) => {
+  if (!currentUserId || !msg?.id || msg.senderId === currentUserId) return;
+
+  try {
+    const payload = {
+      reporterId: currentUserId,
+      reporterName: getDisplayName(currentUser) || 'Player',
+      reportedSenderId: msg.senderId || '',
+      reportedSenderName: msg.senderName || 'Player',
+      messageId: msg.id,
+      messageText: msg.text || '',
+      chatType: groupId ? 'group' : 'personal',
+      groupId: groupId || null,
+      status: 'open',
+      createdAt: serverTimestamp(),
+    };
+
+    const docRef = await addDoc(collection(db, 'messageReports'), payload);
+    console.log('Report saved to Firestore with ID:', docRef.id);
+    Alert.alert('Report Sent', 'Thank you. This message has been reported for review.');
+  } catch (e: any) {
+    console.error('Error reporting message to Firestore:', e?.code || e?.message || e);
+    Alert.alert(
+      'Report Failed',
+      e?.message || 'Could not submit report. Check Firestore rules and connection.'
+    );
+  }
+};
 
   const handleOpenPersonalChat = (user: UserProfile) => {
     if (user.uid === currentUserId) return;
@@ -2068,6 +2511,7 @@ export default function MessagesScreen() {
     setNewChatModalVisible(false);
     setNewChatSearch('');
     setPendingPersonalMedia(null);
+    setPersonalReplyTarget(null);
     setPersonalSettingsVisible(false);
     setActiveGroupId(null);
     setActivePersonalUser(user);
@@ -2115,12 +2559,14 @@ export default function MessagesScreen() {
 
     const text = personalMessageInput.trim();
     const media = pendingPersonalMedia;
+    const replyPayload = personalReplyTarget;
 
     if (!text && !media) return;
 
     const detectedImage = !media ? extractImageUrlFromText(text) : null;
     setPersonalMessageInput('');
     setPendingPersonalMedia(null);
+    setPersonalReplyTarget(null);
     if (media) setSendingPersonalMedia(true);
 
     const chatId = [currentUserId, activePersonalUser.uid].sort().join('_');
@@ -2142,6 +2588,7 @@ export default function MessagesScreen() {
         senderId: currentUserId,
         senderName: getDisplayName(currentUser),
         text,
+        ...(replyPayload ? { replyTo: replyPayload } : {}),
         ...(media
           ? {
               mediaType: media.type,
@@ -2390,11 +2837,13 @@ export default function MessagesScreen() {
 
     const text = groupMessageInput.trim();
     const media = pendingGroupMedia;
+    const replyPayload = groupReplyTarget;
     if (!text && !media) return;
 
     const detectedImage = !media ? extractImageUrlFromText(text) : null;
     setGroupMessageInput('');
     setPendingGroupMedia(null);
+    setGroupReplyTarget(null);
     if (media) setSendingGroupMedia(true);
 
     const previewText =
@@ -2405,6 +2854,7 @@ export default function MessagesScreen() {
         senderId: currentUserId,
         senderName: getDisplayName(currentUser),
         text,
+        ...(replyPayload ? { replyTo: replyPayload } : {}),
         ...(media
           ? {
               mediaType: media.type,
@@ -2579,21 +3029,26 @@ export default function MessagesScreen() {
     ? allUsers.find(u => u.uid === profileModalUser.uid) || profileModalUser
     : null;
 
-  const liveProfilePosts = liveProfileUser
-    ? allPosts.filter(
-        p =>
-          p.userId === liveProfileUser.uid ||
-          p.userName === liveProfileUser.name ||
-          p.authorName === liveProfileUser.name
-      )
-    : [];
+  const isProfileBlockedBidirectional = liveProfileUser
+    ? isBlockedBidirectional(liveProfileUser.uid, getDisplayName(liveProfileUser))
+    : false;
+
+  const liveProfilePosts =
+    liveProfileUser && !isProfileBlockedBidirectional
+      ? allPosts.filter(
+          p =>
+            p.userId === liveProfileUser.uid ||
+            p.userName === liveProfileUser.name ||
+            p.authorName === liveProfileUser.name
+        )
+      : [];
 
   const targetFollowersList = liveProfileUser
     ? allUsers.filter(
         u =>
           Array.isArray(liveProfileUser.followers) &&
           liveProfileUser.followers.includes(u.uid) &&
-          !isBlockedBidirectional(u.uid)
+          !isBlockedBidirectional(u.uid, getDisplayName(u))
       )
     : [];
 
@@ -2602,7 +3057,7 @@ export default function MessagesScreen() {
         u =>
           Array.isArray(liveProfileUser.following) &&
           liveProfileUser.following.includes(u.uid) &&
-          !isBlockedBidirectional(u.uid)
+          !isBlockedBidirectional(u.uid, getDisplayName(u))
       )
     : [];
 
@@ -2611,7 +3066,7 @@ export default function MessagesScreen() {
         u =>
           Array.isArray(currentUser.followers) &&
           currentUser.followers.includes(u.uid) &&
-          !isBlockedBidirectional(u.uid)
+          !isBlockedBidirectional(u.uid, getDisplayName(u))
       )
     : [];
 
@@ -2620,9 +3075,298 @@ export default function MessagesScreen() {
         u =>
           Array.isArray(currentUser.following) &&
           currentUser.following.includes(u.uid) &&
-          !isBlockedBidirectional(u.uid)
+          !isBlockedBidirectional(u.uid, getDisplayName(u))
       )
     : [];
+
+const renderMessageOverlays = () => (
+  <>
+    {Boolean(messageActionSheet) && messageActionSheet ? (
+      <TouchableOpacity
+        style={[
+          styles.actionSheetBackdrop,
+          {
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 99999,
+            elevation: 99,
+          },
+        ]}
+        activeOpacity={1}
+        onPress={() => setMessageActionSheet(null)}
+      >
+        {(() => {
+          const isSender =
+            Boolean(currentUserId) && messageActionSheet.message.senderId === currentUserId;
+          const isGroupAdmin =
+            messageActionSheet.scope === 'group' &&
+            isCurrentUserGroupAdmin(messageActionSheet.group || null);
+          const canPinMessage = messageActionSheet.scope === 'group' && isGroupAdmin;
+          const canDeleteMessage = isSender || isGroupAdmin;
+
+          return (
+            <TouchableOpacity
+              activeOpacity={1}
+              style={styles.actionSheetBox}
+              onPress={() => {}}
+            >
+              {!isSender && (
+                <>
+                  <Text style={styles.actionSheetLabel}>React with Emoji</Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    style={styles.emojiPickerScroll}
+                    contentContainerStyle={styles.emojiPickerRow}
+                  >
+                    {QUICK_EMOJIS.map(emoji => {
+                      const list =
+                        (messageActionSheet.message.reactions &&
+                          messageActionSheet.message.reactions[emoji]) ||
+                        [];
+                      const selected = list.includes(currentUserId);
+                      return (
+                        <TouchableOpacity
+                          key={emoji}
+                          style={[
+                            styles.emojiChoiceBtn,
+                            selected && styles.emojiChoiceBtnSelected,
+                          ]}
+                          onPress={async () => {
+                            const target = messageActionSheet;
+                            setMessageActionSheet(null);
+                            await handleToggleEmojiReaction(
+                              {
+                                scope: target.scope,
+                                chatId: target.chatId,
+                                groupId: target.group?.id,
+                                message: target.message,
+                              },
+                              emoji
+                            );
+                          }}
+                        >
+                          <Text style={styles.emojiChoiceText}>{emoji}</Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+
+                  <TouchableOpacity
+                    style={styles.actionRowBtn}
+                    onPress={() => {
+                      const target = messageActionSheet;
+                      setMessageActionSheet(null);
+                      const fallbackName =
+                        target.scope === 'personal'
+                          ? getDisplayName(activePersonalUser)
+                          : 'Player';
+                      const payload = buildReplyPayload(target.message, fallbackName);
+                      if (target.scope === 'personal') {
+                        setPersonalReplyTarget(payload);
+                      } else {
+                        setGroupReplyTarget(payload);
+                      }
+                    }}
+                  >
+                    <Ionicons name="arrow-undo-outline" size={18} color="#EAB308" />
+                    <Text style={styles.actionRowBtnText}>Reply to Message</Text>
+                  </TouchableOpacity>
+                </>
+              )}
+
+              {canPinMessage && (
+                <TouchableOpacity
+                  style={styles.actionRowBtn}
+                  onPress={async () => {
+                    const target = messageActionSheet;
+                    setMessageActionSheet(null);
+                    await handlePinMessage({
+                      scope: target.scope,
+                      chatId: target.chatId,
+                      groupId: target.group?.id,
+                      message: target.message,
+                    });
+                  }}
+                >
+                  <Ionicons name="pin-outline" size={18} color="#EAB308" />
+                  <Text style={styles.actionRowBtnText}>Pin Message</Text>
+                </TouchableOpacity>
+              )}
+
+              {messageActionSheet.message.senderId && !isSender && (
+                <TouchableOpacity
+                  style={styles.actionRowBtn}
+                  onPress={() => {
+                    const target = messageActionSheet;
+                    setMessageActionSheet(null);
+                    handleOpenUserProfile(
+                      target.message.senderId,
+                      target.message.senderName
+                    );
+                  }}
+                >
+                  <Ionicons name="person-outline" size={18} color="#38BDF8" />
+                  <Text style={styles.actionRowBtnText}>View Sender Profile</Text>
+                </TouchableOpacity>
+              )}
+
+              {isSender && (
+                <TouchableOpacity
+                  style={styles.actionRowBtn}
+                  onPress={() => {
+                    const target = messageActionSheet;
+                    setMessageActionSheet(null);
+                    handleStartEditMessage({
+                      scope: target.scope,
+                      chatId: target.chatId,
+                      groupId: target.group?.id,
+                      message: target.message,
+                    });
+                  }}
+                >
+                  <Ionicons name="create-outline" size={18} color="#EAB308" />
+                  <Text style={styles.actionRowBtnText}>Edit Message</Text>
+                </TouchableOpacity>
+              )}
+
+              {canDeleteMessage && (
+                <TouchableOpacity
+                  style={styles.actionRowBtn}
+                  onPress={() => {
+                    const target = messageActionSheet;
+                    setMessageActionSheet(null);
+                    handleDeleteMessage({
+                      scope: target.scope,
+                      chatId: target.chatId,
+                      groupId: target.group?.id,
+                      message: target.message,
+                      groupObj: target.group,
+                    });
+                  }}
+                >
+                  <Ionicons name="trash-outline" size={18} color="#EF4444" />
+                  <Text style={[styles.actionRowBtnText, { color: '#EF4444' }]}>
+                    Delete Message
+                  </Text>
+                </TouchableOpacity>
+              )}
+
+              {messageActionSheet.scope === 'group' &&
+                messageActionSheet.group &&
+                isCurrentUserGroupAdmin(messageActionSheet.group) &&
+                messageActionSheet.message.senderId &&
+                messageActionSheet.message.senderId !== currentUserId &&
+                messageActionSheet.message.senderId !== messageActionSheet.group.creatorId && (
+                  <>
+                    <TouchableOpacity
+                      style={styles.actionRowBtn}
+                      onPress={() => {
+                        const target = messageActionSheet;
+                        setMessageActionSheet(null);
+                        if (target.group) {
+                          handleKickUserFromGroup(target.group, target.message.senderId);
+                        }
+                      }}
+                    >
+                      <Ionicons name="walk-outline" size={18} color="#F97316" />
+                      <Text style={[styles.actionRowBtnText, { color: '#F97316' }]}>
+                        Kick User From Group
+                      </Text>
+                    </TouchableOpacity>
+
+                    <TouchableOpacity
+                      style={styles.actionRowBtn}
+                      onPress={() => {
+                        const target = messageActionSheet;
+                        setMessageActionSheet(null);
+                        if (target.group) {
+                          handleBanUserFromGroup(target.group, target.message.senderId);
+                        }
+                      }}
+                    >
+                      <Ionicons name="ban-outline" size={18} color="#EF4444" />
+                      <Text style={[styles.actionRowBtnText, { color: '#EF4444' }]}>
+                        Ban User From Group
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                )}
+
+              {!isSender && (
+                <TouchableOpacity
+                  style={styles.actionRowBtn}
+                  onPress={() => {
+                    const target = messageActionSheet;
+                    setMessageActionSheet(null);
+                    handleReportMessage(target.message, target.group?.id);
+                  }}
+                >
+                  <Ionicons name="flag-outline" size={18} color="#F97316" />
+                  <Text style={[styles.actionRowBtnText, { color: '#F97316' }]}>
+                    Report Message
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </TouchableOpacity>
+          );
+        })()}
+      </TouchableOpacity>
+    ) : null}
+
+    {Boolean(editingMessageTarget) && editingMessageTarget ? (
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={[
+          styles.actionSheetBackdrop,
+          {
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: 99999,
+            elevation: 99,
+            justifyContent: 'flex-end',
+          },
+        ]}
+      >
+        <View style={styles.actionSheetBox}>
+          <Text style={styles.modalTitle}>Edit Message</Text>
+          <TextInput
+            style={[styles.input, { marginTop: 12 }]}
+            value={editMessageDraft}
+            onChangeText={setEditMessageDraft}
+            placeholder="Update your message..."
+            placeholderTextColor={theme.textSubtle}
+            multiline
+            autoFocus
+          />
+          <View style={{ flexDirection: 'row', gap: 10 }}>
+            <TouchableOpacity
+              style={[styles.wallpaperClearBtn, { flex: 1, alignItems: 'center' }]}
+              onPress={() => {
+                setEditingMessageTarget(null);
+                setEditMessageDraft('');
+              }}
+            >
+              <Text style={styles.wallpaperClearBtnText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.primarySubmitBtn, { flex: 1 }]}
+              onPress={handleSaveEditedMessage}
+            >
+              <Text style={styles.primarySubmitBtnText}>Save</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    ) : null}
+  </>
+);
 
   return (
     <View style={styles.container}>
@@ -2893,6 +3637,7 @@ export default function MessagesScreen() {
                     ]}
                     onPress={() => {
                       setPendingGroupMedia(null);
+                      setGroupReplyTarget(null);
                       setActivePersonalUser(null);
                       setActiveGroupId(group.id);
                     }}
@@ -3073,6 +3818,7 @@ export default function MessagesScreen() {
                     style={[styles.leaderboardRowCard, index === 0 && { borderColor: '#EAB308' }]}
                     onPress={() => {
                       setPendingGroupMedia(null);
+                      setGroupReplyTarget(null);
                       setActivePersonalUser(null);
                       setActiveGroupId(row.group.id);
                     }}
@@ -3121,7 +3867,7 @@ export default function MessagesScreen() {
         </View>
       )}
 
-      {/* Start New Personal Chat Modal */}
+      {/* Start New Personal Chat Full-Screen Modal */}
       <Modal
         visible={newChatModalVisible}
         transparent
@@ -3129,43 +3875,52 @@ export default function MessagesScreen() {
         onRequestClose={() => setNewChatModalVisible(false)}
       >
         <View style={styles.modalOverlay}>
-          <View style={styles.modalSheet}>
+          <View style={styles.fullScreenSheet}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>New Personal Chat</Text>
+              <View>
+                <Text style={styles.eyebrow}>Direct Messages</Text>
+                <Text style={styles.modalTitle}>New  Chat</Text>
+              </View>
               <TouchableOpacity
+                style={styles.closeFullScreenBtn}
                 onPress={() => {
                   setNewChatModalVisible(false);
                   setNewChatSearch('');
                 }}
               >
-                <Ionicons name="close" size={24} color={theme.text} />
+                <Ionicons name="close" size={22} color={theme.text} />
               </TouchableOpacity>
             </View>
 
-            <View style={[styles.searchBox, { marginBottom: 12 }]}>
-              <Ionicons name="search" size={16} color={theme.textSubtle} />
+            <View style={styles.compactSearchBox}>
+              <Ionicons name="search" size={15} color={theme.textSubtle} />
               <TextInput
-                style={styles.searchInput}
-                placeholder="Search user by name..."
+                style={styles.compactSearchInput}
+                placeholder="Search user..."
                 placeholderTextColor={theme.textSubtle}
                 value={newChatSearch}
                 onChangeText={setNewChatSearch}
                 returnKeyType="search"
-                clearButtonMode="while-editing"
               />
               {newChatSearch.length > 0 && (
                 <TouchableOpacity onPress={() => setNewChatSearch('')}>
-                  <Ionicons name="close-circle" size={16} color={theme.textSubtle} />
+                  <Ionicons name="close-circle" size={15} color={theme.textSubtle} />
                 </TouchableOpacity>
               )}
             </View>
 
             <ScrollView
+              style={{ flex: 1 }}
+              contentContainerStyle={{ paddingBottom: 32 }}
               showsVerticalScrollIndicator={false}
               keyboardShouldPersistTaps="handled"
             >
               {selectableUsersForNewChat.length === 0 ? (
-                <Text style={styles.mutedNote}>No matching users found.</Text>
+                <View style={styles.emptyCard}>
+                  <Ionicons name="people-outline" size={34} color={theme.textSubtle} />
+                  <Text style={styles.emptyTitle}>No matching users found</Text>
+                  <Text style={styles.emptySub}>Try searching with another player name.</Text>
+                </View>
               ) : (
                 selectableUsersForNewChat.map(u => {
                   const name = getDisplayName(u);
@@ -3193,6 +3948,9 @@ export default function MessagesScreen() {
                           <Text style={styles.cardTitle}>{name}</Text>
                           {u.isVip && <Ionicons name="checkmark-circle" size={13} color="#EAB308" />}
                         </View>
+                        {!!u.city && (
+                          <Text style={styles.cardSubtitle}>📍 {normalizeCity(u.city)}</Text>
+                        )}
                       </TouchableOpacity>
                       <Ionicons name="chevron-forward" size={18} color={theme.textSubtle} />
                     </TouchableOpacity>
@@ -3231,7 +3989,7 @@ export default function MessagesScreen() {
                       )
                     }
                   >
-                    <Text style={styles.eyebrow}>MY CHAT OPTIONS</Text>
+                    <Text style={styles.eyebrow}>Direct Messages</Text>
                     <Text style={styles.roomTitle}>{getDisplayName(activePersonalUser)}</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
@@ -3416,7 +4174,7 @@ export default function MessagesScreen() {
                           <Ionicons name="checkmark-circle" size={14} color="#EAB308" />
                         )}
                       </View>
-                      <Text style={styles.roomSubtitle}>Tap name for profile</Text>
+                      <Text style={styles.roomSubtitle}>Swipe others&apos; message to reply • Tap name for profile</Text>
                     </View>
                   </TouchableOpacity>
 
@@ -3434,7 +4192,7 @@ export default function MessagesScreen() {
                 {activePersonalConv?.pinnedMessage && (
                   <TouchableOpacity
                     style={styles.pinnedBanner}
-                    onPress={() => handleJumpToPersonalPinnedMessage(activePersonalConv.pinnedMessage!.id)}
+                    onPress={() => handleJumpToPersonalMessage(activePersonalConv.pinnedMessage!.id)}
                     activeOpacity={0.85}
                   >
                     <Ionicons name="pin" size={14} color="#EAB308" />
@@ -3477,6 +4235,7 @@ export default function MessagesScreen() {
                         ) : (
                           personalMessages.map(msg => {
                             const isMe = msg.senderId === currentUserId;
+                            const canReplyMsg = !isMe;
                             const { imageUri, videoUri } = resolveMessageMedia(msg);
                             const isHighlighted = highlightedPersonalMsgId === msg.id;
                             const senderDisplay = isMe
@@ -3493,11 +4252,182 @@ export default function MessagesScreen() {
                               });
 
                             return (
-                              <TouchableOpacity
+                              <SwipeableMessageBubble
                                 key={msg.id}
+                                isMe={isMe}
+                                canReply={canReplyMsg}
+                                styles={styles}
                                 onLayout={e => {
                                   personalMessageOffsetsRef.current[msg.id] = e.nativeEvent.layout.y;
                                 }}
+                                onTriggerReply={() =>
+                                  setPersonalReplyTarget(buildReplyPayload(msg, senderDisplay))
+                                }
+                              >
+                                <TouchableOpacity
+                                  activeOpacity={0.95}
+                                  onLongPress={openSheet}
+                                  delayLongPress={260}
+                                  style={[styles.bubbleRow, isMe ? styles.bubbleRight : styles.bubbleLeft]}
+                                >
+                                  <View
+                                    style={[
+                                      styles.bubble,
+                                      isMe ? styles.bubbleMe : styles.bubbleOther,
+                                      isHighlighted && styles.highlightedBubble,
+                                    ]}
+                                  >
+                                    {msg.replyTo && (
+                                      <TouchableOpacity
+                                        activeOpacity={0.8}
+                                        onPress={() => handleJumpToPersonalMessage(msg.replyTo!.messageId)}
+                                        style={[
+                                          styles.replyQuoteBox,
+                                          isMe ? styles.replyQuoteBoxMe : styles.replyQuoteBoxOther,
+                                        ]}
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.replyQuoteAuthor,
+                                            isMe && { color: '#09090B' },
+                                          ]}
+                                          numberOfLines={1}
+                                        >
+                                          {msg.replyTo.senderName}
+                                        </Text>
+                                        <Text
+                                          style={[
+                                            styles.replyQuoteText,
+                                            isMe && { color: '#27272A' },
+                                          ]}
+                                          numberOfLines={2}
+                                        >
+                                          {msg.replyTo.text}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    )}
+                                    {videoUri && (
+                                      <ChatVideoPreview
+                                        uri={videoUri}
+                                        style={styles.chatInlineVideo}
+                                        styles={styles}
+                                        onLongPress={openSheet}
+                                        onPress={() =>
+                                          handleOpenMediaLightbox({
+                                            uri: videoUri,
+                                            type: 'video',
+                                            caption: msg.text,
+                                            senderName: senderDisplay,
+                                          })
+                                        }
+                                      />
+                                    )}
+                                    {imageUri && (
+                                      <TouchableOpacity
+                                        activeOpacity={0.88}
+                                        onLongPress={openSheet}
+                                        delayLongPress={260}
+                                        onPress={() =>
+                                          handleOpenMediaLightbox({
+                                            uri: imageUri,
+                                            type: 'image',
+                                            caption: msg.text,
+                                            senderName: senderDisplay,
+                                          })
+                                        }
+                                      >
+                                        <Image
+                                          source={{ uri: imageUri }}
+                                          style={styles.chatInlineMedia}
+                                          resizeMode="cover"
+                                        />
+                                      </TouchableOpacity>
+                                    )}
+                                    {!!msg.text && (
+                                      <Text style={[styles.bubbleText, isMe && { color: '#09090B' }]}>
+                                        {msg.text}
+                                        {msg.edited ? ' (edited)' : ''}
+                                      </Text>
+                                    )}
+                                    <Text style={[styles.bubbleTime, isMe && { color: '#27272A' }]}>
+                                      {formatTimeShort(msg.createdAt)}
+                                    </Text>
+
+                                    {reactionEntries.length > 0 && (
+                                      <View style={styles.reactionsRow}>
+                                        {reactionEntries.map(([emoji, uids]) => {
+                                          const mine = uids.includes(currentUserId);
+                                          return (
+                                            <TouchableOpacity
+                                              key={emoji}
+                                              style={[styles.reactionChip, mine && styles.reactionChipMine]}
+                                              onPress={() =>
+                                                handleToggleEmojiReaction(
+                                                  { scope: 'personal', chatId: personalChatId, message: msg },
+                                                  emoji
+                                                )
+                                              }
+                                            >
+                                              <Text style={styles.reactionChipText}>
+                                                {emoji} {uids.length}
+                                              </Text>
+                                            </TouchableOpacity>
+                                          );
+                                        })}
+                                      </View>
+                                    )}
+                                  </View>
+                                </TouchableOpacity>
+                              </SwipeableMessageBubble>
+                            );
+                          })
+                        )}
+                      </ScrollView>
+                    </ImageBackground>
+                  ) : (
+                    <ScrollView
+                      ref={(el: any) => {
+                        personalScrollRef.current = el;
+                      }}
+                      style={styles.messagesScroll}
+                      contentContainerStyle={{ paddingVertical: 12 }}
+                      showsVerticalScrollIndicator={false}
+                    >
+                      {personalMessages.length === 0 ? (
+                        <Text style={styles.emptyChatHint}>Send a message to start the conversation.</Text>
+                      ) : (
+                        personalMessages.map(msg => {
+                          const isMe = msg.senderId === currentUserId;
+                          const canReplyMsg = !isMe;
+                          const { imageUri, videoUri } = resolveMessageMedia(msg);
+                          const isHighlighted = highlightedPersonalMsgId === msg.id;
+                          const senderDisplay = isMe
+                            ? getDisplayName(currentUser)
+                            : msg.senderName || getDisplayName(activePersonalUser);
+                          const reactionEntries = Object.entries(msg.reactions || {}).filter(
+                            ([, uids]) => Array.isArray(uids) && uids.length > 0
+                          );
+                          const openSheet = () =>
+                            setMessageActionSheet({
+                              scope: 'personal',
+                              chatId: personalChatId,
+                              message: msg,
+                            });
+
+                          return (
+                            <SwipeableMessageBubble
+                              key={msg.id}
+                              isMe={isMe}
+                              canReply={canReplyMsg}
+                              styles={styles}
+                              onLayout={e => {
+                                personalMessageOffsetsRef.current[msg.id] = e.nativeEvent.layout.y;
+                              }}
+                              onTriggerReply={() =>
+                                setPersonalReplyTarget(buildReplyPayload(msg, senderDisplay))
+                              }
+                            >
+                              <TouchableOpacity
                                 activeOpacity={0.95}
                                 onLongPress={openSheet}
                                 delayLongPress={260}
@@ -3510,6 +4440,35 @@ export default function MessagesScreen() {
                                     isHighlighted && styles.highlightedBubble,
                                   ]}
                                 >
+                                  {msg.replyTo && (
+                                    <TouchableOpacity
+                                      activeOpacity={0.8}
+                                      onPress={() => handleJumpToPersonalMessage(msg.replyTo!.messageId)}
+                                      style={[
+                                        styles.replyQuoteBox,
+                                        isMe ? styles.replyQuoteBoxMe : styles.replyQuoteBoxOther,
+                                      ]}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.replyQuoteAuthor,
+                                          isMe && { color: '#09090B' },
+                                        ]}
+                                        numberOfLines={1}
+                                      >
+                                        {msg.replyTo.senderName}
+                                      </Text>
+                                      <Text
+                                        style={[
+                                          styles.replyQuoteText,
+                                          isMe && { color: '#27272A' },
+                                        ]}
+                                        numberOfLines={2}
+                                      >
+                                        {msg.replyTo.text}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  )}
                                   {videoUri && (
                                     <ChatVideoPreview
                                       uri={videoUri}
@@ -3582,130 +4541,7 @@ export default function MessagesScreen() {
                                   )}
                                 </View>
                               </TouchableOpacity>
-                            );
-                          })
-                        )}
-                      </ScrollView>
-                    </ImageBackground>
-                  ) : (
-                    <ScrollView
-                      ref={(el: any) => {
-                        personalScrollRef.current = el;
-                      }}
-                      style={styles.messagesScroll}
-                      contentContainerStyle={{ paddingVertical: 12 }}
-                      showsVerticalScrollIndicator={false}
-                    >
-                      {personalMessages.length === 0 ? (
-                        <Text style={styles.emptyChatHint}>Send a message to start the conversation.</Text>
-                      ) : (
-                        personalMessages.map(msg => {
-                          const isMe = msg.senderId === currentUserId;
-                          const { imageUri, videoUri } = resolveMessageMedia(msg);
-                          const isHighlighted = highlightedPersonalMsgId === msg.id;
-                          const senderDisplay = isMe
-                            ? getDisplayName(currentUser)
-                            : msg.senderName || getDisplayName(activePersonalUser);
-                          const reactionEntries = Object.entries(msg.reactions || {}).filter(
-                            ([, uids]) => Array.isArray(uids) && uids.length > 0
-                          );
-                          const openSheet = () =>
-                            setMessageActionSheet({
-                              scope: 'personal',
-                              chatId: personalChatId,
-                              message: msg,
-                            });
-
-                          return (
-                            <TouchableOpacity
-                              key={msg.id}
-                              onLayout={e => {
-                                personalMessageOffsetsRef.current[msg.id] = e.nativeEvent.layout.y;
-                              }}
-                              activeOpacity={0.95}
-                              onLongPress={openSheet}
-                              delayLongPress={260}
-                              style={[styles.bubbleRow, isMe ? styles.bubbleRight : styles.bubbleLeft]}
-                            >
-                              <View
-                                style={[
-                                  styles.bubble,
-                                  isMe ? styles.bubbleMe : styles.bubbleOther,
-                                  isHighlighted && styles.highlightedBubble,
-                                ]}
-                              >
-                                {videoUri && (
-                                  <ChatVideoPreview
-                                    uri={videoUri}
-                                    style={styles.chatInlineVideo}
-                                    styles={styles}
-                                    onLongPress={openSheet}
-                                    onPress={() =>
-                                      handleOpenMediaLightbox({
-                                        uri: videoUri,
-                                        type: 'video',
-                                        caption: msg.text,
-                                        senderName: senderDisplay,
-                                      })
-                                    }
-                                  />
-                                )}
-                                {imageUri && (
-                                  <TouchableOpacity
-                                    activeOpacity={0.88}
-                                    onLongPress={openSheet}
-                                    delayLongPress={260}
-                                    onPress={() =>
-                                      handleOpenMediaLightbox({
-                                        uri: imageUri,
-                                        type: 'image',
-                                        caption: msg.text,
-                                        senderName: senderDisplay,
-                                      })
-                                    }
-                                  >
-                                    <Image
-                                      source={{ uri: imageUri }}
-                                      style={styles.chatInlineMedia}
-                                      resizeMode="cover"
-                                    />
-                                  </TouchableOpacity>
-                                )}
-                                {!!msg.text && (
-                                  <Text style={[styles.bubbleText, isMe && { color: '#09090B' }]}>
-                                    {msg.text}
-                                    {msg.edited ? ' (edited)' : ''}
-                                  </Text>
-                                )}
-                                <Text style={[styles.bubbleTime, isMe && { color: '#27272A' }]}>
-                                  {formatTimeShort(msg.createdAt)}
-                                </Text>
-
-                                {reactionEntries.length > 0 && (
-                                  <View style={styles.reactionsRow}>
-                                    {reactionEntries.map(([emoji, uids]) => {
-                                      const mine = uids.includes(currentUserId);
-                                      return (
-                                        <TouchableOpacity
-                                          key={emoji}
-                                          style={[styles.reactionChip, mine && styles.reactionChipMine]}
-                                          onPress={() =>
-                                            handleToggleEmojiReaction(
-                                              { scope: 'personal', chatId: personalChatId, message: msg },
-                                              emoji
-                                            )
-                                          }
-                                        >
-                                          <Text style={styles.reactionChipText}>
-                                            {emoji} {uids.length}
-                                          </Text>
-                                        </TouchableOpacity>
-                                      );
-                                    })}
-                                  </View>
-                                )}
-                              </View>
-                            </TouchableOpacity>
+                            </SwipeableMessageBubble>
                           );
                         })
                       )}
@@ -3738,6 +4574,26 @@ export default function MessagesScreen() {
                     </View>
                     <TouchableOpacity onPress={() => setPendingPersonalMedia(null)}>
                       <Ionicons name="close-circle" size={22} color="#EF4444" />
+                    </TouchableOpacity>
+                  </View>
+                )}
+
+                {personalReplyTarget && (
+                  <View style={styles.replyComposerBanner}>
+                    <View style={styles.replyComposerAccentBar} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.replyComposerTitle} numberOfLines={1}>
+                        Replying to {personalReplyTarget.senderName}
+                      </Text>
+                      <Text style={styles.replyComposerText} numberOfLines={1}>
+                        {personalReplyTarget.text}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      onPress={() => setPersonalReplyTarget(null)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons name="close-circle" size={20} color={theme.textMuted} />
                     </TouchableOpacity>
                   </View>
                 )}
@@ -3778,6 +4634,8 @@ export default function MessagesScreen() {
                 </View>
               </>
             )}
+
+            {renderMessageOverlays()}
           </View>
         </View>
       </Modal>
@@ -4431,7 +5289,7 @@ export default function MessagesScreen() {
                 {activeGroup.pinnedMessage && (
                   <TouchableOpacity
                     style={styles.pinnedBanner}
-                    onPress={() => handleJumpToPinnedMessage(activeGroup.pinnedMessage!.id)}
+                    onPress={() => handleJumpToGroupMessage(activeGroup.pinnedMessage!.id)}
                     activeOpacity={0.85}
                   >
                     <Ionicons name="pin" size={14} color="#EAB308" />
@@ -4474,6 +5332,7 @@ export default function MessagesScreen() {
                         ) : (
                           groupMessages.map(msg => {
                             const isMe = msg.senderId === currentUserId;
+                            const canReplyMsg = !isMe;
                             const senderObj = allUsers.find(u => u.uid === msg.senderId);
                             const senderName = isMe
                               ? getDisplayName(currentUser)
@@ -4496,11 +5355,211 @@ export default function MessagesScreen() {
                               });
 
                             return (
-                              <TouchableOpacity
+                              <SwipeableMessageBubble
                                 key={msg.id}
+                                isMe={isMe}
+                                canReply={canReplyMsg}
+                                styles={styles}
                                 onLayout={e => {
                                   messageOffsetsRef.current[msg.id] = e.nativeEvent.layout.y;
                                 }}
+                                onTriggerReply={() =>
+                                  setGroupReplyTarget(buildReplyPayload(msg, senderName))
+                                }
+                              >
+                                <TouchableOpacity
+                                  activeOpacity={0.95}
+                                  onLongPress={openGroupSheet}
+                                  delayLongPress={260}
+                                  style={[styles.bubbleRow, isMe ? styles.bubbleRight : styles.bubbleLeft]}
+                                >
+                                  <View
+                                    style={[
+                                      styles.bubble,
+                                      isMe ? styles.bubbleMe : styles.bubbleOther,
+                                      isHighlighted && styles.highlightedBubble,
+                                    ]}
+                                  >
+                                    <TouchableOpacity
+                                      onPress={() => handleOpenUserProfile(msg.senderId, senderName)}
+                                      activeOpacity={0.75}
+                                      style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 3 }}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.senderTag,
+                                          { color: isMe ? '#09090B' : nameColor },
+                                        ]}
+                                      >
+                                        {senderName}
+                                      </Text>
+                                      {senderIsAdmin && <Text style={styles.adminTag}>ADMIN</Text>}
+                                    </TouchableOpacity>
+                                    {msg.replyTo && (
+                                      <TouchableOpacity
+                                        activeOpacity={0.8}
+                                        onPress={() => handleJumpToGroupMessage(msg.replyTo!.messageId)}
+                                        style={[
+                                          styles.replyQuoteBox,
+                                          isMe ? styles.replyQuoteBoxMe : styles.replyQuoteBoxOther,
+                                        ]}
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.replyQuoteAuthor,
+                                            {
+                                              color: isMe
+                                                ? '#09090B'
+                                                : getSenderNameColor(
+                                                    msg.replyTo.senderId || msg.replyTo.senderName
+                                                  ),
+                                            },
+                                          ]}
+                                          numberOfLines={1}
+                                        >
+                                          {msg.replyTo.senderName}
+                                        </Text>
+                                        <Text
+                                          style={[
+                                            styles.replyQuoteText,
+                                            isMe && { color: '#27272A' },
+                                          ]}
+                                          numberOfLines={2}
+                                        >
+                                          {msg.replyTo.text}
+                                        </Text>
+                                      </TouchableOpacity>
+                                    )}
+                                    {videoUri && (
+                                      <ChatVideoPreview
+                                        uri={videoUri}
+                                        style={styles.chatInlineVideo}
+                                        styles={styles}
+                                        onLongPress={openGroupSheet}
+                                        onPress={() =>
+                                          handleOpenMediaLightbox({
+                                            uri: videoUri,
+                                            type: 'video',
+                                            caption: msg.text,
+                                            senderName,
+                                          })
+                                        }
+                                      />
+                                    )}
+                                    {imageUri && (
+                                      <TouchableOpacity
+                                        activeOpacity={0.88}
+                                        onLongPress={openGroupSheet}
+                                        delayLongPress={260}
+                                        onPress={() =>
+                                          handleOpenMediaLightbox({
+                                            uri: imageUri,
+                                            type: 'image',
+                                            caption: msg.text,
+                                            senderName,
+                                          })
+                                        }
+                                      >
+                                        <Image
+                                          source={{ uri: imageUri }}
+                                          style={styles.chatInlineMedia}
+                                          resizeMode="cover"
+                                        />
+                                      </TouchableOpacity>
+                                    )}
+                                    {!!msg.text && (
+                                      <Text style={[styles.bubbleText, isMe && { color: '#09090B' }]}>
+                                        {msg.text}
+                                        {msg.edited ? ' (edited)' : ''}
+                                      </Text>
+                                    )}
+                                    <View style={styles.bubbleFooterRow}>
+                                      <Text style={[styles.bubbleTime, isMe && { color: '#27272A' }]}>
+                                        {formatTimeShort(msg.createdAt)}
+                                      </Text>
+                                    </View>
+
+                                    {reactionEntries.length > 0 && (
+                                      <View style={styles.reactionsRow}>
+                                        {reactionEntries.map(([emoji, uids]) => {
+                                          const mine = uids.includes(currentUserId);
+                                          return (
+                                            <TouchableOpacity
+                                              key={emoji}
+                                              style={[styles.reactionChip, mine && styles.reactionChipMine]}
+                                              onPress={() =>
+                                                handleToggleEmojiReaction(
+                                                  { scope: 'group', groupId: activeGroup.id, message: msg },
+                                                  emoji
+                                                )
+                                              }
+                                            >
+                                              <Text style={styles.reactionChipText}>
+                                                {emoji} {uids.length}
+                                              </Text>
+                                            </TouchableOpacity>
+                                          );
+                                        })}
+                                      </View>
+                                    )}
+                                  </View>
+                                </TouchableOpacity>
+                              </SwipeableMessageBubble>
+                            );
+                          })
+                        )}
+                      </ScrollView>
+                    </ImageBackground>
+                  ) : (
+                    <ScrollView
+                      ref={(el: any) => {
+                        groupScrollRef.current = el;
+                      }}
+                      style={styles.messagesScroll}
+                      contentContainerStyle={{ paddingVertical: 12 }}
+                      showsVerticalScrollIndicator={false}
+                    >
+                      {groupMessages.length === 0 ? (
+                        <Text style={styles.emptyChatHint}>No messages in this group yet.</Text>
+                      ) : (
+                        groupMessages.map(msg => {
+                          const isMe = msg.senderId === currentUserId;
+                          const canReplyMsg = !isMe;
+                          const senderObj = allUsers.find(u => u.uid === msg.senderId);
+                          const senderName = isMe
+                            ? getDisplayName(currentUser)
+                            : msg.senderName || getDisplayName(senderObj);
+                          const nameColor = getSenderNameColor(msg.senderId || senderName);
+                          const senderIsAdmin =
+                            !!msg.senderId &&
+                            (activeGroup.admins.includes(msg.senderId) ||
+                              activeGroup.creatorId === msg.senderId);
+                          const { imageUri, videoUri } = resolveMessageMedia(msg);
+                          const isHighlighted = highlightedMessageId === msg.id;
+                          const reactionEntries = Object.entries(msg.reactions || {}).filter(
+                            ([, uids]) => Array.isArray(uids) && uids.length > 0
+                          );
+                          const openGroupSheet = () =>
+                            setMessageActionSheet({
+                              scope: 'group',
+                              group: activeGroup,
+                              message: msg,
+                            });
+
+                          return (
+                            <SwipeableMessageBubble
+                              key={msg.id}
+                              isMe={isMe}
+                              canReply={canReplyMsg}
+                              styles={styles}
+                              onLayout={e => {
+                                messageOffsetsRef.current[msg.id] = e.nativeEvent.layout.y;
+                              }}
+                              onTriggerReply={() =>
+                                setGroupReplyTarget(buildReplyPayload(msg, senderName))
+                              }
+                            >
+                              <TouchableOpacity
                                 activeOpacity={0.95}
                                 onLongPress={openGroupSheet}
                                 delayLongPress={260}
@@ -4528,6 +5587,41 @@ export default function MessagesScreen() {
                                     </Text>
                                     {senderIsAdmin && <Text style={styles.adminTag}>ADMIN</Text>}
                                   </TouchableOpacity>
+                                  {msg.replyTo && (
+                                    <TouchableOpacity
+                                      activeOpacity={0.8}
+                                      onPress={() => handleJumpToGroupMessage(msg.replyTo!.messageId)}
+                                      style={[
+                                        styles.replyQuoteBox,
+                                        isMe ? styles.replyQuoteBoxMe : styles.replyQuoteBoxOther,
+                                      ]}
+                                    >
+                                      <Text
+                                        style={[
+                                          styles.replyQuoteAuthor,
+                                          {
+                                            color: isMe
+                                              ? '#09090B'
+                                              : getSenderNameColor(
+                                                  msg.replyTo.senderId || msg.replyTo.senderName
+                                                ),
+                                          },
+                                        ]}
+                                        numberOfLines={1}
+                                      >
+                                        {msg.replyTo.senderName}
+                                      </Text>
+                                      <Text
+                                        style={[
+                                          styles.replyQuoteText,
+                                          isMe && { color: '#27272A' },
+                                        ]}
+                                        numberOfLines={2}
+                                      >
+                                        {msg.replyTo.text}
+                                      </Text>
+                                    </TouchableOpacity>
+                                  )}
                                   {videoUri && (
                                     <ChatVideoPreview
                                       uri={videoUri}
@@ -4602,153 +5696,7 @@ export default function MessagesScreen() {
                                   )}
                                 </View>
                               </TouchableOpacity>
-                            );
-                          })
-                        )}
-                      </ScrollView>
-                    </ImageBackground>
-                  ) : (
-                    <ScrollView
-                      ref={(el: any) => {
-                        groupScrollRef.current = el;
-                      }}
-                      style={styles.messagesScroll}
-                      contentContainerStyle={{ paddingVertical: 12 }}
-                      showsVerticalScrollIndicator={false}
-                    >
-                      {groupMessages.length === 0 ? (
-                        <Text style={styles.emptyChatHint}>No messages in this group yet.</Text>
-                      ) : (
-                        groupMessages.map(msg => {
-                          const isMe = msg.senderId === currentUserId;
-                          const senderObj = allUsers.find(u => u.uid === msg.senderId);
-                          const senderName = isMe
-                            ? getDisplayName(currentUser)
-                            : msg.senderName || getDisplayName(senderObj);
-                          const nameColor = getSenderNameColor(msg.senderId || senderName);
-                          const senderIsAdmin =
-                            !!msg.senderId &&
-                            (activeGroup.admins.includes(msg.senderId) ||
-                              activeGroup.creatorId === msg.senderId);
-                          const { imageUri, videoUri } = resolveMessageMedia(msg);
-                          const isHighlighted = highlightedMessageId === msg.id;
-                          const reactionEntries = Object.entries(msg.reactions || {}).filter(
-                            ([, uids]) => Array.isArray(uids) && uids.length > 0
-                          );
-                          const openGroupSheet = () =>
-                            setMessageActionSheet({
-                              scope: 'group',
-                              group: activeGroup,
-                              message: msg,
-                            });
-
-                          return (
-                            <TouchableOpacity
-                              key={msg.id}
-                              onLayout={e => {
-                                messageOffsetsRef.current[msg.id] = e.nativeEvent.layout.y;
-                              }}
-                              activeOpacity={0.95}
-                              onLongPress={openGroupSheet}
-                              delayLongPress={260}
-                              style={[styles.bubbleRow, isMe ? styles.bubbleRight : styles.bubbleLeft]}
-                            >
-                              <View
-                                style={[
-                                  styles.bubble,
-                                  isMe ? styles.bubbleMe : styles.bubbleOther,
-                                  isHighlighted && styles.highlightedBubble,
-                                ]}
-                              >
-                                <TouchableOpacity
-                                  onPress={() => handleOpenUserProfile(msg.senderId, senderName)}
-                                  activeOpacity={0.75}
-                                  style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 3 }}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.senderTag,
-                                      { color: isMe ? '#09090B' : nameColor },
-                                    ]}
-                                  >
-                                    {senderName}
-                                  </Text>
-                                  {senderIsAdmin && <Text style={styles.adminTag}>ADMIN</Text>}
-                                </TouchableOpacity>
-                                {videoUri && (
-                                  <ChatVideoPreview
-                                    uri={videoUri}
-                                    style={styles.chatInlineVideo}
-                                    styles={styles}
-                                    onLongPress={openGroupSheet}
-                                    onPress={() =>
-                                      handleOpenMediaLightbox({
-                                        uri: videoUri,
-                                        type: 'video',
-                                        caption: msg.text,
-                                        senderName,
-                                      })
-                                    }
-                                  />
-                                )}
-                                {imageUri && (
-                                  <TouchableOpacity
-                                    activeOpacity={0.88}
-                                    onLongPress={openGroupSheet}
-                                    delayLongPress={260}
-                                    onPress={() =>
-                                      handleOpenMediaLightbox({
-                                        uri: imageUri,
-                                        type: 'image',
-                                        caption: msg.text,
-                                        senderName,
-                                      })
-                                    }
-                                  >
-                                    <Image
-                                      source={{ uri: imageUri }}
-                                      style={styles.chatInlineMedia}
-                                      resizeMode="cover"
-                                    />
-                                  </TouchableOpacity>
-                                )}
-                                {!!msg.text && (
-                                  <Text style={[styles.bubbleText, isMe && { color: '#09090B' }]}>
-                                    {msg.text}
-                                    {msg.edited ? ' (edited)' : ''}
-                                  </Text>
-                                )}
-                                <View style={styles.bubbleFooterRow}>
-                                  <Text style={[styles.bubbleTime, isMe && { color: '#27272A' }]}>
-                                    {formatTimeShort(msg.createdAt)}
-                                  </Text>
-                                </View>
-
-                                {reactionEntries.length > 0 && (
-                                  <View style={styles.reactionsRow}>
-                                    {reactionEntries.map(([emoji, uids]) => {
-                                      const mine = uids.includes(currentUserId);
-                                      return (
-                                        <TouchableOpacity
-                                          key={emoji}
-                                          style={[styles.reactionChip, mine && styles.reactionChipMine]}
-                                          onPress={() =>
-                                            handleToggleEmojiReaction(
-                                              { scope: 'group', groupId: activeGroup.id, message: msg },
-                                              emoji
-                                            )
-                                          }
-                                        >
-                                          <Text style={styles.reactionChipText}>
-                                            {emoji} {uids.length}
-                                          </Text>
-                                        </TouchableOpacity>
-                                      );
-                                    })}
-                                  </View>
-                                )}
-                              </View>
-                            </TouchableOpacity>
+                            </SwipeableMessageBubble>
                           );
                         })
                       )}
@@ -4783,6 +5731,26 @@ export default function MessagesScreen() {
                         </View>
                         <TouchableOpacity onPress={() => setPendingGroupMedia(null)}>
                           <Ionicons name="close-circle" size={22} color="#EF4444" />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    {groupReplyTarget && (
+                      <View style={styles.replyComposerBanner}>
+                        <View style={styles.replyComposerAccentBar} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.replyComposerTitle} numberOfLines={1}>
+                            Replying to {groupReplyTarget.senderName}
+                          </Text>
+                          <Text style={styles.replyComposerText} numberOfLines={1}>
+                            {groupReplyTarget.text}
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          onPress={() => setGroupReplyTarget(null)}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Ionicons name="close-circle" size={20} color={theme.textMuted} />
                         </TouchableOpacity>
                       </View>
                     )}
@@ -4851,236 +5819,8 @@ export default function MessagesScreen() {
                 )}
               </>
             ) : null}
-          </View>
-        </View>
-      </Modal>
 
-      {/* Long-Press Message Action Sheet */}
-      <Modal
-        visible={!!messageActionSheet}
-        transparent
-        presentationStyle="overFullScreen"
-        animationType="fade"
-        onRequestClose={() => setMessageActionSheet(null)}
-      >
-        <TouchableOpacity
-          style={styles.actionSheetBackdrop}
-          activeOpacity={1}
-          onPress={() => setMessageActionSheet(null)}
-        >
-          {messageActionSheet && (
-            <TouchableOpacity
-              activeOpacity={1}
-              style={styles.actionSheetBox}
-              onPress={() => {}}
-            >
-              <Text style={styles.actionSheetLabel}>React with Emoji</Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                style={styles.emojiPickerScroll}
-                contentContainerStyle={styles.emojiPickerRow}
-              >
-                {QUICK_EMOJIS.map(emoji => {
-                  const list =
-                    (messageActionSheet.message.reactions &&
-                      messageActionSheet.message.reactions[emoji]) ||
-                    [];
-                  const selected = list.includes(currentUserId);
-                  return (
-                    <TouchableOpacity
-                      key={emoji}
-                      style={[styles.emojiChoiceBtn, selected && styles.emojiChoiceBtnSelected]}
-                      onPress={async () => {
-                        const target = messageActionSheet;
-                        setMessageActionSheet(null);
-                        await handleToggleEmojiReaction(
-                          {
-                            scope: target.scope,
-                            chatId: target.chatId,
-                            groupId: target.group?.id,
-                            message: target.message,
-                          },
-                          emoji
-                        );
-                      }}
-                    >
-                      <Text style={styles.emojiChoiceText}>{emoji}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-
-              <TouchableOpacity
-                style={styles.actionRowBtn}
-                onPress={async () => {
-                  const target = messageActionSheet;
-                  setMessageActionSheet(null);
-                  await handlePinMessage({
-                    scope: target.scope,
-                    chatId: target.chatId,
-                    groupId: target.group?.id,
-                    message: target.message,
-                  });
-                }}
-              >
-                <Ionicons name="pin-outline" size={18} color="#EAB308" />
-                <Text style={styles.actionRowBtnText}>Pin Message</Text>
-              </TouchableOpacity>
-
-              {messageActionSheet.message.senderId && (
-                <TouchableOpacity
-                  style={styles.actionRowBtn}
-                  onPress={() => {
-                    const target = messageActionSheet;
-                    setMessageActionSheet(null);
-                    handleOpenUserProfile(
-                      target.message.senderId,
-                      target.message.senderName
-                    );
-                  }}
-                >
-                  <Ionicons name="person-outline" size={18} color="#38BDF8" />
-                  <Text style={styles.actionRowBtnText}>View Sender Profile</Text>
-                </TouchableOpacity>
-              )}
-
-              {messageActionSheet.message.senderId === currentUserId && (
-                <TouchableOpacity
-                  style={styles.actionRowBtn}
-                  onPress={() => {
-                    const target = messageActionSheet;
-                    setMessageActionSheet(null);
-                    handleStartEditMessage({
-                      scope: target.scope,
-                      chatId: target.chatId,
-                      groupId: target.group?.id,
-                      message: target.message,
-                    });
-                  }}
-                >
-                  <Ionicons name="create-outline" size={18} color="#EAB308" />
-                  <Text style={styles.actionRowBtnText}>Edit Message</Text>
-                </TouchableOpacity>
-              )}
-
-              {(messageActionSheet.message.senderId === currentUserId ||
-                (messageActionSheet.scope === 'group' &&
-                  isCurrentUserGroupAdmin(messageActionSheet.group || null))) && (
-                <TouchableOpacity
-                  style={styles.actionRowBtn}
-                  onPress={() => {
-                    const target = messageActionSheet;
-                    setMessageActionSheet(null);
-                    handleDeleteMessage({
-                      scope: target.scope,
-                      chatId: target.chatId,
-                      groupId: target.group?.id,
-                      message: target.message,
-                      groupObj: target.group,
-                    });
-                  }}
-                >
-                  <Ionicons name="trash-outline" size={18} color="#EF4444" />
-                  <Text style={[styles.actionRowBtnText, { color: '#EF4444' }]}>Delete Message</Text>
-                </TouchableOpacity>
-              )}
-
-              {messageActionSheet.scope === 'group' &&
-                messageActionSheet.group &&
-                isCurrentUserGroupAdmin(messageActionSheet.group) &&
-                messageActionSheet.message.senderId &&
-                messageActionSheet.message.senderId !== currentUserId &&
-                messageActionSheet.message.senderId !== messageActionSheet.group.creatorId && (
-                  <>
-                    <TouchableOpacity
-                      style={styles.actionRowBtn}
-                      onPress={() => {
-                        const target = messageActionSheet;
-                        setMessageActionSheet(null);
-                        if (target.group) {
-                          handleKickUserFromGroup(target.group, target.message.senderId);
-                        }
-                      }}
-                    >
-                      <Ionicons name="walk-outline" size={18} color="#F97316" />
-                      <Text style={[styles.actionRowBtnText, { color: '#F97316' }]}>
-                        Kick User From Group
-                      </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.actionRowBtn}
-                      onPress={() => {
-                        const target = messageActionSheet;
-                        setMessageActionSheet(null);
-                        if (target.group) {
-                          handleBanUserFromGroup(target.group, target.message.senderId);
-                        }
-                      }}
-                    >
-                      <Ionicons name="ban-outline" size={18} color="#EF4444" />
-                      <Text style={[styles.actionRowBtnText, { color: '#EF4444' }]}>
-                        Ban User From Group
-                      </Text>
-                    </TouchableOpacity>
-                  </>
-                )}
-
-              {messageActionSheet.message.senderId !== currentUserId && (
-                <TouchableOpacity
-                  style={styles.actionRowBtn}
-                  onPress={() => {
-                    const target = messageActionSheet;
-                    setMessageActionSheet(null);
-                    handleReportMessage(target.message, target.group?.id);
-                  }}
-                >
-                  <Ionicons name="flag-outline" size={18} color="#F97316" />
-                  <Text style={[styles.actionRowBtnText, { color: '#F97316' }]}>Report Message</Text>
-                </TouchableOpacity>
-              )}
-            </TouchableOpacity>
-          )}
-        </TouchableOpacity>
-      </Modal>
-
-      {/* Edit Sent Message Modal */}
-      <Modal
-        visible={!!editingMessageTarget}
-        transparent
-        presentationStyle="overFullScreen"
-        animationType="fade"
-        onRequestClose={() => setEditingMessageTarget(null)}
-      >
-        <View style={styles.actionSheetBackdrop}>
-          <View style={styles.actionSheetBox}>
-            <Text style={styles.modalTitle}>Edit Message</Text>
-            <TextInput
-              style={[styles.input, { marginTop: 12 }]}
-              value={editMessageDraft}
-              onChangeText={setEditMessageDraft}
-              placeholder="Update your message..."
-              placeholderTextColor={theme.textSubtle}
-              multiline
-            />
-            <View style={{ flexDirection: 'row', gap: 10 }}>
-              <TouchableOpacity
-                style={[styles.wallpaperClearBtn, { flex: 1, alignItems: 'center' }]}
-                onPress={() => {
-                  setEditingMessageTarget(null);
-                  setEditMessageDraft('');
-                }}
-              >
-                <Text style={styles.wallpaperClearBtnText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.primarySubmitBtn, { flex: 1 }]}
-                onPress={handleSaveEditedMessage}
-              >
-                <Text style={styles.primarySubmitBtnText}>Save</Text>
-              </TouchableOpacity>
-            </View>
+            {renderMessageOverlays()}
           </View>
         </View>
       </Modal>
@@ -5157,11 +5897,11 @@ export default function MessagesScreen() {
         </View>
       </Modal>
 
-      {/* Player Profile Modal */}
+      {/* Discover-Style Player Profile Modal */}
       <Modal
-        visible={!!liveProfileUser && !targetActiveModalList}
+        visible={!!liveProfileUser && !targetActiveModalList && !selectedPostModal && !commentsModalPost}
         transparent
-        animationType="fade"
+        animationType="slide"
         onRequestClose={handleCloseProfileModal}
       >
         <View style={styles.floatingOverlayCenter}>
@@ -5169,7 +5909,7 @@ export default function MessagesScreen() {
             <View style={styles.profileModalSheet}>
               <View style={styles.modalHeader}>
                 <View>
-                  <Text style={styles.eyebrow}>PLAYER PROFILE</Text>
+                  <Text style={styles.eyebrow}>Player Profile</Text>
                   <Text style={styles.headerTitle}>
                     World <Text style={styles.accent}>Sports</Text>
                   </Text>
@@ -5194,7 +5934,7 @@ export default function MessagesScreen() {
                   Array.isArray(liveProfileUser.blockedUsers) && currentUserId
                     ? liveProfileUser.blockedUsers.includes(currentUserId)
                     : false;
-                const anyBlock = !isMe && (isBlockedByMe || isBlockingMe);
+                const anyBlock = !isMe && (isBlockedByMe || isBlockingMe || isProfileBlockedBidirectional);
                 const isFollowing =
                   Array.isArray(liveProfileUser.followers) &&
                   liveProfileUser.followers.includes(currentUserId);
@@ -5205,11 +5945,15 @@ export default function MessagesScreen() {
                 const canSeePosts = !anyBlock && (isMe || !isPrivate || isFollowing);
 
                 return (
-                  <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 24 }}>
+                  <ScrollView
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={{ paddingBottom: 32 }}
+                    nestedScrollEnabled={true}
+                  >
                     <View style={styles.profileCenterHeader}>
                       <TouchableOpacity
                         style={styles.profileAvatarLg}
-                        activeOpacity={0.85}
+                        activeOpacity={0.7}
                         onPress={() => {
                           if (liveProfileUser.avatar && !anyBlock) {
                             handleOpenMediaLightbox({
@@ -5221,7 +5965,7 @@ export default function MessagesScreen() {
                         }}
                       >
                         {liveProfileUser.avatar && !anyBlock ? (
-                          <Image source={{ uri: liveProfileUser.avatar }} style={styles.avatarImg} />
+                          <Image source={{ uri: liveProfileUser.avatar }} style={styles.avatarImage} />
                         ) : (
                           <Text style={styles.profileAvatarLgText}>
                             {pName[0]?.toUpperCase() || 'P'}
@@ -5229,7 +5973,7 @@ export default function MessagesScreen() {
                         )}
                       </TouchableOpacity>
 
-                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 }}>
                         <Text style={styles.profileModalName}>{pName}</Text>
                         {liveProfileUser.isVip && (
                           <Ionicons name="checkmark-circle" size={18} color="#EAB308" />
@@ -5244,13 +5988,13 @@ export default function MessagesScreen() {
                           <View style={styles.profileSportsRow}>
                             {sportsArr.map((sp, idx) => (
                               <View key={idx} style={styles.profileSportPill}>
-                                <Text style={styles.profileSportPillText}>{sp}</Text>
+                                <Text style={styles.profileSportPillText}> {sp}</Text>
                               </View>
                             ))}
                           </View>
                           <Text style={styles.profileMetaLine}>
-                            📍 {normalizeCity(liveProfileUser.city)}, {liveProfileUser.country || 'Israel'}
-                            {liveProfileUser.age ? ` • Age: ${liveProfileUser.age}` : ''}
+                            📍 {normalizeCity(liveProfileUser.city)}, {liveProfileUser.country || 'Israel'} | Age:{' '}
+                            {liveProfileUser.age || 20}
                           </Text>
                         </>
                       )}
@@ -5293,26 +6037,27 @@ export default function MessagesScreen() {
                       </View>
                     )}
 
-                    {!isMe && (
-                      <View style={{ gap: 8, marginBottom: 14 }}>
+                    {!isMe && currentUserId && (
+                      <View style={{ marginBottom: 16, gap: 10 }}>
                         {!anyBlock && (
                           <View style={{ flexDirection: 'row', gap: 8 }}>
                             <TouchableOpacity
                               style={[
-                                styles.profilePrimaryBtn,
+                                styles.profileFollowBtn,
                                 { flex: 1 },
                                 isFollowing && styles.profileFollowingBtnAlt,
                                 hasRequested && {
                                   backgroundColor: theme.surfaceAlt,
                                   borderWidth: 1,
-                                  borderColor: theme.borderSubtle,
+                                  borderColor: theme.border,
                                 },
                               ]}
                               onPress={() => handleToggleFollowInProfileModal(liveProfileUser)}
+                              activeOpacity={0.85}
                             >
                               <Text
                                 style={[
-                                  styles.profilePrimaryBtnText,
+                                  styles.profileFollowBtnText,
                                   isFollowing && { color: '#EAB308' },
                                   hasRequested && { color: theme.text },
                                 ]}
@@ -5321,9 +6066,7 @@ export default function MessagesScreen() {
                                   ? 'Following ✓'
                                   : hasRequested
                                   ? 'Requested ⏳'
-                                  : isPrivate
-                                  ? 'Request Follow'
-                                  : 'Follow Player'}
+                                  : 'Follow Player 🤝'}
                               </Text>
                             </TouchableOpacity>
 
@@ -5333,6 +6076,7 @@ export default function MessagesScreen() {
                                 setProfileModalUser(null);
                                 handleOpenPersonalChat(liveProfileUser);
                               }}
+                              activeOpacity={0.85}
                             >
                               <Ionicons name="chatbubbles-outline" size={16} color="#09090B" />
                               <Text style={styles.profilePrimaryBtnText}>Message</Text>
@@ -5342,12 +6086,28 @@ export default function MessagesScreen() {
 
                         {!isBlockingMe && (
                           <TouchableOpacity
-                            style={styles.profileBlockBtn}
+                            style={[
+                              styles.profileBlockBtn,
+                              isBlockedByMe && {
+                                backgroundColor: theme.surfaceAlt,
+                                borderColor: theme.borderSubtle,
+                              },
+                            ]}
                             onPress={() => handleToggleBlockInProfileModal(liveProfileUser)}
+                            activeOpacity={0.85}
                           >
-                            <Ionicons name="ban-outline" size={13} color="#EF4444" />
-                            <Text style={styles.profileBlockBtnText}>
-                              {isBlockedByMe ? 'Unblock User' : 'Block User'}
+                            <Ionicons
+                              name={isBlockedByMe ? 'person-add-outline' : 'ban-outline'}
+                              size={12}
+                              color={isBlockedByMe ? theme.text : '#EF4444'}
+                            />
+                            <Text
+                              style={[
+                                styles.profileBlockBtnText,
+                                isBlockedByMe && { color: theme.text },
+                              ]}
+                            >
+                              {isBlockedByMe ? 'Unblock' : 'Block'}
                             </Text>
                           </TouchableOpacity>
                         )}
@@ -5355,50 +6115,81 @@ export default function MessagesScreen() {
                     )}
 
                     {anyBlock ? (
-                      <View style={styles.emptyCard}>
-                        <Ionicons name="ban" size={32} color="#EF4444" />
-                        <Text style={styles.emptyTitle}>Profile Unavailable</Text>
-                        <Text style={styles.emptySub}>
-                          You cannot view this profile or interact with this user while a block is active.
+                      <View style={styles.privateAccountBox}>
+                        <Ionicons name="ban" size={40} color="#EF4444" style={{ marginBottom: 8 }} />
+                        <Text style={styles.privateAccountTitle}>
+                          {isBlockedByMe ? 'You Blocked This User' : 'Content Unavailable'}
+                        </Text>
+                        <Text style={styles.privateAccountText}>
+                          {isBlockedByMe
+                            ? 'Unblock this user to view their profile or posts.'
+                            : 'You cannot view this profile.'}
                         </Text>
                       </View>
                     ) : !canSeePosts ? (
-                      <View style={styles.emptyCard}>
-                        <Ionicons name="lock-closed" size={32} color="#EAB308" />
-                        <Text style={styles.emptyTitle}>This Account is Private 🔒</Text>
-                        <Text style={styles.emptySub}>
-                          Follow this player to see their posts, stories, and connections.
+                      <View style={styles.privateAccountBox}>
+                        <Ionicons name="lock-closed" size={40} color="#EAB308" style={{ marginBottom: 8 }} />
+                        <Text style={styles.privateAccountTitle}>This Account is Private 🔒</Text>
+                        <Text style={styles.privateAccountText}>
+                          Follow this account to see their photos and videos.
                         </Text>
                       </View>
                     ) : (
                       <>
-                        <Text style={styles.sectionHeading}>Posts ({liveProfilePosts.length})</Text>
+                        <View style={styles.postsSectionHeader}>
+                          <Ionicons name="grid-outline" size={18} color="#EAB308" />
+                          <Text style={styles.profileSectionTitle}>Player Posts</Text>
+                        </View>
+
                         {liveProfilePosts.length === 0 ? (
-                          <Text style={styles.mutedNote}>No posts shared yet.</Text>
+                          <View style={styles.emptyPostsBox}>
+                            <Ionicons name="images-outline" size={32} color={theme.textSubtle} />
+                            <Text style={styles.emptyPostsText}>No posts shared yet by this user.</Text>
+                          </View>
                         ) : (
-                          <View style={styles.mediaGrid}>
-                            {liveProfilePosts.map(p =>
-                              p.imageUrl ? (
+                          <View style={styles.postsGrid}>
+                            {liveProfilePosts.map(p => {
+                              const resolved = resolvePostMedia(p);
+                              if (!resolved.uri) return null;
+                              const isVid = resolved.type === 'video';
+
+                              return (
                                 <TouchableOpacity
                                   key={p.id}
-                                  style={styles.mediaTile}
+                                  style={styles.postThumbnailBox}
+                                  activeOpacity={0.7}
                                   onPress={() =>
-                                    handleOpenMediaLightbox({
-                                      uri: p.imageUrl!,
-                                      type: p.mediaType === 'video' ? 'video' : 'image',
-                                      caption: p.caption || p.text || '',
-                                      senderName: pName,
+                                    setSelectedPostModal({
+                                      ...p,
+                                      imageUrl: resolved.uri!,
+                                      mediaType: resolved.type,
                                     })
                                   }
                                 >
-                                  <Image
-                                    source={{ uri: p.imageUrl }}
-                                    style={styles.mediaTileImg}
-                                    resizeMode="cover"
-                                  />
+                                  {isVid ? (
+                                    <View
+                                      style={[
+                                        styles.postThumbnailImage,
+                                        { backgroundColor: '#000', position: 'relative' },
+                                      ]}
+                                    >
+                                      <ProfileVideoThumbnail
+                                        uri={resolved.uri!}
+                                        style={styles.postThumbnailImage}
+                                      />
+                                      <View style={styles.videoBadgeOverlay}>
+                                        <Ionicons name="play" size={14} color="#FAFAFA" />
+                                      </View>
+                                    </View>
+                                  ) : (
+                                    <Image
+                                      source={{ uri: resolved.uri! }}
+                                      style={styles.postThumbnailImage}
+                                    />
+                                  )}
                                 </TouchableOpacity>
-                              ) : null
-                            )}
+                              );
+                            })}
                           </View>
                         )}
                       </>
@@ -5408,6 +6199,304 @@ export default function MessagesScreen() {
               })()}
             </View>
           )}
+        </View>
+      </Modal>
+
+      {/* Discover-Style Post Details Modal */}
+      <Modal
+        visible={!!selectedPostModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setSelectedPostModal(null)}
+      >
+        <View style={styles.floatingOverlayCenter}>
+          <View style={styles.profileModalSheet}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Post Details 📷</Text>
+              <TouchableOpacity
+                onPress={() => setSelectedPostModal(null)}
+                activeOpacity={0.8}
+                style={styles.closeFullScreenBtn}
+              >
+                <Ionicons name="close" size={22} color={theme.text} />
+              </TouchableOpacity>
+            </View>
+
+            {selectedPostModal &&
+              (() => {
+                const livePost =
+                  allPosts.find(p => p.id === selectedPostModal.id) || selectedPostModal;
+                const postOwner = allUsers.find(
+                  u =>
+                    u.uid === livePost.userId ||
+                    u.name === livePost.userName ||
+                    u.name === livePost.authorName
+                );
+                const resolved = resolvePostMedia(livePost);
+                const isVid = resolved.type === 'video';
+                const ownerDisplay =
+                  getDisplayName(postOwner) || livePost.userName || livePost.authorName || 'Player';
+
+                return (
+                  <ScrollView
+                    showsVerticalScrollIndicator={false}
+                    contentContainerStyle={{ paddingBottom: 30 }}
+                    nestedScrollEnabled={true}
+                  >
+                    <View style={styles.postDetailCard}>
+                      <View style={styles.postDetailHeader}>
+                        <TouchableOpacity
+                          style={styles.postDetailAvatarBox}
+                          onPress={() => {
+                            setSelectedPostModal(null);
+                            handleOpenUserProfile(livePost.userId, ownerDisplay);
+                          }}
+                          activeOpacity={0.85}
+                        >
+                          {postOwner?.avatar || livePost.avatarUrl ? (
+                            <Image
+                              source={{ uri: postOwner?.avatar || livePost.avatarUrl }}
+                              style={styles.avatarImg}
+                            />
+                          ) : (
+                            <View style={styles.postDetailAvatarPlaceholder}>
+                              <Text style={styles.postDetailAvatarPlaceholderText}>
+                                {ownerDisplay[0]?.toUpperCase() || 'P'}
+                              </Text>
+                            </View>
+                          )}
+                        </TouchableOpacity>
+
+                        <View style={styles.postDetailUserInfo}>
+                          <TouchableOpacity
+                            onPress={() => {
+                              setSelectedPostModal(null);
+                              handleOpenUserProfile(livePost.userId, ownerDisplay);
+                            }}
+                            activeOpacity={0.85}
+                          >
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                              <Text style={styles.postDetailUserName}>{ownerDisplay}</Text>
+                              {postOwner?.isVip && (
+                                <Ionicons name="checkmark-circle" size={14} color="#EAB308" />
+                              )}
+                            </View>
+                          </TouchableOpacity>
+                        </View>
+
+                        {livePost.sport && (
+                          <View style={styles.postSportBadge}>
+                            <Text style={styles.postSportBadgeText}>{livePost.sport}</Text>
+                          </View>
+                        )}
+                        <Text style={styles.postDetailTime}>{getTimeAgo(livePost.createdAt)}</Text>
+                      </View>
+
+                      <Text style={styles.postDetailBodyText}>
+                        {livePost.caption || livePost.text}
+                      </Text>
+
+                      {resolved.uri ? (
+                        <View style={styles.postDetailMediaBox}>
+                          {isVid ? (
+                            <PostVideoPlayer
+                              key={`modal_msg_${livePost.id}`}
+                              uri={resolved.uri}
+                              isPaused={!selectedPostModal}
+                              style={styles.postDetailMediaContent}
+                            />
+                          ) : (
+                            <Image
+                              source={{ uri: resolved.uri }}
+                              style={styles.postDetailMediaContent}
+                            />
+                          )}
+                        </View>
+                      ) : null}
+
+                      <View style={styles.postDetailActionsRow}>
+                        <TouchableOpacity
+                          style={styles.postActionBtn}
+                          onPress={() => toggleProfilePostLike(livePost.id)}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons
+                            name={
+                              currentUserId && livePost.likesList?.includes(currentUserId)
+                                ? 'heart'
+                                : 'heart-outline'
+                            }
+                            size={20}
+                            color={
+                              currentUserId && livePost.likesList?.includes(currentUserId)
+                                ? '#EF4444'
+                                : theme.textMuted
+                            }
+                          />
+                          <Text
+                            style={[
+                              styles.postActionText,
+                              currentUserId &&
+                                livePost.likesList?.includes(currentUserId) && {
+                                  color: '#EF4444',
+                                  fontWeight: 'bold',
+                                },
+                            ]}
+                          >
+                            {livePost.likesList?.length || 0} Likes
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.postActionBtn}
+                          onPress={() => {
+                            setSelectedPostModal(null);
+                            setCommentsModalPost(livePost);
+                          }}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons name="chatbubble-outline" size={18} color={theme.textMuted} />
+                          <Text style={styles.postActionText}>
+                            {livePost.comments?.length || 0} Comments
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </ScrollView>
+                );
+              })()}
+          </View>
+        </View>
+      </Modal>
+
+      {/* Discover-Style Comments Modal */}
+      <Modal
+        visible={!!commentsModalPost}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setCommentsModalPost(null)}
+      >
+        <View style={styles.floatingOverlayCenter}>
+          <View style={styles.commentsModalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Comments 💬</Text>
+              <TouchableOpacity
+                onPress={() => setCommentsModalPost(null)}
+                activeOpacity={0.8}
+                style={styles.closeFullScreenBtn}
+              >
+                <Ionicons name="close" size={22} color={theme.text} />
+              </TouchableOpacity>
+            </View>
+
+            {commentsModalPost &&
+              (() => {
+                const liveCommentsPost =
+                  allPosts.find(p => p.id === commentsModalPost.id) || commentsModalPost;
+                const visibleComments = (liveCommentsPost.comments || []).filter(
+                  c => !isBlockedBidirectional(c.userId, c.user)
+                );
+
+                return (
+                  <View style={{ flex: 1, width: '100%' }}>
+                    <ScrollView
+                      style={{ flex: 1 }}
+                      showsVerticalScrollIndicator={false}
+                      contentContainerStyle={{ paddingBottom: 15 }}
+                    >
+                      {visibleComments.length === 0 ? (
+                        <Text
+                          style={{
+                            color: theme.textMuted,
+                            textAlign: 'center',
+                            marginVertical: 30,
+                            fontSize: 13,
+                          }}
+                        >
+                          No comments yet. Be the first to comment!
+                        </Text>
+                      ) : (
+                        visibleComments.map(c => {
+                          const commentTimeAgo = getTimeAgo(c.createdAt);
+                          const commentUserObj = allUsers.find(
+                            u => u.uid === c.userId || u.name === c.user
+                          );
+                          return (
+                            <View key={c.id} style={styles.commentRow}>
+                              <TouchableOpacity
+                                onPress={() => {
+                                  setCommentsModalPost(null);
+                                  handleOpenUserProfile(c.userId, c.user);
+                                }}
+                                activeOpacity={0.85}
+                              >
+                                {c.avatarUrl ? (
+                                  <Image source={{ uri: c.avatarUrl }} style={styles.commentAvatar} />
+                                ) : (
+                                  <View style={styles.commentAvatarPlaceholder}>
+                                    <Text
+                                      style={{ color: '#EAB308', fontSize: 10, fontWeight: 'bold' }}
+                                    >
+                                      {c.user ? c.user[0].toUpperCase() : 'U'}
+                                    </Text>
+                                  </View>
+                                )}
+                              </TouchableOpacity>
+                              <View style={styles.commentBubble}>
+                                <View
+                                  style={{
+                                    flexDirection: 'row',
+                                    justifyContent: 'space-between',
+                                    alignItems: 'center',
+                                    marginBottom: 2,
+                                  }}
+                                >
+                                  <TouchableOpacity
+                                    onPress={() => {
+                                      setCommentsModalPost(null);
+                                      handleOpenUserProfile(c.userId, c.user);
+                                    }}
+                                    activeOpacity={0.85}
+                                  >
+                                    <View
+                                      style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}
+                                    >
+                                      <Text style={styles.commentUser}>{c.user}</Text>
+                                      {commentUserObj?.isVip && (
+                                        <Ionicons name="checkmark-circle" size={12} color="#EAB308" />
+                                      )}
+                                    </View>
+                                  </TouchableOpacity>
+                                  <Text style={styles.commentTimeText}>{commentTimeAgo}</Text>
+                                </View>
+                                <Text style={styles.commentText}>{c.text}</Text>
+                              </View>
+                            </View>
+                          );
+                        })
+                      )}
+                    </ScrollView>
+
+                    <View style={styles.commentInputRow}>
+                      <TextInput
+                        style={styles.commentInput}
+                        placeholder="Write a comment..."
+                        placeholderTextColor={theme.textSubtle}
+                        value={modalCommentInput}
+                        onChangeText={setModalCommentInput}
+                      />
+                      <TouchableOpacity
+                        style={styles.commentSendBtn}
+                        onPress={() => handleAddProfilePostComment(liveCommentsPost.id)}
+                        activeOpacity={0.85}
+                      >
+                        <Ionicons name="send" size={14} color="#09090B" />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                );
+              })()}
+          </View>
         </View>
       </Modal>
 
@@ -5512,6 +6601,25 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       height: 44,
     },
     searchInput: { flex: 1, color: theme.text, fontSize: 13 },
+    compactSearchBox: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 10,
+      paddingHorizontal: 10,
+      height: 36,
+      marginBottom: 12,
+      alignSelf: 'stretch',
+    },
+    compactSearchInput: {
+      flex: 1,
+      color: theme.text,
+      fontSize: 12,
+      paddingVertical: 0,
+    },
     filterBtn: {
       width: 44,
       height: 44,
@@ -5775,6 +6883,7 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       overflow: 'hidden',
     },
     avatarImg: { width: '100%', height: '100%' },
+    avatarImage: { width: '100%', height: '100%' },
     avatarLetter: { color: '#EAB308', fontSize: 16, fontWeight: '900' },
     cardTopLine: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 8 },
     cardTitle: { color: theme.text, fontSize: 14, fontWeight: '800' },
@@ -5833,18 +6942,25 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
     emptyPrimaryBtnText: { color: '#09090B', fontWeight: '900', fontSize: 12 },
 
     modalOverlay: { flex: 1, backgroundColor: theme.overlay, justifyContent: 'flex-end' },
+    fullScreenSheet: {
+      flex: 1,
+      backgroundColor: theme.bg,
+      paddingTop: 50,
+      paddingHorizontal: 20,
+      paddingBottom: 20,
+    },
     floatingOverlayCenter: {
       flex: 1,
       backgroundColor: theme.centerOverlay,
       justifyContent: 'center',
       alignItems: 'center',
-      paddingHorizontal: 18,
+      paddingHorizontal: 20,
       zIndex: 999,
       elevation: 20,
     },
     modalContentCenter: {
       backgroundColor: theme.surface,
-      borderRadius: 24,
+      borderRadius: 28,
       padding: 20,
       borderWidth: 1,
       borderColor: theme.border,
@@ -5854,19 +6970,19 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
     },
     profileModalSheet: {
       backgroundColor: theme.surfaceDeep,
-      borderRadius: 26,
-      padding: 18,
+      borderRadius: 28,
+      padding: 20,
       width: '100%',
       maxWidth: 420,
-      height: '86%',
+      height: '88%',
       borderWidth: 1,
       borderColor: theme.border,
     },
-    profileCenterHeader: { alignItems: 'center', marginBottom: 14 },
+    profileCenterHeader: { alignItems: 'center', marginBottom: 16, paddingHorizontal: 12 },
     profileAvatarLg: {
-      width: 80,
-      height: 80,
-      borderRadius: 40,
+      width: 84,
+      height: 84,
+      borderRadius: 42,
       backgroundColor: theme.surfaceAlt,
       borderWidth: 2,
       borderColor: '#EAB308',
@@ -5875,8 +6991,8 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       overflow: 'hidden',
       marginBottom: 10,
     },
-    profileAvatarLgText: { color: '#EAB308', fontSize: 30, fontWeight: '900' },
-    profileModalName: { color: theme.text, fontSize: 19, fontWeight: '900' },
+    profileAvatarLgText: { color: '#EAB308', fontSize: 32, fontWeight: 'bold' },
+    profileModalName: { color: theme.text, fontSize: 20, fontWeight: '900' },
     profileSportsRow: {
       flexDirection: 'row',
       flexWrap: 'wrap',
@@ -5889,30 +7005,40 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       borderWidth: 1,
       borderColor: '#EAB308',
       paddingHorizontal: 10,
-      paddingVertical: 3,
+      paddingVertical: 4,
       borderRadius: 10,
     },
     profileSportPillText: { color: '#EAB308', fontSize: 11, fontWeight: '700' },
-    profileMetaLine: { color: theme.textMuted, fontSize: 12 },
+    profileMetaLine: { color: theme.textMuted, fontSize: 13, marginTop: 4 },
     profileStatsBar: {
       flexDirection: 'row',
-      backgroundColor: theme.surface,
+      justifyContent: 'space-around',
+      backgroundColor: theme.surfaceAlt,
       borderWidth: 1,
       borderColor: theme.border,
-      borderRadius: 14,
-      paddingVertical: 12,
-      marginBottom: 14,
+      borderRadius: 16,
+      padding: 14,
+      marginBottom: 16,
     },
-    profileStatItem: { flex: 1, alignItems: 'center' },
-    profileStatNum: { color: '#EAB308', fontSize: 17, fontWeight: '900' },
-    profileStatLabel: { color: theme.textMuted, fontSize: 11, marginTop: 2 },
+    profileStatItem: { alignItems: 'center' },
+    profileStatNum: { color: '#EAB308', fontSize: 18, fontWeight: '900' },
+    profileStatLabel: { color: theme.textMuted, fontSize: 12, marginTop: 2, fontWeight: '600' },
+    profileFollowBtn: {
+      backgroundColor: '#EAB308',
+      borderRadius: 12,
+      height: 44,
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingHorizontal: 14,
+    },
+    profileFollowBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
     profilePrimaryBtn: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
       gap: 6,
       backgroundColor: '#EAB308',
-      height: 42,
+      height: 44,
       borderRadius: 12,
       paddingHorizontal: 14,
     },
@@ -5932,10 +7058,195 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       borderWidth: 1,
       borderColor: '#EF4444',
       borderRadius: 8,
+      height: 26,
       paddingHorizontal: 10,
-      paddingVertical: 5,
     },
-    profileBlockBtnText: { color: '#EF4444', fontSize: 11, fontWeight: '700' },
+    profileBlockBtnText: { color: '#EF4444', fontSize: 10, fontWeight: '700' },
+
+    postsSectionHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      marginBottom: 12,
+      gap: 6,
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+      paddingTop: 14,
+    },
+    profileSectionTitle: { color: theme.text, fontSize: 15, fontWeight: '700' },
+    postsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 2 },
+    postThumbnailBox: {
+      width: (width * 0.85) / 3 - 4,
+      height: (width * 0.85) / 3 - 4,
+      backgroundColor: theme.surface,
+      borderRadius: 8,
+      overflow: 'hidden',
+    },
+    postThumbnailImage: { width: '100%', height: '100%' },
+    videoBadgeOverlay: {
+      position: 'absolute',
+      top: 6,
+      right: 6,
+      backgroundColor: 'rgba(0,0,0,0.6)',
+      borderRadius: 10,
+      width: 22,
+      height: 22,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    emptyPostsBox: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 30,
+      backgroundColor: theme.surfaceAlt,
+      borderRadius: 14,
+      borderWidth: 1,
+      borderColor: theme.border,
+    },
+    emptyPostsText: { color: theme.textSubtle, fontSize: 12, marginTop: 6 },
+    privateAccountBox: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: 40,
+      paddingHorizontal: 20,
+      backgroundColor: theme.surfaceAlt,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: theme.border,
+      marginTop: 10,
+    },
+    privateAccountTitle: { color: theme.text, fontSize: 16, fontWeight: 'bold', marginBottom: 6 },
+    privateAccountText: { color: theme.textMuted, fontSize: 12, textAlign: 'center', lineHeight: 18 },
+
+    postDetailCard: {
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 20,
+      padding: 16,
+      marginBottom: 16,
+    },
+    postDetailHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 12 },
+    postDetailAvatarBox: {
+      width: 42,
+      height: 42,
+      borderRadius: 21,
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: '#EAB308',
+      justifyContent: 'center',
+      alignItems: 'center',
+      overflow: 'hidden',
+    },
+    postDetailAvatarPlaceholder: {
+      width: '100%',
+      height: '100%',
+      backgroundColor: theme.surfaceAlt,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    postDetailAvatarPlaceholderText: { color: '#EAB308', fontSize: 14, fontWeight: 'bold' },
+    postDetailUserInfo: { marginLeft: 10, flex: 1 },
+    postDetailUserName: { color: theme.text, fontSize: 14, fontWeight: '700' },
+    postSportBadge: {
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: theme.border,
+      paddingHorizontal: 10,
+      paddingVertical: 3,
+      borderRadius: 8,
+      marginRight: 8,
+    },
+    postSportBadgeText: { color: '#EAB308', fontSize: 10, fontWeight: '700' },
+    postDetailTime: { color: theme.textSubtle, fontSize: 11 },
+    postDetailBodyText: { color: theme.textSecondary, fontSize: 14, marginBottom: 12, lineHeight: 20 },
+    postDetailMediaBox: {
+      height: 320,
+      backgroundColor: theme.surfaceDeep,
+      borderRadius: 14,
+      overflow: 'hidden',
+      marginBottom: 12,
+      borderWidth: 1,
+      borderColor: theme.border,
+      position: 'relative',
+    },
+    postDetailMediaContent: { width: '100%', height: '100%' },
+    postDetailActionsRow: {
+      flexDirection: 'row',
+      gap: 20,
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+      paddingTop: 12,
+    },
+    postActionBtn: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+    postActionText: { color: theme.textMuted, fontSize: 13, fontWeight: '600' },
+
+    commentsModalContent: {
+      backgroundColor: theme.surface,
+      borderRadius: 28,
+      padding: 20,
+      borderWidth: 1,
+      borderColor: theme.border,
+      width: '100%',
+      maxWidth: 400,
+      height: '75%',
+    },
+    commentRow: { flexDirection: 'row', alignItems: 'flex-start', marginBottom: 10 },
+    commentAvatar: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: '#EAB308',
+      overflow: 'hidden',
+    },
+    commentAvatarPlaceholder: {
+      width: 32,
+      height: 32,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: '#EAB308',
+      backgroundColor: theme.surfaceAlt,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    commentBubble: {
+      flex: 1,
+      marginLeft: 10,
+      backgroundColor: theme.surfaceAlt,
+      padding: 10,
+      borderRadius: 12,
+    },
+    commentUser: { color: '#EAB308', fontSize: 12, fontWeight: '700' },
+    commentText: { color: theme.textSecondary, fontSize: 13 },
+    commentTimeText: { color: theme.textSubtle, fontSize: 10 },
+    commentInputRow: {
+      flexDirection: 'row',
+      gap: 8,
+      alignItems: 'center',
+      borderTopWidth: 1,
+      borderTopColor: theme.border,
+      paddingTop: 12,
+      marginTop: 4,
+    },
+    commentInput: {
+      flex: 1,
+      backgroundColor: theme.surfaceDeep,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      color: theme.text,
+      fontSize: 13,
+    },
+    commentSendBtn: {
+      backgroundColor: '#EAB308',
+      borderRadius: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
 
     modalSheet: {
       backgroundColor: theme.surface,
@@ -5943,21 +7254,28 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       borderTopRightRadius: 24,
       padding: 20,
       maxHeight: '88%',
-      borderWidth: 1,
+      borderTopWidth: 1,
       borderColor: theme.border,
+    },
+    roomSheet: {
+      flex: 1,
+      backgroundColor: theme.bg,
+      paddingTop: 50,
+      paddingHorizontal: 16,
+      paddingBottom: 16,
     },
     fullScreenSettingsHeader: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 12,
-      paddingBottom: 14,
-      marginBottom: 12,
+      gap: 10,
+      paddingBottom: 12,
       borderBottomWidth: 1,
       borderBottomColor: theme.border,
+      marginBottom: 12,
     },
     fullScreenSettingsTitle: {
       color: theme.text,
-      fontSize: 19,
+      fontSize: 18,
       fontWeight: '900',
     },
     closeFullScreenBtn: {
@@ -5969,15 +7287,6 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       borderColor: theme.border,
       justifyContent: 'center',
       alignItems: 'center',
-    },
-    roomSheet: {
-      backgroundColor: theme.bg,
-      borderTopLeftRadius: 24,
-      borderTopRightRadius: 24,
-      padding: 16,
-      height: '92%',
-      borderWidth: 1,
-      borderColor: theme.border,
     },
     modalHeader: {
       flexDirection: 'row',
@@ -5991,13 +7300,45 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       flexDirection: 'row',
       alignItems: 'center',
       gap: 12,
+      paddingVertical: 11,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.borderSubtle,
+    },
+
+    fieldLabel: { color: theme.textMuted, fontSize: 12, fontWeight: '800', marginBottom: 6, marginTop: 10 },
+    input: {
+      backgroundColor: theme.surfaceDeep,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 11,
+      color: theme.text,
+      fontSize: 13,
+    },
+    privacyRow: { flexDirection: 'row', gap: 10, marginTop: 4 },
+    privacyCard: {
+      flex: 1,
       backgroundColor: theme.surfaceDeep,
       borderWidth: 1,
       borderColor: theme.border,
       borderRadius: 14,
-      padding: 11,
-      marginBottom: 8,
+      padding: 12,
+      alignItems: 'center',
     },
+    privacyCardPublic: { borderColor: '#22C55E', backgroundColor: theme.isLight ? '#DCFCE7' : '#0D1F14' },
+    privacyCardPrivate: { borderColor: '#EAB308', backgroundColor: theme.isLight ? '#FEF9C3' : '#1F1B0B' },
+    privacyTitle: { color: theme.text, fontSize: 13, fontWeight: '900', marginTop: 6 },
+    privacySub: { color: theme.textSubtle, fontSize: 11, marginTop: 2, textAlign: 'center' },
+
+    primarySubmitBtn: {
+      backgroundColor: '#EAB308',
+      borderRadius: 14,
+      paddingVertical: 14,
+      alignItems: 'center',
+      marginTop: 16,
+    },
+    primarySubmitBtnText: { color: '#09090B', fontWeight: '900', fontSize: 14 },
 
     roomHeader: {
       flexDirection: 'row',
@@ -6012,13 +7353,11 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       height: 36,
       borderRadius: 18,
       backgroundColor: theme.surface,
-      borderWidth: 1,
-      borderColor: theme.border,
       justifyContent: 'center',
       alignItems: 'center',
     },
-    roomTitle: { color: theme.text, fontSize: 15, fontWeight: '900' },
-    roomSubtitle: { color: theme.textMuted, fontSize: 11, marginTop: 1 },
+    roomTitle: { color: theme.text, fontSize: 16, fontWeight: '900' },
+    roomSubtitle: { color: theme.textSubtle, fontSize: 11, marginTop: 1 },
 
     pinnedBanner: {
       flexDirection: 'row',
@@ -6026,37 +7365,66 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       gap: 8,
       backgroundColor: theme.pinnedBg,
       borderWidth: 1,
-      borderColor: '#EAB30866',
+      borderColor: '#EAB308',
       borderRadius: 12,
       paddingHorizontal: 12,
       paddingVertical: 8,
       marginTop: 8,
     },
-    pinnedBannerTitle: { color: '#EAB308', fontSize: 11, fontWeight: '900' },
+    pinnedBannerTitle: { color: '#EAB308', fontSize: 11, fontWeight: '800' },
     pinnedBannerText: { color: theme.text, fontSize: 12, marginTop: 1 },
 
     messagesScroll: { flex: 1 },
-    emptyChatHint: { color: theme.textSubtle, textAlign: 'center', marginTop: 40, fontSize: 13 },
-    bubbleRow: { marginBottom: 10, flexDirection: 'row', alignItems: 'flex-end', gap: 6 },
-    bubbleLeft: { justifyContent: 'flex-start' },
-    bubbleRight: { justifyContent: 'flex-end' },
-    bubble: {
-      maxWidth: '78%',
-      paddingHorizontal: 13,
-      paddingVertical: 9,
-      borderRadius: 15,
-      borderWidth: 1,
+    emptyChatHint: { color: theme.textSubtle, fontSize: 13, textAlign: 'center', marginTop: 30 },
+    swipeWrapper: {
+      position: 'relative',
+      justifyContent: 'center',
+      marginBottom: 8,
     },
-    bubbleOther: { backgroundColor: theme.surface, borderColor: theme.border },
-    bubbleMe: { backgroundColor: '#EAB308', borderColor: '#EAB308' },
-    highlightedBubble: {
-      borderColor: '#38BDF8',
-      borderWidth: 2,
+    swipeAnimatedBubble: {
+      maxWidth: '82%',
     },
-    senderTag: { color: '#EAB308', fontSize: 11, fontWeight: '800', textDecorationLine: 'underline' },
-    adminTag: {
-      color: '#09090B',
+    swipeReplyIconLeft: {
+      position: 'absolute',
+      left: 6,
+      width: 28,
+      height: 28,
+      borderRadius: 14,
       backgroundColor: '#EAB308',
+      justifyContent: 'center',
+      alignItems: 'center',
+      zIndex: 1,
+    },
+    swipeReplyIconRight: {
+      position: 'absolute',
+      right: 6,
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      backgroundColor: '#EAB308',
+      justifyContent: 'center',
+      alignItems: 'center',
+      zIndex: 1,
+    },
+    bubbleRow: { maxWidth: '100%' },
+    bubbleRight: { alignSelf: 'flex-end' },
+    bubbleLeft: { alignSelf: 'flex-start' },
+    bubble: { borderRadius: 16, paddingHorizontal: 14, paddingVertical: 10 },
+    bubbleMe: { backgroundColor: '#EAB308', borderBottomRightRadius: 4 },
+    bubbleOther: {
+      backgroundColor: theme.surface,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderBottomLeftRadius: 4,
+    },
+    highlightedBubble: {
+      borderWidth: 2,
+      borderColor: '#38BDF8',
+    },
+    senderTag: { fontSize: 11, fontWeight: '900' },
+    adminTag: {
+      backgroundColor: theme.surfaceAlt,
+      color: '#EAB308',
       fontSize: 9,
       fontWeight: '900',
       paddingHorizontal: 5,
@@ -6064,38 +7432,100 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       borderRadius: 4,
       overflow: 'hidden',
     },
-    chatInlineMedia: { width: 210, height: 145, borderRadius: 10, marginBottom: 4 },
-    chatInlineVideo: { width: 220, height: 135, borderRadius: 10, marginBottom: 4 },
-    videoPreviewCard: {
+    replyQuoteBox: {
+      borderLeftWidth: 3,
+      borderRadius: 8,
+      paddingHorizontal: 8,
+      paddingVertical: 5,
+      marginBottom: 6,
+    },
+    replyQuoteBoxMe: {
+      backgroundColor: 'rgba(9, 9, 11, 0.14)',
+      borderLeftColor: '#09090B',
+    },
+    replyQuoteBoxOther: {
       backgroundColor: theme.surfaceAlt,
+      borderLeftColor: '#EAB308',
+    },
+    replyQuoteAuthor: {
+      fontSize: 10,
+      fontWeight: '900',
+      marginBottom: 1,
+    },
+    replyQuoteText: {
+      fontSize: 11,
+      color: theme.textMuted,
+      lineHeight: 15,
+    },
+    replyComposerBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      backgroundColor: theme.surface,
       borderWidth: 1,
-      borderColor: '#38BDF8',
+      borderColor: theme.border,
+      borderRadius: 12,
+      paddingHorizontal: 10,
+      paddingVertical: 7,
+      marginTop: 6,
+    },
+    replyComposerAccentBar: {
+      width: 3,
+      height: 28,
+      borderRadius: 2,
+      backgroundColor: '#EAB308',
+    },
+    replyComposerTitle: {
+      color: '#EAB308',
+      fontSize: 11,
+      fontWeight: '800',
+    },
+    replyComposerText: {
+      color: theme.textMuted,
+      fontSize: 11,
+      marginTop: 1,
+    },
+    chatInlineMedia: {
+      width: 210,
+      height: 150,
+      borderRadius: 12,
+      marginBottom: 6,
+      backgroundColor: theme.surfaceDeep,
+    },
+    chatInlineVideo: {
+      width: 210,
+      height: 150,
+      borderRadius: 12,
+      marginBottom: 6,
+      backgroundColor: '#09090B',
+    },
+    videoPreviewCard: {
       justifyContent: 'center',
       alignItems: 'center',
       overflow: 'hidden',
     },
     videoPlayCircle: {
-      width: 42,
-      height: 42,
-      borderRadius: 21,
+      width: 40,
+      height: 40,
+      borderRadius: 20,
       backgroundColor: 'rgba(234, 179, 8, 0.92)',
       justifyContent: 'center',
       alignItems: 'center',
+      paddingLeft: 2,
     },
     bubbleText: { color: theme.text, fontSize: 13, lineHeight: 18 },
     bubbleFooterRow: {
       flexDirection: 'row',
       justifyContent: 'flex-end',
       alignItems: 'center',
-      gap: 5,
       marginTop: 4,
     },
-    bubbleTime: { color: theme.textMuted, fontSize: 9 },
+    bubbleTime: { color: theme.textSubtle, fontSize: 10 },
 
     reactionsRow: {
       flexDirection: 'row',
       flexWrap: 'wrap',
-      gap: 4,
+      gap: 5,
       marginTop: 6,
     },
     reactionChip: {
@@ -6103,12 +7533,12 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       borderWidth: 1,
       borderColor: theme.border,
       borderRadius: 10,
-      paddingHorizontal: 6,
+      paddingHorizontal: 7,
       paddingVertical: 2,
     },
     reactionChipMine: {
-      borderColor: '#38BDF8',
-      backgroundColor: theme.isLight ? '#E0F2FE' : '#0F2430',
+      borderColor: '#EAB308',
+      backgroundColor: theme.isLight ? '#FEF9C3' : '#26210B',
     },
     reactionChipText: {
       color: theme.text,
@@ -6122,14 +7552,14 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       gap: 10,
       backgroundColor: theme.surface,
       borderWidth: 1,
-      borderColor: '#EAB30866',
+      borderColor: '#EAB308',
       borderRadius: 12,
       padding: 8,
-      marginBottom: 6,
+      marginTop: 6,
     },
     pendingMediaThumb: {
-      width: 54,
-      height: 54,
+      width: 46,
+      height: 46,
       borderRadius: 8,
       backgroundColor: theme.surfaceDeep,
     },
@@ -6140,49 +7570,22 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
     },
     pendingMediaSub: {
       color: theme.textMuted,
-      fontSize: 11,
+      fontSize: 10,
       marginTop: 1,
-    },
-
-    joinFooterBox: {
-      paddingTop: 10,
-      borderTopWidth: 1,
-      borderTopColor: theme.border,
-      gap: 8,
-    },
-    joinFooterHint: {
-      color: theme.textMuted,
-      fontSize: 11,
-      textAlign: 'center',
-      fontWeight: '700',
-    },
-    joinGroupPrimaryBtn: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: 8,
-      backgroundColor: '#EAB308',
-      height: 46,
-      borderRadius: 14,
-    },
-    joinGroupPrimaryBtnText: {
-      color: '#09090B',
-      fontSize: 14,
-      fontWeight: '900',
     },
 
     composerRow: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 6,
-      paddingTop: 10,
+      paddingTop: 8,
       borderTopWidth: 1,
       borderTopColor: theme.border,
     },
     mediaAttachBtn: {
       width: 38,
-      height: 38,
-      borderRadius: 19,
+      height: 42,
+      borderRadius: 12,
       backgroundColor: theme.surface,
       borderWidth: 1,
       borderColor: theme.border,
@@ -6194,95 +7597,68 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       backgroundColor: theme.surface,
       borderWidth: 1,
       borderColor: theme.border,
-      borderRadius: 18,
-      height: 42,
-      paddingHorizontal: 13,
+      borderRadius: 14,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
       color: theme.text,
       fontSize: 13,
     },
     sendBtn: {
       width: 42,
       height: 42,
-      borderRadius: 21,
+      borderRadius: 14,
       backgroundColor: '#EAB308',
       justifyContent: 'center',
       alignItems: 'center',
     },
 
-    fieldLabel: { color: theme.textMuted, fontSize: 12, fontWeight: '700', marginBottom: 6 },
-    input: {
+    joinFooterBox: {
       backgroundColor: theme.surface,
       borderWidth: 1,
       borderColor: theme.border,
-      borderRadius: 12,
-      height: 44,
-      paddingHorizontal: 12,
-      color: theme.text,
-      fontSize: 13,
-      marginBottom: 14,
-    },
-    privacyRow: { flexDirection: 'row', gap: 10, marginBottom: 16 },
-    privacyCard: {
-      flex: 1,
-      backgroundColor: theme.surfaceDeep,
-      borderWidth: 1,
-      borderColor: theme.border,
-      borderRadius: 14,
+      borderRadius: 16,
       padding: 12,
+      marginTop: 8,
       alignItems: 'center',
     },
-    privacyCardPublic: { borderColor: '#22C55E', backgroundColor: '#14382522' },
-    privacyCardPrivate: { borderColor: '#EAB308', backgroundColor: '#332E0F22' },
-    privacyTitle: { color: theme.text, fontSize: 13, fontWeight: '800', marginTop: 6 },
-    privacySub: { color: theme.textSubtle, fontSize: 10, textAlign: 'center', marginTop: 2 },
-
-    primarySubmitBtn: {
-      backgroundColor: '#EAB308',
-      height: 46,
-      borderRadius: 12,
-      justifyContent: 'center',
-      alignItems: 'center',
-    },
-    primarySubmitBtnText: { color: '#09090B', fontSize: 14, fontWeight: '900' },
-
-    settingsPillsRow: {
+    joinFooterHint: { color: theme.textMuted, fontSize: 11, marginBottom: 8 },
+    joinGroupPrimaryBtn: {
       flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
       gap: 6,
-      marginBottom: 16,
+      backgroundColor: '#EAB308',
+      borderRadius: 12,
+      paddingVertical: 11,
+      paddingHorizontal: 18,
+      width: '100%',
     },
+    joinGroupPrimaryBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
+
+    settingsPillsRow: { flexDirection: 'row', gap: 6, marginBottom: 14 },
     settingsPillBtn: {
       flex: 1,
-      paddingVertical: 9,
+      paddingVertical: 8,
       borderRadius: 10,
-      backgroundColor: theme.surface,
+      backgroundColor: theme.surfaceDeep,
+      alignItems: 'center',
       borderWidth: 1,
       borderColor: theme.border,
-      alignItems: 'center',
     },
-    settingsPillActive: {
-      backgroundColor: '#EAB308',
-      borderColor: '#EAB308',
-    },
-    settingsPillText: {
-      color: theme.textMuted,
-      fontSize: 11,
-      fontWeight: '800',
-    },
-    settingsPillTextActive: {
-      color: '#09090B',
-      fontWeight: '900',
-    },
+    settingsPillActive: { backgroundColor: '#EAB308', borderColor: '#EAB308' },
+    settingsPillText: { color: theme.textMuted, fontSize: 11, fontWeight: '800' },
+    settingsPillTextActive: { color: '#09090B', fontWeight: '900' },
 
     groupProfileEditRow: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 12,
-      backgroundColor: theme.surface,
+      backgroundColor: theme.surfaceDeep,
       borderWidth: 1,
       borderColor: theme.border,
       borderRadius: 14,
-      padding: 14,
-      marginBottom: 14,
+      padding: 12,
+      marginBottom: 8,
     },
     groupEditAvatarBox: {
       width: 56,
@@ -6296,77 +7672,9 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       overflow: 'hidden',
     },
 
-    boostStatusCard: {
-      backgroundColor: theme.surface,
-      borderWidth: 1,
-      borderColor: theme.border,
-      borderRadius: 14,
-      padding: 14,
-      marginBottom: 14,
-    },
-    boostCountValue: { fontSize: 16, fontWeight: '900' },
-    progressBarTrack: {
-      height: 8,
-      borderRadius: 4,
-      backgroundColor: theme.surfaceAlt,
-      overflow: 'hidden',
-      marginTop: 10,
-      marginBottom: 6,
-    },
-    progressBarFill: {
-      height: '100%',
-      borderRadius: 4,
-    },
-    stageInfoRow: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      backgroundColor: theme.surface,
-      borderWidth: 1,
-      borderColor: theme.border,
-      borderRadius: 12,
-      padding: 10,
-      marginBottom: 7,
-    },
-    packTagPill: {
-      backgroundColor: theme.surfaceAlt,
-      borderWidth: 1,
-      color: '#EAB308',
-      fontSize: 10,
-      fontWeight: '800',
-      paddingHorizontal: 7,
-      paddingVertical: 2,
-      borderRadius: 6,
-      overflow: 'hidden',
-    },
-    boostOptionCard: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 10,
-      backgroundColor: theme.surface,
-      borderWidth: 1,
-      borderColor: theme.border,
-      borderRadius: 14,
-      padding: 12,
-      marginBottom: 10,
-    },
-    boostBuyPill: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 4,
-      backgroundColor: '#EAB308',
-      paddingHorizontal: 11,
-      paddingVertical: 7,
-      borderRadius: 10,
-    },
-    boostBuyPillText: { color: '#09090B', fontSize: 12, fontWeight: '900' },
-
-    wallpaperActionsRow: {
-      flexDirection: 'row',
-      gap: 8,
-      alignItems: 'center',
-      marginBottom: 10,
-    },
+    sectionHeading: { color: '#EAB308', fontSize: 12, fontWeight: '900', marginBottom: 8 },
+    mutedNote: { color: theme.textSubtle, fontSize: 12, marginTop: 4 },
+    wallpaperActionsRow: { flexDirection: 'row', gap: 10, alignItems: 'center', marginBottom: 10 },
     wallpaperPrimaryBtn: {
       flex: 1,
       flexDirection: 'row',
@@ -6374,111 +7682,31 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       justifyContent: 'center',
       gap: 6,
       backgroundColor: '#EAB308',
-      paddingVertical: 11,
-      borderRadius: 10,
+      borderRadius: 12,
+      paddingVertical: 10,
     },
-    wallpaperPrimaryBtnText: {
-      color: '#09090B',
-      fontSize: 12,
-      fontWeight: '900',
-    },
+    wallpaperPrimaryBtnText: { color: '#09090B', fontSize: 12, fontWeight: '900' },
     wallpaperClearBtn: {
-      backgroundColor: theme.isLight ? '#FEE2E2' : '#1F1214',
+      backgroundColor: theme.surfaceAlt,
       borderWidth: 1,
-      borderColor: '#EF4444',
-      paddingHorizontal: 12,
-      paddingVertical: 11,
-      borderRadius: 10,
+      borderColor: theme.borderSubtle,
+      borderRadius: 12,
+      paddingHorizontal: 14,
+      paddingVertical: 10,
     },
-    wallpaperClearBtnText: {
-      color: '#EF4444',
-      fontSize: 12,
-      fontWeight: '800',
-    },
+    wallpaperClearBtnText: { color: theme.textSecondary, fontSize: 12, fontWeight: '800' },
     wallpaperPreview: {
       width: '100%',
       height: 150,
-      borderRadius: 12,
+      borderRadius: 14,
       borderWidth: 1,
       borderColor: theme.border,
+      marginBottom: 10,
     },
-
-    mediaGrid: {
-      flexDirection: 'row',
-      flexWrap: 'wrap',
-      gap: 8,
-    },
-    mediaTile: {
-      width: '31%',
-      backgroundColor: theme.surface,
-      borderWidth: 1,
-      borderColor: theme.border,
-      borderRadius: 10,
-      overflow: 'hidden',
-    },
-    mediaTileImg: {
-      width: '100%',
-      height: 92,
-    },
-    mediaTileCaption: {
-      color: theme.textMuted,
-      fontSize: 10,
-      padding: 5,
-    },
-
-    sectionHeading: { color: '#EAB308', fontSize: 13, fontWeight: '800', marginBottom: 8 },
-    mutedNote: { color: theme.textSubtle, fontSize: 12, marginTop: 4 },
-    manageRow: {
-      flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
-      backgroundColor: theme.surface,
-      borderWidth: 1,
-      borderColor: theme.border,
-      borderRadius: 12,
-      padding: 11,
-      marginBottom: 8,
-      gap: 8,
-    },
-    approveBtn: {
-      backgroundColor: '#22C55E',
-      paddingHorizontal: 10,
-      paddingVertical: 6,
-      borderRadius: 8,
-    },
-    approveBtnText: { color: '#09090B', fontSize: 11, fontWeight: '900' },
-    kickBtn: {
-      backgroundColor: theme.isLight ? '#FFEDD5' : '#1F160C',
-      borderWidth: 1,
-      borderColor: '#F97316',
-      paddingHorizontal: 9,
-      paddingVertical: 6,
-      borderRadius: 8,
-    },
-    kickBtnText: { color: '#F97316', fontSize: 11, fontWeight: '800' },
-    rejectBtn: {
-      backgroundColor: theme.isLight ? '#FEE2E2' : '#1F1214',
-      borderWidth: 1,
-      borderColor: '#EF4444',
-      paddingHorizontal: 9,
-      paddingVertical: 6,
-      borderRadius: 8,
-    },
-    rejectBtnText: { color: '#EF4444', fontSize: 11, fontWeight: '800' },
-    roleToggleBtn: {
-      backgroundColor: theme.surfaceAlt,
-      borderWidth: 1,
-      borderColor: '#EAB308',
-      paddingHorizontal: 9,
-      paddingVertical: 6,
-      borderRadius: 8,
-    },
-    roleToggleBtnActive: { borderColor: '#EF4444' },
-    roleToggleText: { color: '#EAB308', fontSize: 11, fontWeight: '800' },
 
     membershipActionsBox: {
       marginTop: 22,
-      paddingTop: 16,
+      paddingTop: 14,
       borderTopWidth: 1,
       borderTopColor: theme.border,
       gap: 10,
@@ -6488,100 +7716,146 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       alignItems: 'center',
       justifyContent: 'center',
       gap: 8,
-      backgroundColor: theme.isLight ? '#FFEDD5' : '#1C140C',
+      backgroundColor: theme.surfaceAlt,
       borderWidth: 1,
       borderColor: '#F97316',
-      height: 46,
       borderRadius: 12,
+      paddingVertical: 12,
     },
-    leaveGroupBtnText: {
-      color: '#F97316',
-      fontSize: 13,
-      fontWeight: '900',
-    },
+    leaveGroupBtnText: { color: '#F97316', fontSize: 13, fontWeight: '900' },
     closeGroupBtn: {
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'center',
       gap: 8,
-      backgroundColor: theme.isLight ? '#FEE2E2' : '#1F1214',
+      backgroundColor: theme.isLight ? '#FEE2E2' : '#260E10',
       borderWidth: 1,
       borderColor: '#EF4444',
-      height: 46,
       borderRadius: 12,
+      paddingVertical: 12,
     },
-    closeGroupBtnText: {
-      color: '#EF4444',
-      fontSize: 13,
-      fontWeight: '900',
-    },
+    closeGroupBtnText: { color: '#EF4444', fontSize: 13, fontWeight: '900' },
 
-    actionSheetBackdrop: {
-      flex: 1,
-      backgroundColor: theme.sheetBackdrop,
-      justifyContent: 'center',
-      paddingHorizontal: 22,
+    boostStatusCard: {
+      backgroundColor: theme.surfaceDeep,
+      borderWidth: 1.5,
+      borderRadius: 16,
+      padding: 14,
+      marginBottom: 14,
     },
-    actionSheetBox: {
-      backgroundColor: theme.surface,
+    boostCountValue: { fontSize: 15, fontWeight: '900' },
+    progressBarTrack: {
+      height: 9,
+      backgroundColor: theme.surfaceAlt,
+      borderRadius: 6,
+      overflow: 'hidden',
+      marginTop: 10,
+      marginBottom: 6,
+    },
+    progressBarFill: { height: '100%', borderRadius: 6 },
+    stageInfoRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      backgroundColor: theme.surfaceDeep,
       borderWidth: 1,
-      borderColor: theme.border,
-      borderRadius: 18,
-      padding: 16,
+      borderRadius: 12,
+      padding: 10,
+      marginBottom: 7,
     },
-    actionSheetLabel: {
-      color: theme.textMuted,
-      fontSize: 11,
-      fontWeight: '800',
+    boostOptionCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: 10,
+      backgroundColor: theme.surfaceDeep,
+      borderWidth: 1,
+      borderRadius: 14,
+      padding: 12,
       marginBottom: 8,
     },
-    emojiPickerScroll: {
-      marginBottom: 14,
-      backgroundColor: theme.surfaceDeep,
-      borderRadius: 12,
+    packTagPill: {
+      fontSize: 10,
+      fontWeight: '900',
       borderWidth: 1,
-      borderColor: theme.border,
+      paddingHorizontal: 6,
+      paddingVertical: 1,
+      borderRadius: 6,
     },
-    emojiPickerRow: {
+    boostBuyPill: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: 4,
-      paddingHorizontal: 8,
-      paddingVertical: 6,
+      paddingHorizontal: 11,
+      paddingVertical: 7,
+      borderRadius: 10,
     },
-    emojiChoiceBtn: {
-      width: 38,
-      height: 38,
-      borderRadius: 19,
-      justifyContent: 'center',
-      alignItems: 'center',
+    boostBuyPillText: { color: '#09090B', fontSize: 11, fontWeight: '900' },
+
+    mediaGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+    mediaTile: {
+      width: '48%',
+      backgroundColor: theme.surfaceDeep,
+      borderWidth: 1,
+      borderColor: theme.border,
+      borderRadius: 12,
+      overflow: 'hidden',
     },
-    emojiChoiceBtnSelected: {
-      backgroundColor: theme.surfaceAlt,
-    },
-    emojiChoiceText: {
-      fontSize: 20,
-    },
-    actionRowBtn: {
+    mediaTileImg: { width: '100%', height: 115 },
+    mediaTileCaption: { color: theme.textMuted, fontSize: 10, padding: 6, fontWeight: '700' },
+
+    manageRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: 10,
-      paddingVertical: 12,
-      borderTopWidth: 1,
-      borderTopColor: theme.border,
+      justifyContent: 'space-between',
+      paddingVertical: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: theme.borderSubtle,
+      gap: 8,
     },
-    actionRowBtnText: {
-      color: theme.text,
-      fontSize: 14,
-      fontWeight: '700',
+    approveBtn: {
+      backgroundColor: '#22C55E',
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 8,
     },
+    approveBtnText: { color: '#09090B', fontSize: 11, fontWeight: '900' },
+    rejectBtn: {
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: '#EF4444',
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: 8,
+    },
+    rejectBtnText: { color: '#EF4444', fontSize: 11, fontWeight: '800' },
+    kickBtn: {
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: '#F97316',
+      paddingHorizontal: 9,
+      paddingVertical: 6,
+      borderRadius: 8,
+    },
+    kickBtnText: { color: '#F97316', fontSize: 11, fontWeight: '800' },
+    roleToggleBtn: {
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: theme.borderSubtle,
+      paddingHorizontal: 9,
+      paddingVertical: 6,
+      borderRadius: 8,
+    },
+    roleToggleBtnActive: { borderColor: '#EF4444' },
+    roleToggleText: { color: '#EAB308', fontSize: 11, fontWeight: '800' },
 
     floatingLightbox: {
       flex: 1,
-      backgroundColor: '#09090B',
-      paddingTop: 52,
-      paddingHorizontal: 16,
+      backgroundColor: 'rgba(9,9,11,0.96)',
+      justifyContent: 'space-between',
+      paddingTop: 50,
       paddingBottom: 28,
+      paddingHorizontal: 16,
       zIndex: 999,
       elevation: 20,
     },
@@ -6589,41 +7863,81 @@ const createStyles = (theme: ReturnType<typeof getMessagesTheme>) =>
       flexDirection: 'row',
       justifyContent: 'flex-end',
       alignItems: 'center',
-      marginBottom: 10,
-    },
-    lightboxSender: {
-      color: '#EAB308',
-      fontSize: 13,
-      fontWeight: '900',
     },
     lightboxBody: {
       flex: 1,
       justifyContent: 'center',
       alignItems: 'center',
-    },
-    lightboxImage: {
       width: '100%',
-      height: '85%',
-      borderRadius: 12,
     },
-    lightboxVideo: {
-      width: '100%',
-      height: 380,
-      borderRadius: 12,
-      backgroundColor: '#000',
-    },
+    lightboxImage: { width: '100%', height: '82%' },
+    lightboxVideo: { width: '100%', height: '82%' },
+    lightboxSender: { color: '#EAB308', fontSize: 12, fontWeight: '900', marginBottom: 4 },
     lightboxBottomCaptionCard: {
-      backgroundColor: '#121215',
+      backgroundColor: 'rgba(18,18,21,0.92)',
       borderWidth: 1,
       borderColor: '#27272A',
       borderRadius: 14,
       padding: 12,
       marginTop: 10,
     },
-    lightboxBottomCaptionText: {
-      color: '#FAFAFA',
+    lightboxBottomCaptionText: { color: '#FAFAFA', fontSize: 13, lineHeight: 19 },
+
+    actionSheetBackdrop: {
+      flex: 1,
+      backgroundColor: theme.sheetBackdrop,
+      justifyContent: 'flex-end',
+    },
+    actionSheetBox: {
+      backgroundColor: theme.surface,
+      borderTopLeftRadius: 22,
+      borderTopRightRadius: 22,
+      padding: 18,
+      borderTopWidth: 1,
+      borderColor: theme.border,
+    },
+    actionSheetLabel: {
+      color: theme.textMuted,
+      fontSize: 12,
+      fontWeight: '800',
+      marginBottom: 8,
+    },
+    emojiPickerScroll: {
+      marginBottom: 12,
+      maxHeight: 48,
+    },
+    emojiPickerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      paddingRight: 8,
+    },
+    emojiChoiceBtn: {
+      width: 40,
+      height: 40,
+      borderRadius: 12,
+      backgroundColor: theme.surfaceAlt,
+      borderWidth: 1,
+      borderColor: theme.border,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    emojiChoiceBtnSelected: {
+      borderColor: '#EAB308',
+      backgroundColor: theme.isLight ? '#FEF9C3' : '#26210B',
+    },
+    emojiChoiceText: { fontSize: 20 },
+    actionRowBtn: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 10,
+      paddingVertical: 12,
+      borderTopWidth: 1,
+      borderTopColor: theme.borderSubtle,
+    },
+    actionRowBtnText: {
+      color: theme.text,
       fontSize: 14,
-      lineHeight: 20,
-      marginTop: 2,
+      fontWeight: '800',
     },
   });

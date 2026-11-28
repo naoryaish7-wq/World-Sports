@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { StyleSheet, Text, View, Dimensions, TouchableOpacity, ScrollView, Modal, TextInput, Alert, Linking, Platform, Image, Share } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useVideoPlayer, VideoView } from 'expo-video';
-import MapView, { Marker, PROVIDER_DEFAULT, MapPressEvent } from 'react-native-maps';
+import MapView, { Marker, Circle, PROVIDER_DEFAULT, MapPressEvent } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { collection, onSnapshot, doc, addDoc, setDoc, deleteDoc, arrayUnion, arrayRemove, query, orderBy, updateDoc, where, getDocs, serverTimestamp } from 'firebase/firestore';
 import { db } from '../../firebase';
@@ -143,10 +143,65 @@ const ALL_AVAILABLE_SPORTS = [
   'Swimming'
 ];
 
+const HOURS_LIST = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'));
+const MINUTES_LIST = Array.from({ length: 12 }, (_, i) => String(i * 5).padStart(2, '0'));
+
+const CITY_ENGLISH_MAP: Record<string, string> = {
+  'נתניה': 'Netanya',
+  'תל אביב': 'Tel Aviv',
+  'תל אביב-יפו': 'Tel Aviv',
+  'ירושלים': 'Jerusalem',
+  'חיפה': 'Haifa',
+  'באר שבע': 'Beer Sheva',
+  'ראשון לציון': 'Rishon LeZion',
+  'פתח תקווה': 'Petah Tikva',
+  'אשדוד': 'Ashdod',
+  'אשקלון': 'Ashkelon',
+  'הרצליה': 'Herzliya',
+  'רמת גן': 'Ramat Gan',
+  'רעננה': 'Ra\'anana',
+  'כפר סבא': 'Kfar Saba',
+  'חולון': 'Holon',
+  'בת ים': 'Bat Yam',
+  'מודיעין': 'Modi\'in',
+  'רחובות': 'Rehovot',
+  'אילת': 'Eilat',
+  'לוס אנג\'לס': 'Los Angeles',
+  'ניו יורק': 'New York',
+  'לונדון': 'London',
+  'פריז': 'Paris',
+  'מדריד': 'Madrid',
+  'ברצלונה': 'Barcelona',
+};
+
 const normalizeCity = (rawCity?: string): string => {
   const value = (rawCity || '').trim();
   if (!value) return 'Current Location';
-  return value.charAt(0).toUpperCase() + value.slice(1);
+
+  if (CITY_ENGLISH_MAP[value]) {
+    return CITY_ENGLISH_MAP[value];
+  }
+
+  const lower = value.toLowerCase();
+  const matchedKey = Object.keys(CITY_ENGLISH_MAP).find(k => k.toLowerCase() === lower);
+  if (matchedKey) {
+    return CITY_ENGLISH_MAP[matchedKey];
+  }
+
+  const englishOnly = value
+    .replace(/[^\x20-\x7E]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!englishOnly) {
+    return 'Current Location';
+  }
+
+  return englishOnly
+    .split(' ')
+    .filter(Boolean)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
 };
 
 const generateInviteCode = () => {
@@ -367,6 +422,10 @@ export default function RadarScreen() {
   const theme = useMemo(() => getRadarTheme(isLightMode), [isLightMode]);
   const styles = useMemo(() => createStyles(theme), [theme]);
 
+  const mapRef = useRef<MapView | null>(null);
+  const [mapType, setMapType] = useState<'standard' | 'hybrid'>('standard');
+  const [is3DMode, setIs3DMode] = useState(false);
+
   const [userSports, setUserSports] = useState<string[]>([]);
   const [gamesList, setGamesList] = useState<GameItem[]>([]);
   const [currentUserId, setCurrentUserId] = useState('');
@@ -394,10 +453,14 @@ export default function RadarScreen() {
   const [newTitle, setNewTitle] = useState('');
   const [newSport, setNewSport] = useState('Football');
   const [newVenue, setNewVenue] = useState('');
-  const [newTime, setNewTime] = useState('18:00');
+  const [selectedHour, setSelectedHour] = useState('18');
+  const [selectedMinute, setSelectedMinute] = useState('00');
+  const [timePickerVisible, setTimePickerVisible] = useState(false);
   const [newMaxPlayers, setNewMaxPlayers] = useState('10');
   const [newDesc, setNewDesc] = useState('');
   const [newAccessMode, setNewAccessMode] = useState<'public' | 'private' | 'friends'>('public');
+
+  const newTime = `${selectedHour}:${selectedMinute}`;
 
   const [pickedLocation, setPickedLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [isPickingLocation, setIsPickingLocation] = useState(false);
@@ -432,6 +495,33 @@ export default function RadarScreen() {
   });
 
   const studioGame = gamesList.find(g => g.id === studioGameId) || selectedGame || null;
+
+  const handleCenterOnUser = () => {
+    if (!userCoords || !mapRef.current) return;
+    mapRef.current.animateCamera(
+      {
+        center: userCoords,
+        pitch: is3DMode ? 45 : 0,
+        heading: 0,
+        altitude: 1800,
+        zoom: 15,
+      },
+      { duration: 600 }
+    );
+  };
+
+  const handleToggle3D = () => {
+    const next3D = !is3DMode;
+    setIs3DMode(next3D);
+    if (!mapRef.current) return;
+    mapRef.current.animateCamera(
+      {
+        center: userCoords || { latitude: mapRegion.latitude, longitude: mapRegion.longitude },
+        pitch: next3D ? 45 : 0,
+      },
+      { duration: 500 }
+    );
+  };
 
   useEffect(() => {
     let isMounted = true;
@@ -775,7 +865,7 @@ export default function RadarScreen() {
   };
 
   const openMapsNavigation = (venue: string, city: string) => {
-    const queryStr = encodeURIComponent(`${venue}, ${city}`);
+    const queryStr = encodeURIComponent(`${venue}, ${normalizeCity(city)}`);
     const url = Platform.OS === 'ios' ? `maps:0,0?q=${queryStr}` : `geo:0,0?q=${queryStr}`;
     Linking.openURL(url);
   };
@@ -792,7 +882,7 @@ export default function RadarScreen() {
     const codePart = inviteCode ? `🔑 Game Code: ${inviteCode}` : '🔑 Game Code unavailable';
     const messageBody =
       `⚽ ${gameTitle} (${gameSport})\n` +
-      `📍 ${venueName}, ${city} | ⏰ ${time}\n` +
+      `📍 ${venueName}, ${normalizeCity(city)} | ⏰ ${time}\n` +
       `👑 ${creatorName}\n` +
       `${codePart}`;
 
@@ -1494,6 +1584,7 @@ export default function RadarScreen() {
       }));
 
       setCreateModalVisible(false);
+      setTimePickerVisible(false);
       setPickedLocation(null);
       setNewTitle('');
       setNewVenue('');
@@ -1932,7 +2023,7 @@ export default function RadarScreen() {
       const q = searchQuery.toLowerCase().trim();
       const titleMatch = game.title.toLowerCase().includes(q);
       const venueMatch = game.venueName.toLowerCase().includes(q);
-      const cityMatch = game.city.toLowerCase().includes(q);
+      const cityMatch = normalizeCity(game.city).toLowerCase().includes(q) || game.city.toLowerCase().includes(q);
       const codeMatch = (game.inviteCode || '').toLowerCase().includes(q);
       if (!titleMatch && !venueMatch && !cityMatch && !codeMatch) return false;
     }
@@ -2067,85 +2158,136 @@ export default function RadarScreen() {
         </View>
       </Modal>
 
-      <MapView
-        provider={PROVIDER_DEFAULT}
-        style={styles.map}
-        region={mapRegion}
-        showsUserLocation={false}
-        onPress={handleMapPressForCreating}
-      >
-        {userCoords && currentUser && (
-          <Marker
-            coordinate={userCoords}
-            title="You Are Here"
-            onPress={() => openUserProfileById(currentUser.uid, currentUser.name || currentUser.userName || currentUser.displayName)}
-          >
-            <View style={styles.myLocationMarker}>
-              <View style={styles.myLocationAvatarBox}>
-                {userAvatar ? (
-                  <Image source={{ uri: userAvatar }} style={{ width: '100%', height: '100%' }} />
-                ) : (
-                  <Text style={styles.myLocationAvatarText}>{userName ? userName[0] : 'P'}</Text>
-                )}
-              </View>
-              <View style={styles.markerNamePill}>
-                <Text style={styles.myLocationNameText}>{userName}</Text>
-                {currentUser?.isVip && <Ionicons name="checkmark-circle" size={10} color="#EAB308" />}
-              </View>
-            </View>
-          </Marker>
-        )}
+      <View style={styles.mapWrapper}>
+        <MapView
+          ref={mapRef}
+          provider={PROVIDER_DEFAULT}
+          style={styles.map}
+          region={mapRegion}
+          mapType={mapType}
+          userInterfaceStyle={isLightMode ? 'light' : 'dark'}
+          showsBuildings={true}
+          showsCompass={false}
+          showsScale={false}
+          pitchEnabled={true}
+          rotateEnabled={true}
+          showsUserLocation={false}
+          onPress={handleMapPressForCreating}
+        >
+          {userCoords && (
+            <Circle
+              center={userCoords}
+              radius={1500}
+              strokeWidth={1.5}
+              strokeColor="rgba(234, 179, 8, 0.55)"
+              fillColor="rgba(234, 179, 8, 0.08)"
+            />
+          )}
 
-        {nearbyMutualFriends.map((friend) => {
-          const friendName = friend.name || friend.userName || friend.displayName || 'Friend';
-          return (
+          {userCoords && currentUser && (
             <Marker
-              key={`friend-${friend.uid}`}
-              coordinate={{ latitude: friend.latitude!, longitude: friend.longitude! }}
-              onPress={() => openUserProfileById(friend.uid, friendName)}
+              coordinate={userCoords}
+              title="You Are Here"
+              onPress={() => openUserProfileById(currentUser.uid, currentUser.name || currentUser.userName || currentUser.displayName)}
             >
-              <View style={styles.friendMarkerContainer}>
-                <View style={styles.friendAvatarBox}>
-                  {friend.avatar ? (
-                    <Image source={{ uri: friend.avatar }} style={{ width: '100%', height: '100%' }} />
-                  ) : (
-                    <Text style={styles.friendAvatarText}>{friendName[0]}</Text>
-                  )}
+              <View style={styles.myLocationMarker}>
+                <View style={styles.myLocationPulseRing}>
+                  <View style={styles.myLocationAvatarBox}>
+                    {userAvatar ? (
+                      <Image source={{ uri: userAvatar }} style={{ width: '100%', height: '100%' }} />
+                    ) : (
+                      <Text style={styles.myLocationAvatarText}>{userName ? userName[0] : 'P'}</Text>
+                    )}
+                  </View>
                 </View>
                 <View style={styles.markerNamePill}>
-                  <Text style={styles.friendMarkerName}>{friendName}</Text>
-                  {friend.isVip && <Ionicons name="checkmark-circle" size={10} color="#EAB308" />}
+                  <Text style={styles.myLocationNameText}>{userName}</Text>
+                  {currentUser?.isVip && <Ionicons name="checkmark-circle" size={10} color="#EAB308" />}
                 </View>
               </View>
             </Marker>
-          );
-        })}
+          )}
 
-        {filteredGames.map((game) => {
-          const currentPlayersCount = game.players?.length || 0;
-          const { icon, color, bg, border } = getSportIconAndColor(game.sport, isLightMode);
-
-          return (
-            <Marker
-              key={game.id}
-              coordinate={{ latitude: game.latitude, longitude: game.longitude }}
-              onPress={() => setSelectedGame(game)}
-            >
-              <View style={[styles.customMarkerContainer, { backgroundColor: bg, borderColor: border }]}>
-                <View style={[styles.markerIconBox, { backgroundColor: color }]}>
-                  <Ionicons name={icon as any} size={13} color="#09090B" />
+          {nearbyMutualFriends.map((friend) => {
+            const friendName = friend.name || friend.userName || friend.displayName || 'Friend';
+            return (
+              <Marker
+                key={`friend-${friend.uid}`}
+                coordinate={{ latitude: friend.latitude!, longitude: friend.longitude! }}
+                onPress={() => openUserProfileById(friend.uid, friendName)}
+              >
+                <View style={styles.friendMarkerContainer}>
+                  <View style={styles.friendAvatarBox}>
+                    {friend.avatar ? (
+                      <Image source={{ uri: friend.avatar }} style={{ width: '100%', height: '100%' }} />
+                    ) : (
+                      <Text style={styles.friendAvatarText}>{friendName[0]}</Text>
+                    )}
+                  </View>
+                  <View style={styles.markerNamePill}>
+                    <Text style={styles.friendMarkerName}>{friendName}</Text>
+                    {friend.isVip && <Ionicons name="checkmark-circle" size={10} color="#EAB308" />}
+                  </View>
                 </View>
-                <View style={styles.markerTextBox}>
-                  <Text style={styles.markerTitleText} numberOfLines={1}>{game.title}</Text>
-                  <Text style={[styles.markerPlayersText, { color }]}>👥 {currentPlayersCount}/{game.maxPlayers}</Text>
-                </View>
-              </View>
-            </Marker>
-          );
-        })}
+              </Marker>
+            );
+          })}
 
-        {pickedLocation && <Marker coordinate={pickedLocation} pinColor="gold" title="Chosen Venue Location" />}
-      </MapView>
+          {filteredGames.map((game) => {
+            const currentPlayersCount = game.players?.length || 0;
+            const { icon, color, bg, border } = getSportIconAndColor(game.sport, isLightMode);
+
+            return (
+              <Marker
+                key={game.id}
+                coordinate={{ latitude: game.latitude, longitude: game.longitude }}
+                onPress={() => setSelectedGame(game)}
+              >
+                <View style={{ alignItems: 'center' }}>
+                  <View style={[styles.customMarkerContainer, { backgroundColor: bg, borderColor: border }]}>
+                    <View style={[styles.markerIconBox, { backgroundColor: color }]}>
+                      <Ionicons name={icon as any} size={13} color="#09090B" />
+                    </View>
+                    <View style={styles.markerTextBox}>
+                      <Text style={styles.markerTitleText} numberOfLines={1}>{game.title}</Text>
+                      <Text style={[styles.markerPlayersText, { color }]}>👥 {currentPlayersCount}/{game.maxPlayers}</Text>
+                    </View>
+                  </View>
+                  <View style={[styles.markerPointerTriangle, { borderTopColor: border }]} />
+                </View>
+              </Marker>
+            );
+          })}
+
+          {pickedLocation && <Marker coordinate={pickedLocation} pinColor="gold" title="Chosen Venue Location" />}
+        </MapView>
+
+        <View style={styles.floatingMapControls}>
+          <TouchableOpacity style={styles.mapControlBtn} onPress={handleCenterOnUser} activeOpacity={0.85}>
+            <Ionicons name="locate" size={18} color="#EAB308" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.mapControlBtn, is3DMode && styles.mapControlBtnActive]}
+            onPress={handleToggle3D}
+            activeOpacity={0.85}
+          >
+            <Text style={[styles.mapControlBtnText, is3DMode && { color: '#09090B' }]}>3D</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.mapControlBtn, mapType === 'hybrid' && styles.mapControlBtnActive]}
+            onPress={() => setMapType(prev => (prev === 'standard' ? 'hybrid' : 'standard'))}
+            activeOpacity={0.85}
+          >
+            <Ionicons
+              name={mapType === 'hybrid' ? 'map' : 'layers'}
+              size={17}
+              color={mapType === 'hybrid' ? '#09090B' : theme.text}
+            />
+          </TouchableOpacity>
+        </View>
+      </View>
 
       {isPickingLocation && (
         <View style={styles.pickingBanner}>
@@ -2169,7 +2311,7 @@ export default function RadarScreen() {
             <Ionicons name="search" size={16} color={theme.textMuted} style={{ marginRight: 8 }} />
             <TextInput
               style={styles.searchInput}
-              placeholder="Search game, venue, city, or code..."
+              placeholder="Search game, location, or city... "
               placeholderTextColor={theme.textSubtle}
               value={searchQuery}
               onChangeText={setSearchQuery}
@@ -2224,7 +2366,7 @@ export default function RadarScreen() {
                     <Text style={styles.distanceTag}>📍 {distance} km away</Text>
                   </View>
                   <Text style={styles.gameTitle}>{game.title}</Text>
-                  <Text style={styles.venueText}>🏟️ {game.venueName} | ⏰ {game.time} | 👑 Admin: {game.creatorName}</Text>
+                  <Text style={styles.venueText}>🏟️ {game.venueName} ({normalizeCity(game.city)}) | ⏰ {game.time} | 👑 Admin: {game.creatorName}</Text>
 
                   <View style={styles.gameTimerRow}>
                     <Text style={styles.timerText}>⏳ Created: {timeCreatedStr}</Text>
@@ -2423,7 +2565,7 @@ export default function RadarScreen() {
                     <Text style={styles.navigateBtnText}>Navigate to Location 🗺️</Text>
                   </TouchableOpacity>
 
-                  <Text style={styles.detailVenue}>📍 {selectedGame.venueName}, {selectedGame.city} | ⏰ {selectedGame.time}</Text>
+                  <Text style={styles.detailVenue}>📍 {selectedGame.venueName}, {normalizeCity(selectedGame.city)} | ⏰ {selectedGame.time}</Text>
 
                   <View style={styles.detailBox}>
                     <Text style={styles.detailLabel}>📊 Team Average Age:</Text>
@@ -2885,7 +3027,7 @@ export default function RadarScreen() {
           <View style={styles.modalContentHomeStyle}>
             <View style={styles.modalHeader}>
               <View>
-                <Text style={styles.discoverCategory}>PLAYER PROFILE</Text>
+                <Text style={styles.discoverCategory}>Player Profile</Text>
                 <Text style={styles.appTitle}>World <Text style={{color: '#EAB308'}}>Sports</Text></Text>
               </View>
               <TouchableOpacity
@@ -3312,12 +3454,12 @@ export default function RadarScreen() {
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Create New Game 📍</Text>
-              <TouchableOpacity onPress={() => setCreateModalVisible(false)}>
+              <TouchableOpacity onPress={() => { setTimePickerVisible(false); setCreateModalVisible(false); }}>
                 <Ionicons name="close" size={24} color={theme.text} />
               </TouchableOpacity>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
+            <ScrollView showsVerticalScrollIndicator={false} nestedScrollEnabled={true}>
               <Text style={styles.label}>Game Title *</Text>
               <TextInput style={styles.input} placeholder="e.g. Friday Match" placeholderTextColor={theme.textSubtle} value={newTitle} onChangeText={setNewTitle} />
 
@@ -3372,7 +3514,7 @@ export default function RadarScreen() {
               <Text style={styles.label}>Court / Location Name *</Text>
               <View style={{ flexDirection: 'row', gap: 8, marginBottom: 14 }}>
                 <TextInput style={[styles.input, { flex: 1, marginBottom: 0 }]} placeholder="e.g. Central Court" placeholderTextColor={theme.textSubtle} value={newVenue} onChangeText={setNewVenue} />
-                <TouchableOpacity style={styles.mapSearchBtn} onPress={() => { setCreateModalVisible(false); setIsPickingLocation(true); }}>
+                <TouchableOpacity style={styles.mapSearchBtn} onPress={() => { setTimePickerVisible(false); setCreateModalVisible(false); setIsPickingLocation(true); }}>
                   <Ionicons name="map" size={18} color="#09090B" />
                   <Text style={styles.mapSearchBtnText}>{pickedLocation ? 'Pinned ✓' : 'Pick on Map'}</Text>
                 </TouchableOpacity>
@@ -3385,9 +3527,83 @@ export default function RadarScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.label}>Time *</Text>
-                  <TextInput style={styles.input} placeholder="18:00" placeholderTextColor={theme.textSubtle} value={newTime} onChangeText={setNewTime} />
+                  <TouchableOpacity
+                    style={styles.timePickerTriggerBtn}
+                    onPress={() => setTimePickerVisible(prev => !prev)}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="time-outline" size={16} color="#EAB308" />
+                    <Text style={styles.timePickerTriggerText}>{newTime}</Text>
+                    <Ionicons
+                      name={timePickerVisible ? 'chevron-up' : 'chevron-down'}
+                      size={14}
+                      color={theme.textMuted}
+                    />
+                  </TouchableOpacity>
                 </View>
               </View>
+
+              {timePickerVisible && (
+                <View style={styles.inlineTimePickerBox}>
+                  <View style={styles.timeColumnsRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.timeColumnHeading}>Hour</Text>
+                      <ScrollView
+                        style={styles.timeColumnScroll}
+                        nestedScrollEnabled={true}
+                        showsVerticalScrollIndicator={false}
+                      >
+                        {HOURS_LIST.map(hr => {
+                          const active = selectedHour === hr;
+                          return (
+                            <TouchableOpacity
+                              key={hr}
+                              style={[styles.timeOptionChip, active && styles.timeOptionChipActive]}
+                              onPress={() => setSelectedHour(hr)}
+                            >
+                              <Text style={[styles.timeOptionLabel, active && styles.timeOptionLabelActive]}>
+                                {hr}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+                    </View>
+
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.timeColumnHeading}>Minute</Text>
+                      <ScrollView
+                        style={styles.timeColumnScroll}
+                        nestedScrollEnabled={true}
+                        showsVerticalScrollIndicator={false}
+                      >
+                        {MINUTES_LIST.map(min => {
+                          const active = selectedMinute === min;
+                          return (
+                            <TouchableOpacity
+                              key={min}
+                              style={[styles.timeOptionChip, active && styles.timeOptionChipActive]}
+                              onPress={() => setSelectedMinute(min)}
+                            >
+                              <Text style={[styles.timeOptionLabel, active && styles.timeOptionLabelActive]}>
+                                {min}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+                    </View>
+                  </View>
+
+                  <TouchableOpacity
+                    style={styles.doneTimeBtn}
+                    onPress={() => setTimePickerVisible(false)}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.doneTimeBtnText}>Done ({newTime}) ✓</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
 
               <Text style={styles.label}>Max Players *</Text>
               <TextInput style={styles.input} placeholder="10" placeholderTextColor={theme.textSubtle} keyboardType="numeric" value={newMaxPlayers} onChangeText={setNewMaxPlayers} />
@@ -3424,9 +3640,16 @@ const createStyles = (theme: ReturnType<typeof getRadarTheme>) => StyleSheet.cre
   actionMenuOptionTitle: { color: theme.text, fontSize: 14, fontWeight: '800' },
   actionMenuOptionSub: { color: theme.textMuted, fontSize: 11, marginTop: 2 },
 
-  map: { width: Dimensions.get('window').width, height: Dimensions.get('window').height * 0.45 },
+  mapWrapper: { width: Dimensions.get('window').width, height: Dimensions.get('window').height * 0.45, position: 'relative' },
+  map: { width: '100%', height: '100%' },
+
+  floatingMapControls: { position: 'absolute', right: 14, top: 14, gap: 8, zIndex: 20 },
+  mapControlBtn: { width: 38, height: 38, borderRadius: 12, backgroundColor: theme.pillBg, borderWidth: 1, borderColor: theme.border, justifyContent: 'center', alignItems: 'center', shadowColor: '#000', shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.35, shadowRadius: 4, elevation: 5 },
+  mapControlBtnActive: { backgroundColor: '#EAB308', borderColor: '#EAB308' },
+  mapControlBtnText: { color: theme.text, fontSize: 11, fontWeight: '900' },
 
   myLocationMarker: { alignItems: 'center' },
+  myLocationPulseRing: { width: 46, height: 46, borderRadius: 23, backgroundColor: 'rgba(234, 179, 8, 0.22)', justifyContent: 'center', alignItems: 'center' },
   myLocationAvatarBox: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.surfaceAlt, borderWidth: 2, borderColor: '#EAB308', justifyContent: 'center', alignItems: 'center', overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.8, shadowRadius: 2, elevation: 5 },
   myLocationAvatarText: { color: '#EAB308', fontWeight: 'bold', fontSize: 14 },
   myLocationNameText: { color: theme.text, fontSize: 10, fontWeight: 'bold' },
@@ -3442,6 +3665,7 @@ const createStyles = (theme: ReturnType<typeof getRadarTheme>) => StyleSheet.cre
   markerTextBox: { maxWidth: 100 },
   markerTitleText: { color: theme.text, fontSize: 10, fontWeight: 'bold' },
   markerPlayersText: { fontSize: 9, fontWeight: 'bold' },
+  markerPointerTriangle: { width: 0, height: 0, borderLeftWidth: 6, borderRightWidth: 6, borderTopWidth: 7, borderLeftColor: 'transparent', borderRightColor: 'transparent', marginTop: -1 },
 
   pickingBanner: { position: 'absolute', top: 110, alignSelf: 'center', backgroundColor: '#EAB308', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, flexDirection: 'row', alignItems: 'center', zIndex: 50 },
   pickingBannerText: { color: '#09090B', fontWeight: 'bold', fontSize: 12 },
@@ -3496,6 +3720,19 @@ const createStyles = (theme: ReturnType<typeof getRadarTheme>) => StyleSheet.cre
 
   label: { color: theme.textMuted, fontSize: 12, fontWeight: 'bold', marginBottom: 6, alignSelf: 'flex-start' },
   input: { backgroundColor: theme.surfaceDeep, borderWidth: 1, borderColor: theme.border, borderRadius: 10, paddingHorizontal: 12, height: 44, color: theme.text, marginBottom: 14, width: '100%' },
+
+  timePickerTriggerBtn: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', backgroundColor: theme.surfaceDeep, borderWidth: 1, borderColor: theme.border, borderRadius: 10, paddingHorizontal: 12, height: 44, marginBottom: 14 },
+  timePickerTriggerText: { color: theme.text, fontSize: 14, fontWeight: '800' },
+  inlineTimePickerBox: { backgroundColor: theme.surfaceDeep, borderWidth: 1, borderColor: '#EAB30866', borderRadius: 14, padding: 12, marginBottom: 14 },
+  timeColumnsRow: { flexDirection: 'row', gap: 12 },
+  timeColumnHeading: { color: theme.textMuted, fontSize: 12, fontWeight: '800', textAlign: 'center', marginBottom: 8 },
+  timeColumnScroll: { maxHeight: 165, backgroundColor: theme.surface, borderRadius: 12, borderWidth: 1, borderColor: theme.border, padding: 6 },
+  timeOptionChip: { paddingVertical: 8, borderRadius: 8, alignItems: 'center', marginBottom: 4 },
+  timeOptionChipActive: { backgroundColor: '#EAB308' },
+  timeOptionLabel: { color: theme.textSecondary, fontSize: 14, fontWeight: '700' },
+  timeOptionLabelActive: { color: '#09090B', fontWeight: '900' },
+  doneTimeBtn: { backgroundColor: '#EAB308', borderRadius: 10, height: 36, justifyContent: 'center', alignItems: 'center', marginTop: 10 },
+  doneTimeBtnText: { color: '#09090B', fontWeight: '900', fontSize: 13 },
 
   mapSearchBtn: { backgroundColor: '#EAB308', borderRadius: 10, height: 44, paddingHorizontal: 12, flexDirection: 'row', alignItems: 'center', gap: 6 },
   mapSearchBtnText: { color: '#09090B', fontWeight: 'bold', fontSize: 12 },
