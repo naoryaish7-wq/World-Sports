@@ -6,28 +6,23 @@ import { db, auth } from '../firebase';
 import { router } from 'expo-router';
 import { Ionicons, FontAwesome } from '@expo/vector-icons';
 import { useAuth } from '../context/AuthContext';
-import * as Google from 'expo-auth-session/providers/google';
-import { makeRedirectUri } from 'expo-auth-session';
-import * as WebBrowser from 'expo-web-browser';
+import { GoogleSignin } from '@react-native-google-signin/google-signin';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-WebBrowser.maybeCompleteAuthSession();
 
 const IOS_CLIENT_ID = '562029576530-hafa1usttf58rlflt06uohkruev7t3a5.apps.googleusercontent.com';
 const WEB_CLIENT_ID = '562029576530-1rqebmfjovhqlius30ntb9krpfk8g77a.apps.googleusercontent.com';
-const APP_SCHEME = 'worldsports';
 
 const { width } = Dimensions.get('window');
 const SPORTS_LIST = ['Football ⚽', 'Basketball 🏀', 'Tennis 🎾', 'Running 🏃‍♂️', 'Fitness 💪', 'Cycling 🚴‍♂️', 'Swimming 🏊‍♂️'];
 
 const calculateAge = (birthDateString: string) => {
   if (!birthDateString) return null;
-  
+
   const parts = birthDateString.split('-');
   if (parts.length !== 3) return null;
 
   const year = parseInt(parts[0], 10);
-  const month = parseInt(parts[1], 10) - 1; 
+  const month = parseInt(parts[1], 10) - 1;
   const day = parseInt(parts[2], 10);
 
   if (isNaN(year) || isNaN(month) || isNaN(day)) return null;
@@ -47,25 +42,22 @@ const calculateAge = (birthDateString: string) => {
 export default function LoginScreen() {
   const { login, register, user, loading: authLoading } = useAuth();
 
-  const [isLoginMode, setIsLoginMode] = useState(false); 
+  const [isLoginMode, setIsLoginMode] = useState(false);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
-  const [password, setPassword] = useState(''); 
-  const [birthDate, setBirthDate] = useState(''); 
-  
+  const [password, setPassword] = useState('');
+  const [birthDate, setBirthDate] = useState('');
+
   const [selectedSports, setSelectedSports] = useState<string[]>([]);
   const [isSportModalVisible, setIsSportModalVisible] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
 
-  const redirectUri = makeRedirectUri({
-    scheme: APP_SCHEME,
-  });
-
-  const [request, , promptAsync] = Google.useAuthRequest({
-    iosClientId: IOS_CLIENT_ID,
-    webClientId: WEB_CLIENT_ID,
-    redirectUri,
-  });
+  useEffect(() => {
+    GoogleSignin.configure({
+      webClientId: WEB_CLIENT_ID,
+      iosClientId: IOS_CLIENT_ID,
+    });
+  }, []);
 
   // כניסה אוטומטית למסך הבית ברגע שהמשתמש כבר מחובר ונטען
   useEffect(() => {
@@ -125,14 +117,14 @@ export default function LoginScreen() {
 
         if (currentUser && !currentUser.emailVerified) {
           await signOut(auth);
-          
+
           Alert.alert(
             'Email Not Verified ⚠️',
             'Please check your inbox and click the verification link before logging in.',
             [
               { text: 'Cancel', style: 'cancel' },
-              { 
-                text: 'Resend Email', 
+              {
+                text: 'Resend Email',
                 onPress: async () => {
                   try {
                     await sendEmailVerification(currentUser);
@@ -140,7 +132,7 @@ export default function LoginScreen() {
                   } catch (e: any) {
                     Alert.alert('Error', 'You can only request a new verification email after a short wait.');
                   }
-                } 
+                }
               }
             ]
           );
@@ -152,7 +144,7 @@ export default function LoginScreen() {
             sports: selectedSports,
           }, { merge: true });
         }
-        
+
         router.replace('/(tabs)/home');
       } catch (error: any) {
         console.error(error);
@@ -161,7 +153,7 @@ export default function LoginScreen() {
     } else {
       // Sign Up Mode
       const trimmedName = name.trim();
-      
+
       if (!trimmedName || !birthDate.trim()) {
         Alert.alert('Error', 'Please fill in your name and birth date.');
         return;
@@ -211,45 +203,45 @@ export default function LoginScreen() {
   const handleGoogleLogin = async () => {
     try {
       setIsGoogleLoading(true);
-       const result = await promptAsync();
-      if (result.type === 'success') {
-        const idToken = result.authentication?.idToken || result.params?.id_token;
-        if (!idToken) {
-          throw new Error('No ID token received from Google.');
-        }
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: false });
+      const userInfo = await GoogleSignin.signIn();
+      const idToken = userInfo.data?.idToken;
 
-        const credential = GoogleAuthProvider.credential(idToken);
-        const userCred = await signInWithCredential(auth, credential);
-        const fbUser = userCred.user;
-
-        if (fbUser.email) {
-          await AsyncStorage.setItem('@saved_user_email', fbUser.email.toLowerCase());
-        }
-
-        const userId = fbUser.email
-          ? fbUser.email.toLowerCase().replace(/[^a-z0-9]/g, '_')
-          : fbUser.uid;
-
-        const userRef = doc(db, 'users', userId);
-        const userSnap = await getDoc(userRef);
-
-        if (!userSnap.exists()) {
-          await setDoc(userRef, {
-            uid: userId,
-            email: fbUser.email,
-            name: fbUser.displayName || 'Player',
-            createdAt: new Date(),
-            isVip: false,
-            followers: [],
-            following: [],
-            sports: selectedSports.length > 0 ? selectedSports : ['Football ⚽'],
-          }, { merge: true });
-        } else if (selectedSports.length > 0) {
-          await setDoc(userRef, { sports: selectedSports }, { merge: true });
-        }
-
-        router.replace('/(tabs)/home');
+      if (!idToken) {
+        throw new Error('No ID token received from Google.');
       }
+
+      const credential = GoogleAuthProvider.credential(idToken);
+      const userCred = await signInWithCredential(auth, credential);
+      const fbUser = userCred.user;
+
+      if (fbUser.email) {
+        await AsyncStorage.setItem('@saved_user_email', fbUser.email.toLowerCase());
+      }
+
+      const userId = fbUser.email
+        ? fbUser.email.toLowerCase().replace(/[^a-z0-9]/g, '_')
+        : fbUser.uid;
+
+      const userRef = doc(db, 'users', userId);
+      const userSnap = await getDoc(userRef);
+
+      if (!userSnap.exists()) {
+        await setDoc(userRef, {
+          uid: userId,
+          email: fbUser.email,
+          name: fbUser.displayName || 'Player',
+          createdAt: new Date(),
+          isVip: false,
+          followers: [],
+          following: [],
+          sports: selectedSports.length > 0 ? selectedSports : ['Football ⚽'],
+        }, { merge: true });
+      } else if (selectedSports.length > 0) {
+        await setDoc(userRef, { sports: selectedSports }, { merge: true });
+      }
+
+      router.replace('/(tabs)/home');
     } catch (error: any) {
       console.error('Google Sign-In error:', error);
       Alert.alert('Google Sign-In Error', error?.message || 'Could not sign in with Google.');
@@ -261,7 +253,7 @@ export default function LoginScreen() {
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.container}>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        
+
         <View style={styles.heroSection}>
           <View style={styles.badgeIconBox}>
             <Ionicons name="trophy" size={32} color="#EAB308" />
@@ -273,8 +265,8 @@ export default function LoginScreen() {
         </View>
 
         <View style={styles.modeSwitchRow}>
-          <TouchableOpacity 
-            style={[styles.modeTab, !isLoginMode && styles.modeTabActive]} 
+          <TouchableOpacity
+            style={[styles.modeTab, !isLoginMode && styles.modeTabActive]}
             onPress={() => handleSwitchMode(false)}
             activeOpacity={0.8}
           >
@@ -282,8 +274,8 @@ export default function LoginScreen() {
             <Text style={[styles.modeTabText, !isLoginMode && styles.modeTabTextActive]}>Sign Up</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity 
-            style={[styles.modeTab, isLoginMode && styles.modeTabActive]} 
+          <TouchableOpacity
+            style={[styles.modeTab, isLoginMode && styles.modeTabActive]}
             onPress={() => handleSwitchMode(true)}
             activeOpacity={0.8}
           >
@@ -298,13 +290,13 @@ export default function LoginScreen() {
               <Text style={styles.label}>USERNAME / FULL NAME</Text>
               <View style={styles.inputWrapper}>
                 <Ionicons name="person-outline" size={18} color="#71717A" style={styles.inputIcon} />
-                <TextInput 
-                  style={styles.input} 
-                  placeholder="e.g. David_Levi" 
-                  placeholderTextColor="#52525B" 
-                  value={name} 
-                  onChangeText={setName} 
-                  autoCapitalize="none" 
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. David_Levi"
+                  placeholderTextColor="#52525B"
+                  value={name}
+                  onChangeText={setName}
+                  autoCapitalize="none"
                 />
               </View>
             </View>
@@ -314,12 +306,12 @@ export default function LoginScreen() {
             <Text style={styles.label}>EMAIL ADDRESS</Text>
             <View style={styles.inputWrapper}>
               <Ionicons name="mail-outline" size={18} color="#71717A" style={styles.inputIcon} />
-              <TextInput 
-                style={styles.input} 
-                placeholder="player@gmail.com" 
-                placeholderTextColor="#52525B" 
-                value={email} 
-                onChangeText={setEmail} 
+              <TextInput
+                style={styles.input}
+                placeholder="player@gmail.com"
+                placeholderTextColor="#52525B"
+                value={email}
+                onChangeText={setEmail}
                 keyboardType="email-address"
                 autoCapitalize="none"
                 autoCorrect={false}
@@ -331,14 +323,14 @@ export default function LoginScreen() {
             <Text style={styles.label}>PASSWORD</Text>
             <View style={styles.inputWrapper}>
               <Ionicons name="lock-closed-outline" size={18} color="#71717A" style={styles.inputIcon} />
-              <TextInput 
-                style={styles.input} 
-                placeholder="At least 6 characters" 
-                placeholderTextColor="#52525B" 
-                secureTextEntry 
-                value={password} 
-                onChangeText={setPassword} 
-                autoCapitalize="none" 
+              <TextInput
+                style={styles.input}
+                placeholder="At least 6 characters"
+                placeholderTextColor="#52525B"
+                secureTextEntry
+                value={password}
+                onChangeText={setPassword}
+                autoCapitalize="none"
               />
             </View>
           </View>
@@ -348,12 +340,12 @@ export default function LoginScreen() {
               <Text style={styles.label}>BIRTH DATE (YYYY-MM-DD)</Text>
               <View style={styles.inputWrapper}>
                 <Ionicons name="calendar-outline" size={18} color="#71717A" style={styles.inputIcon} />
-                <TextInput 
-                  style={styles.input} 
-                  placeholder="2007-01-01" 
-                  placeholderTextColor="#52525B" 
-                  value={birthDate} 
-                  onChangeText={setBirthDate} 
+                <TextInput
+                  style={styles.input}
+                  placeholder="2007-01-01"
+                  placeholderTextColor="#52525B"
+                  value={birthDate}
+                  onChangeText={setBirthDate}
                 />
               </View>
             </View>
@@ -382,10 +374,10 @@ export default function LoginScreen() {
             <View style={styles.line} />
           </View>
 
-          <TouchableOpacity 
-            style={[styles.googleBtn, (isGoogleLoading || !request) && { opacity: 0.6 }]} 
-            onPress={handleGoogleLogin} 
-            disabled={isGoogleLoading || !request}
+          <TouchableOpacity
+            style={[styles.googleBtn, isGoogleLoading && { opacity: 0.6 }]}
+            onPress={handleGoogleLogin}
+            disabled={isGoogleLoading}
             activeOpacity={0.85}
           >
             {isGoogleLoading ? (
@@ -419,8 +411,8 @@ export default function LoginScreen() {
               renderItem={({ item }) => {
                 const isSelected = selectedSports.includes(item);
                 return (
-                  <TouchableOpacity 
-                    style={[styles.modalItem, isSelected && styles.modalItemActive]} 
+                  <TouchableOpacity
+                    style={[styles.modalItem, isSelected && styles.modalItemActive]}
                     onPress={() => toggleSportSelection(item)}
                     activeOpacity={0.8}
                   >
@@ -447,12 +439,12 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#09090B' },
   scrollContent: { padding: 20, paddingTop: 60, paddingBottom: 40 },
-  
+
   heroSection: { alignItems: 'center', marginBottom: 25 },
   badgeIconBox: { width: 64, height: 64, borderRadius: 32, backgroundColor: '#18181B', borderWidth: 1, borderColor: '#27272A', justifyContent: 'center', alignItems: 'center', marginBottom: 12, shadowColor: '#EAB308', shadowOffset: { width: 0, height: 0 }, shadowOpacity: 0.2, shadowRadius: 10, elevation: 5 },
   title: { fontSize: 24, fontWeight: '900', color: '#FAFAFA', fontStyle: 'italic', letterSpacing: 1 },
   subtitle: { fontSize: 13, color: '#A1A1AA', textAlign: 'center', marginTop: 6, paddingHorizontal: 20 },
-  
+
   modeSwitchRow: { flexDirection: 'row', backgroundColor: '#121215', borderRadius: 14, padding: 4, borderWidth: 1, borderColor: '#27272A', marginBottom: 20 },
   modeTab: { flex: 1, flexDirection: 'row', paddingVertical: 12, alignItems: 'center', justifyContent: 'center', borderRadius: 10 },
   modeTabActive: { backgroundColor: '#18181B', borderWidth: 1, borderColor: '#3F3F46' },
@@ -462,11 +454,11 @@ const styles = StyleSheet.create({
   formBox: { backgroundColor: '#121215', padding: 20, borderRadius: 20, borderWidth: 1, borderColor: '#27272A', shadowColor: '#000', shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 12, elevation: 8 },
   inputGroup: { marginBottom: 16 },
   label: { color: '#A1A1AA', fontSize: 11, fontWeight: '800', marginBottom: 6, letterSpacing: 0.5 },
-  
+
   inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 12, height: 50, paddingHorizontal: 14 },
   inputIcon: { marginRight: 10 },
   input: { flex: 1, color: '#FAFAFA', fontSize: 14 },
-  
+
   sportDropdownBtn: { backgroundColor: '#09090B', borderWidth: 1, borderColor: '#27272A', borderRadius: 12, height: 50, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 14 },
   sportDropdownText: { color: '#FAFAFA', fontSize: 14, flex: 1, marginLeft: 10, marginRight: 10 },
 
@@ -486,12 +478,12 @@ const styles = StyleSheet.create({
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   modalTitle: { color: '#FAFAFA', fontSize: 18, fontWeight: '800' },
   closeModalBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#18181B', justifyContent: 'center', alignItems: 'center' },
-  
+
   modalItem: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#09090B', padding: 16, borderRadius: 14, marginBottom: 10, borderWidth: 1, borderColor: '#27272A' },
   modalItemActive: { backgroundColor: '#18181B', borderColor: '#EAB308' },
   modalItemText: { color: '#D4D4D8', fontSize: 14, fontWeight: '600' },
   modalItemTextActive: { color: '#EAB308', fontWeight: '700' },
-  
+
   checkboxCircle: { width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#3F3F46', justifyContent: 'center', alignItems: 'center' },
   checkboxCircleActive: { backgroundColor: '#EAB308', borderColor: '#EAB308' },
 

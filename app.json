@@ -18,16 +18,9 @@
         ]
       },
       "infoPlist": {
-        "CFBundleDisplayName": "World\u00A0Sports",
+        "CFBundleDisplayName": "World Sports",
         "NSLocationWhenInUseUsageDescription": "This app uses GPS to detect your live location.",
-        "ITSAppUsesNonExemptEncryption": false,
-        "CFBundleURLTypes": [
-          {
-            "CFBundleURLSchemes": [
-              "com.googleusercontent.apps.562029576530-hafa1usttf58rlflt06uohkruev7t3a5"
-            ]
-          }
-        ]
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
@@ -64,7 +57,13 @@
       "expo-web-browser",
       "expo-video",
       "expo-audio",
-      "./plugins/withLockScreenWidget"
+      "./plugins/withLockScreenWidget",
+      [
+        "@react-native-google-signin/google-signin",
+        {
+          "iosUrlScheme": "com.googleusercontent.apps.562029576530-hafa1usttf58rlflt06uohkruev7t3a5"
+        }
+      ]
     ],
     "extra": {
       "router": {
